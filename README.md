@@ -30,7 +30,7 @@ A high performance production-capable quantum computing framework in active deve
   ```
   - Theoretical error reduction from O(ε) to O(ε²)
   - Expected coherence time improvements of 10-100x
-  - >99.9% state fidelity
+  - > 99.9% state fidelity
 
 ### 3. Hardware-Optimized Performance (In Development)
 - **Automatic Optimization** (Core algorithms complete, testing in progress)
