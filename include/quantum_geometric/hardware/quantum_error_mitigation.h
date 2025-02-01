@@ -1,0 +1,6 @@
+#ifndef QUANTUM_ERROR_MITIGATION_H
+#define QUANTUM_ERROR_MITIGATION_H
+
+// TODO: Add implementation
+
+#endif // QUANTUM_ERROR_MITIGATION_H

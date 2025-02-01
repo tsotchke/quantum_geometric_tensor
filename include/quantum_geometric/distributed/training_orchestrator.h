@@ -1,0 +1,6 @@
+#ifndef TRAINING_ORCHESTRATOR_H
+#define TRAINING_ORCHESTRATOR_H
+
+// TODO: Add implementation
+
+#endif // TRAINING_ORCHESTRATOR_H

@@ -1,0 +1,6 @@
+#ifndef RESOURCE_OPTIMIZATION_H
+#define RESOURCE_OPTIMIZATION_H
+
+// TODO: Add implementation
+
+#endif // RESOURCE_OPTIMIZATION_H

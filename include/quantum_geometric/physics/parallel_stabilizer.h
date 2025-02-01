@@ -1,0 +1,6 @@
+#ifndef PARALLEL_STABILIZER_H
+#define PARALLEL_STABILIZER_H
+
+// TODO: Add implementation
+
+#endif // PARALLEL_STABILIZER_H

@@ -1,0 +1,6 @@
+#ifndef UTILIZATION_ANALYZER_H
+#define UTILIZATION_ANALYZER_H
+
+// TODO: Add implementation
+
+#endif // UTILIZATION_ANALYZER_H

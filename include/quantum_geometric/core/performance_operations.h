@@ -1,0 +1,6 @@
+#ifndef PERFORMANCE_OPERATIONS_H
+#define PERFORMANCE_OPERATIONS_H
+
+// TODO: Add implementation
+
+#endif // PERFORMANCE_OPERATIONS_H

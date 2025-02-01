@@ -1,0 +1,6 @@
+#ifndef PROPAGATION_ANALYZER_H
+#define PROPAGATION_ANALYZER_H
+
+// TODO: Add implementation
+
+#endif // PROPAGATION_ANALYZER_H

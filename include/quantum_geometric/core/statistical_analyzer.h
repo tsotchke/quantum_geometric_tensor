@@ -1,0 +1,6 @@
+#ifndef STATISTICAL_ANALYZER_H
+#define STATISTICAL_ANALYZER_H
+
+// TODO: Add implementation
+
+#endif // STATISTICAL_ANALYZER_H

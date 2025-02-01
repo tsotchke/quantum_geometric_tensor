@@ -1,0 +1,6 @@
+#ifndef PATTERN_RECOGNITION_MODEL_H
+#define PATTERN_RECOGNITION_MODEL_H
+
+// TODO: Add implementation
+
+#endif // PATTERN_RECOGNITION_MODEL_H

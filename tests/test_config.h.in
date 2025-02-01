@@ -1,0 +1,123 @@
+#ifndef QUANTUM_GEOMETRIC_TEST_CONFIG_H
+#define QUANTUM_GEOMETRIC_TEST_CONFIG_H
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <assert.h>
+#include <math.h>
+
+// Test configuration
+#define TEST_EPSILON 1e-6
+#define TEST_DATA_DIR "@CMAKE_CURRENT_BINARY_DIR@/data"
+
+// Test macros
+#define TEST_ASSERT(condition) \
+    do { \
+        if (!(condition)) { \
+            fprintf(stderr, "Assertion failed: %s\n", #condition); \
+            fprintf(stderr, "File: %s, Line: %d\n", __FILE__, __LINE__); \
+            exit(1); \
+        } \
+    } while (0)
+
+#define TEST_ASSERT_FLOAT_EQ(a, b) \
+    do { \
+        if (fabs((a) - (b)) > TEST_EPSILON) { \
+            fprintf(stderr, "Float equality assertion failed\n"); \
+            fprintf(stderr, "Expected: %f\n", (float)(b)); \
+            fprintf(stderr, "Got: %f\n", (float)(a)); \
+            fprintf(stderr, "File: %s, Line: %d\n", __FILE__, __LINE__); \
+            exit(1); \
+        } \
+    } while (0)
+
+#define TEST_ASSERT_COMPLEX_EQ(a, b) \
+    do { \
+        if (fabs((a).real - (b).real) > TEST_EPSILON || \
+            fabs((a).imag - (b).imag) > TEST_EPSILON) { \
+            fprintf(stderr, "Complex equality assertion failed\n"); \
+            fprintf(stderr, "Expected: %f + %fi\n", (float)(b).real, (float)(b).imag); \
+            fprintf(stderr, "Got: %f + %fi\n", (float)(a).real, (float)(a).imag); \
+            fprintf(stderr, "File: %s, Line: %d\n", __FILE__, __LINE__); \
+            exit(1); \
+        } \
+    } while (0)
+
+// Test utilities
+#define TEST_SETUP() \
+    do { \
+        printf("Running test: %s\n", __func__); \
+    } while (0)
+
+#define TEST_TEARDOWN() \
+    do { \
+        printf("Test completed: %s\n", __func__); \
+    } while (0)
+
+// MPI test utilities
+#ifdef QGT_USE_MPI
+#include <mpi.h>
+
+#define TEST_MPI_INIT() \
+    do { \
+        int initialized; \
+        MPI_Initialized(&initialized); \
+        if (!initialized) { \
+            int provided; \
+            MPI_Init_thread(NULL, NULL, MPI_THREAD_MULTIPLE, &provided); \
+        } \
+    } while (0)
+
+#define TEST_MPI_FINALIZE() \
+    do { \
+        int finalized; \
+        MPI_Finalized(&finalized); \
+        if (!finalized) { \
+            MPI_Finalize(); \
+        } \
+    } while (0)
+#else
+#define TEST_MPI_INIT()
+#define TEST_MPI_FINALIZE()
+#endif
+
+// GPU test utilities
+#ifdef QGT_USE_METAL
+#define TEST_METAL_INIT() metal_init()
+#define TEST_METAL_CLEANUP() metal_cleanup()
+#else
+#define TEST_METAL_INIT()
+#define TEST_METAL_CLEANUP()
+#endif
+
+#ifdef QGT_USE_CUDA
+#define TEST_CUDA_INIT() cuda_init()
+#define TEST_CUDA_CLEANUP() cuda_cleanup()
+#else
+#define TEST_CUDA_INIT()
+#define TEST_CUDA_CLEANUP()
+#endif
+
+// Test registration
+typedef void (*test_func_t)(void);
+
+struct test_case {
+    const char* name;
+    test_func_t func;
+};
+
+#define MAX_TESTS 1000
+extern struct test_case g_tests[MAX_TESTS];
+extern int g_test_count;
+
+#define REGISTER_TEST(func) \
+    void __attribute__((constructor)) register_##func(void) { \
+        if (g_test_count < MAX_TESTS) { \
+            g_tests[g_test_count].name = #func; \
+            g_tests[g_test_count].func = func; \
+            g_test_count++; \
+        } \
+    }
+
+#endif /* QUANTUM_GEOMETRIC_TEST_CONFIG_H */

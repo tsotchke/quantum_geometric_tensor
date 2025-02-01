@@ -1,0 +1,6 @@
+#ifndef VALIDATION_ANALYZER_H
+#define VALIDATION_ANALYZER_H
+
+// TODO: Add implementation
+
+#endif // VALIDATION_ANALYZER_H

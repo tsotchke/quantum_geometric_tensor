@@ -1,0 +1,6 @@
+#ifndef ROBUSTNESS_ANALYZER_H
+#define ROBUSTNESS_ANALYZER_H
+
+// TODO: Add implementation
+
+#endif // ROBUSTNESS_ANALYZER_H

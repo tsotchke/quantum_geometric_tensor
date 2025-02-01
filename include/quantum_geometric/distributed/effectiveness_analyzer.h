@@ -1,0 +1,6 @@
+#ifndef EFFECTIVENESS_ANALYZER_H
+#define EFFECTIVENESS_ANALYZER_H
+
+// TODO: Add implementation
+
+#endif // EFFECTIVENESS_ANALYZER_H

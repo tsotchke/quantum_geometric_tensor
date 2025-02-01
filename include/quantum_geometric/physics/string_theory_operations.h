@@ -1,0 +1,6 @@
+#ifndef STRING_THEORY_OPERATIONS_H
+#define STRING_THEORY_OPERATIONS_H
+
+// TODO: Add implementation
+
+#endif // STRING_THEORY_OPERATIONS_H

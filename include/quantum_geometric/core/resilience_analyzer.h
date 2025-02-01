@@ -1,0 +1,6 @@
+#ifndef RESILIENCE_ANALYZER_H
+#define RESILIENCE_ANALYZER_H
+
+// TODO: Add implementation
+
+#endif // RESILIENCE_ANALYZER_H

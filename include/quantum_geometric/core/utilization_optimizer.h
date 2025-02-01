@@ -1,0 +1,6 @@
+#ifndef UTILIZATION_OPTIMIZER_H
+#define UTILIZATION_OPTIMIZER_H
+
+// TODO: Add implementation
+
+#endif // UTILIZATION_OPTIMIZER_H

@@ -1,0 +1,6 @@
+#ifndef DIFFERENTIAL_GEOMETRY_H
+#define DIFFERENTIAL_GEOMETRY_H
+
+// TODO: Add implementation
+
+#endif // DIFFERENTIAL_GEOMETRY_H

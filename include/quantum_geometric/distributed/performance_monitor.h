@@ -1,0 +1,6 @@
+#ifndef PERFORMANCE_MONITOR_H
+#define PERFORMANCE_MONITOR_H
+
+// TODO: Add implementation
+
+#endif // PERFORMANCE_MONITOR_H

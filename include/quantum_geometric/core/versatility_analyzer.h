@@ -1,0 +1,6 @@
+#ifndef VERSATILITY_ANALYZER_H
+#define VERSATILITY_ANALYZER_H
+
+// TODO: Add implementation
+
+#endif // VERSATILITY_ANALYZER_H

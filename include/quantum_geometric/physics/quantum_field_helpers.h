@@ -1,0 +1,6 @@
+#ifndef QUANTUM_FIELD_HELPERS_H
+#define QUANTUM_FIELD_HELPERS_H
+
+// TODO: Add implementation
+
+#endif // QUANTUM_FIELD_HELPERS_H

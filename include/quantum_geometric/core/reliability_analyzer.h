@@ -1,0 +1,6 @@
+#ifndef RELIABILITY_ANALYZER_H
+#define RELIABILITY_ANALYZER_H
+
+// TODO: Add implementation
+
+#endif // RELIABILITY_ANALYZER_H

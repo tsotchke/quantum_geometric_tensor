@@ -1,0 +1,6 @@
+#ifndef RESPONSE_COORDINATOR_H
+#define RESPONSE_COORDINATOR_H
+
+// TODO: Add implementation
+
+#endif // RESPONSE_COORDINATOR_H

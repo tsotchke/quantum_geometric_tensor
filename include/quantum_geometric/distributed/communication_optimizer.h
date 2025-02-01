@@ -1,0 +1,6 @@
+#ifndef COMMUNICATION_OPTIMIZER_H
+#define COMMUNICATION_OPTIMIZER_H
+
+// TODO: Add implementation
+
+#endif // COMMUNICATION_OPTIMIZER_H

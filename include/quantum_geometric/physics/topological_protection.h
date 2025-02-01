@@ -1,0 +1,6 @@
+#ifndef TOPOLOGICAL_PROTECTION_H
+#define TOPOLOGICAL_PROTECTION_H
+
+// TODO: Add implementation
+
+#endif // TOPOLOGICAL_PROTECTION_H

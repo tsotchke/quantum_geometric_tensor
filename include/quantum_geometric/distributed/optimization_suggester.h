@@ -1,0 +1,6 @@
+#ifndef OPTIMIZATION_SUGGESTER_H
+#define OPTIMIZATION_SUGGESTER_H
+
+// TODO: Add implementation
+
+#endif // OPTIMIZATION_SUGGESTER_H

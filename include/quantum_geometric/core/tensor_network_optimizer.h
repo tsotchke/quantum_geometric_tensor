@@ -1,0 +1,6 @@
+#ifndef TENSOR_NETWORK_OPTIMIZER_H
+#define TENSOR_NETWORK_OPTIMIZER_H
+
+// TODO: Add implementation
+
+#endif // TENSOR_NETWORK_OPTIMIZER_H

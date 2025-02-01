@@ -1,0 +1,6 @@
+#ifndef THROUGHPUT_OPTIMIZER_H
+#define THROUGHPUT_OPTIMIZER_H
+
+// TODO: Add implementation
+
+#endif // THROUGHPUT_OPTIMIZER_H

@@ -1,0 +1,6 @@
+#ifndef HOLOGRAPHIC_OPERATIONS_H
+#define HOLOGRAPHIC_OPERATIONS_H
+
+// TODO: Add implementation
+
+#endif // HOLOGRAPHIC_OPERATIONS_H

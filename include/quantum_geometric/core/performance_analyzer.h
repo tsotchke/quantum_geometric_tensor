@@ -1,0 +1,6 @@
+#ifndef PERFORMANCE_ANALYZER_H
+#define PERFORMANCE_ANALYZER_H
+
+// TODO: Add implementation
+
+#endif // PERFORMANCE_ANALYZER_H

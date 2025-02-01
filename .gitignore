@@ -1,0 +1,150 @@
+# Build directories
+build/
+_build/
+cmake-build-*/
+Debug/
+Release/
+
+# IDE directories
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+*.ko
+*.elf
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+
+# CUDA
+*.i
+*.ii
+*.gpu
+*.ptx
+*.cubin
+*.fatbin
+*.cu.deps
+*.cu.cache
+
+# Metal
+*.metallib
+*.air
+*.dSYM/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Testing/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+
+# Dependencies
+/deps/
+/third_party/
+
+# Generated files
+*.generated.h
+*.generated.c
+*.generated.cpp
+
+# Logs and databases
+*.log
+*.sqlite
+*.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Documentation
+docs/_build/
+docs/_static/
+docs/_templates/
+
+# Test results
+test-results/
+coverage/
+*.gcov
+*.gcda
+*.gcno
+
+# MPI generated files
+*.optrpt
+core.*
+
+# Environment
+.env
+.venv
+venv/
+ENV/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Venv
+venv311/*
+venv/*
