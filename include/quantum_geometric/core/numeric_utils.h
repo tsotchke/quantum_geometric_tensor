@@ -105,21 +105,23 @@ static inline double vector_norm_complex(const double complex* v, size_t n) {
 }
 
 // Matrix operations
-static inline void matrix_multiply(const double* a,
-                                 const double* b,
-                                 double* result,
-                                 size_t m,
-                                 size_t n,
-                                 size_t p) {
+static bool matrix_multiply(const ComplexFloat* a,
+                          const ComplexFloat* b,
+                          ComplexFloat* result,
+                          size_t m,
+                          size_t n,
+                          size_t p) {
     for (size_t i = 0; i < m; i++) {
         for (size_t j = 0; j < p; j++) {
-            double sum = 0.0;
+            ComplexFloat sum = complex_float_create(0.0f, 0.0f);
             for (size_t k = 0; k < n; k++) {
-                sum += a[i * n + k] * b[k * p + j];
+                sum = complex_float_add(sum, 
+                      complex_float_multiply(a[i * n + k], b[k * p + j]));
             }
             result[i * p + j] = sum;
         }
     }
+    return true;
 }
 
 // Quantum-specific operations

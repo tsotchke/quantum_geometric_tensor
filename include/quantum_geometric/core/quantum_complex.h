@@ -98,6 +98,27 @@ static inline ComplexFloat complex_float_sqrt(ComplexFloat a) {
     return c;
 }
 
+// Comparison operations
+static inline bool complex_float_equals(ComplexFloat a, ComplexFloat b) {
+    return a.real == b.real && a.imag == b.imag;
+}
+
+static inline bool complex_float_less_than(ComplexFloat a, ComplexFloat b) {
+    return complex_float_abs_squared(a) < complex_float_abs_squared(b);
+}
+
+static inline bool complex_float_greater_than(ComplexFloat a, ComplexFloat b) {
+    return complex_float_abs_squared(a) > complex_float_abs_squared(b);
+}
+
+static inline bool complex_float_less_equal(ComplexFloat a, ComplexFloat b) {
+    return complex_float_abs_squared(a) <= complex_float_abs_squared(b);
+}
+
+static inline bool complex_float_greater_equal(ComplexFloat a, ComplexFloat b) {
+    return complex_float_abs_squared(a) >= complex_float_abs_squared(b);
+}
+
 // Complex number operations (double precision)
 static inline ComplexDouble complex_double_create(double real, double imag) {
     ComplexDouble c = {real, imag};
@@ -162,12 +183,24 @@ static inline ComplexDouble complex_double_sqrt(ComplexDouble a) {
 }
 
 // Comparison operations
-static inline bool complex_float_equals(ComplexFloat a, ComplexFloat b) {
+static inline bool complex_double_equals(ComplexDouble a, ComplexDouble b) {
     return a.real == b.real && a.imag == b.imag;
 }
 
-static inline bool complex_double_equals(ComplexDouble a, ComplexDouble b) {
-    return a.real == b.real && a.imag == b.imag;
+static inline bool complex_double_less_than(ComplexDouble a, ComplexDouble b) {
+    return complex_double_abs_squared(a) < complex_double_abs_squared(b);
+}
+
+static inline bool complex_double_greater_than(ComplexDouble a, ComplexDouble b) {
+    return complex_double_abs_squared(a) > complex_double_abs_squared(b);
+}
+
+static inline bool complex_double_less_equal(ComplexDouble a, ComplexDouble b) {
+    return complex_double_abs_squared(a) <= complex_double_abs_squared(b);
+}
+
+static inline bool complex_double_greater_equal(ComplexDouble a, ComplexDouble b) {
+    return complex_double_abs_squared(a) >= complex_double_abs_squared(b);
 }
 
 // Conversion operations

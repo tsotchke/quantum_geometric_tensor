@@ -1,19 +1,18 @@
 #ifndef QUANTUM_GEOMETRIC_TYPES_H
 #define QUANTUM_GEOMETRIC_TYPES_H
 
-#include "quantum_geometric/hardware/quantum_hardware_types.h"
 #include "quantum_geometric/core/quantum_complex.h"
-#include "quantum_geometric/core/quantum_types.h"
 #include "quantum_geometric/core/error_codes.h"
+#include "quantum_geometric/hardware/quantum_hardware_types.h"
+#include "quantum_geometric/core/quantum_gate_operations.h"
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
-// Include stdio.h for FILE type
 #include <stdio.h>
 
+// Platform-specific optimizations
 #ifdef __APPLE__
-#include <Accelerate/Accelerate.h>
-#include <vecLib/vecLibTypes.h>
+#include "quantum_geometric/core/accelerate_wrapper.h"
 #endif
 
 // Error handling macros
@@ -152,9 +151,26 @@ typedef struct quantum_gate_t {
     size_t* control_qubits;
     size_t num_controls;
     bool is_controlled;
+    gate_type_t type;
+    double* parameters;
+    size_t num_parameters;
+    bool is_parameterized;
 } quantum_gate_t;
 
-#include "quantum_geometric/core/tensor_types.h"
+// Circuit layer structure
+typedef struct circuit_layer_t {
+    quantum_gate_t** gates;
+    size_t num_gates;
+    bool is_parameterized;
+} circuit_layer_t;
+
+// Quantum circuit structure
+typedef struct quantum_circuit_t {
+    circuit_layer_t** layers;
+    size_t num_layers;
+    size_t num_qubits;
+    bool is_parameterized;
+} quantum_circuit_t;
 
 // Process status
 typedef struct process_status_t {
@@ -416,3 +432,4 @@ struct quantum_geometric_curvature_t {
 };
 
 #endif // QUANTUM_GEOMETRIC_TYPES_H
+

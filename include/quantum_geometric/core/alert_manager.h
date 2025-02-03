@@ -66,7 +66,7 @@ typedef struct {
 typedef struct {
     notification_method_t method;  // Notification method
     char* recipient;               // Notification recipient
-    char* template;                // Message template
+    char* template_t;                // Message template
     bool batch_notifications;      // Batch notifications
     size_t batch_size;            // Batch size
     void* config_data;           // Additional config
