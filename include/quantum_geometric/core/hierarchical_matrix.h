@@ -125,10 +125,8 @@ bool truncate_singular_values(HierarchicalMatrix* matrix,
                             double threshold);
 
 // Decomposition operations
-bool compute_svd(HierarchicalMatrix* matrix,
-                double complex** U,
-                double complex** S,
-                double complex** V);
+void compute_svd(double complex* data, size_t rows, size_t cols,
+                double complex* U, double complex* S, double complex* V);
 bool compute_qr(HierarchicalMatrix* matrix,
                double complex** Q,
                double complex** R);
@@ -143,6 +141,9 @@ bool estimate_rank(const HierarchicalMatrix* matrix,
                   size_t* rank);
 bool compute_condition_number(const HierarchicalMatrix* matrix,
                             double* condition);
+
+// Matrix operations
+void hmatrix_transpose(HierarchicalMatrix* dst, const HierarchicalMatrix* src);
 
 // Quantum operations
 bool quantum_compress(HierarchicalMatrix* matrix,

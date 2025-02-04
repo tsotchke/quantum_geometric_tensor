@@ -1,10 +1,10 @@
 #include "quantum_geometric/core/hierarchical_matrix.h"
 #include "quantum_geometric/core/simd_operations.h"
+#include "quantum_geometric/core/numerical_backend.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <immintrin.h>
-#include <lapacke.h>
 
 // Original optimization constants
 #define MIN_MATRIX_SIZE 64
@@ -22,6 +22,21 @@
 // Runtime optimization selection - always enabled for performance
 static bool use_optimized_path = true;
 
+// Initialize numerical backend
+static bool init_backend(void) {
+    static bool initialized = false;
+    if (!initialized) {
+        numerical_config_t config = {
+            .type = NUMERICAL_BACKEND_ACCELERATE,
+            .max_threads = 8,
+            .use_fma = true,
+            .use_avx = true
+        };
+        initialized = initialize_numerical_backend(&config);
+    }
+    return initialized;
+}
+
 // Helper function to determine optimal execution path
 static bool should_use_optimized_path(size_t rows, size_t cols) {
     // Always use optimized path since we've validated it works well
@@ -38,140 +53,62 @@ static bool should_use_optimized_path(size_t rows, size_t cols) {
 // Helper functions for SVD and low-rank approximation
 static void compute_svd(double complex* data, size_t rows, size_t cols,
                        double complex* U, double complex* S, double complex* V) {
-    // Use adaptive blocking for large matrices
-    if (rows * cols > ADAPTIVE_BLOCK_SIZE) {
-        size_t block_size = sqrt(ADAPTIVE_BLOCK_SIZE);
-        size_t num_blocks_row = (rows + block_size - 1) / block_size;
-        size_t num_blocks_col = (cols + block_size - 1) / block_size;
-        
-        #pragma omp parallel for collapse(2)
-        for (size_t i = 0; i < num_blocks_row; i++) {
-            for (size_t j = 0; j < num_blocks_col; j++) {
-                size_t start_row = i * block_size;
-                size_t start_col = j * block_size;
-                size_t end_row = min(start_row + block_size, rows);
-                size_t end_col = min(start_col + block_size, cols);
-                
-                // Process each block independently
-                size_t block_rows = end_row - start_row;
-                size_t block_cols = end_col - start_col;
-                
-                lapack_complex_double* work = malloc(sizeof(lapack_complex_double) * block_rows * block_cols);
-                double* rwork = malloc(sizeof(double) * block_rows * block_cols);
-                lapack_int* iwork = malloc(sizeof(lapack_int) * block_rows * block_cols);
-                lapack_complex_double* a = malloc(sizeof(lapack_complex_double) * block_rows * block_cols);
-                
-                if (!work || !rwork || !iwork || !a) {
-                    free(work);
-                    free(rwork);
-                    free(iwork);
-                    free(a);
-                    printf("SVD workspace allocation failed for block\n");
-                    continue;
-                }
-                
-                // Copy block data
-                for (size_t r = 0; r < block_rows; r++) {
-                    for (size_t c = 0; c < block_cols; c++) {
-                        a[r * block_cols + c] = data[(start_row + r) * cols + (start_col + c)];
-                    }
-                }
-                
-                // Compute block SVD
-                double* superb = malloc(sizeof(double) * min(block_rows, block_cols));
-                if (!superb) {
-                    free(work);
-                    free(rwork);
-                    free(iwork);
-                    free(a);
-                    printf("SVD superb allocation failed\n");
-                    continue;
-                }
-
-                lapack_int info = LAPACKE_zgesvd(LAPACK_ROW_MAJOR, 'A', 'A',
-                                                block_rows, block_cols, a,
-                                                block_cols,
-                                                (double*)(S + start_row * block_cols),
-                                                (lapack_complex_double*)(U + start_row * block_cols),
-                                                block_cols,
-                                                (lapack_complex_double*)(V + start_col * block_cols),
-                                                block_cols,
-                                                superb);
-                
-                free(superb);
-                
-                free(work);
-                free(rwork);
-                free(iwork);
-                free(a);
-            }
-        }
-    } else {
-        // Original SVD for smaller matrices
-        lapack_complex_double* work = malloc(sizeof(lapack_complex_double) * rows * cols);
-        if (!work) {
-            printf("SVD workspace allocation failed\n");
-            return;
-        }
-        
-        double* rwork = malloc(sizeof(double) * rows * cols);
-        if (!rwork) {
-            free(work);
-            printf("SVD rwork allocation failed\n");
-            return;
-        }
-        
-        lapack_int* iwork = malloc(sizeof(lapack_int) * rows * cols);
-        if (!iwork) {
-            free(work);
-            free(rwork);
-            printf("SVD iwork allocation failed\n");
-            return;
-        }
-        
-        lapack_complex_double* a = malloc(sizeof(lapack_complex_double) * rows * cols);
-        if (!a) {
-            free(work);
-            free(rwork);
-            free(iwork);
-            printf("SVD matrix allocation failed\n");
-            return;
-        }
-        
-        #pragma omp parallel for if(rows * cols > 1024)
-        for (size_t i = 0; i < rows * cols; i++) {
-            a[i] = data[i];
-        }
-        
-        double* superb = malloc(sizeof(double) * min(rows, cols));
-        if (!superb) {
-            free(work);
-            free(rwork);
-            free(iwork);
-            free(a);
-            printf("SVD superb allocation failed\n");
-            return;
-        }
-
-        lapack_int info = LAPACKE_zgesvd(LAPACK_ROW_MAJOR, 'A', 'A',
-                                        rows, cols, a,
-                                        cols,
-                                        (double*)S,
-                                        (lapack_complex_double*)U, cols,
-                                        (lapack_complex_double*)V, cols,
-                                        superb);
-        
-        free(superb);
-        
-        if (info != 0) {
-            printf("SVD computation failed with error %d\n", info);
-        }
-        
-        free(work);
-        free(rwork);
-        free(iwork);
-        free(a);
+    // Initialize numerical backend
+    if (!init_backend()) {
+        printf("Failed to initialize numerical backend\n");
+        return;
     }
+    // Convert double complex to ComplexFloat
+    ComplexFloat* data_f = malloc(rows * cols * sizeof(ComplexFloat));
+    ComplexFloat* U_f = malloc(rows * rows * sizeof(ComplexFloat));
+    float* S_f = malloc(min(rows, cols) * sizeof(float));
+    ComplexFloat* VT_f = malloc(cols * cols * sizeof(ComplexFloat));
+    
+    if (!data_f || !U_f || !S_f || !VT_f) {
+        free(data_f);
+        free(U_f);
+        free(S_f);
+        free(VT_f);
+        printf("SVD memory allocation failed\n");
+        return;
+    }
+    
+    // Convert input data
+    for (size_t i = 0; i < rows * cols; i++) {
+        data_f[i].real = creal(data[i]);
+        data_f[i].imag = cimag(data[i]);
+    }
+    
+    // Compute SVD using numerical backend
+    if (!numerical_svd(data_f, U_f, S_f, VT_f, rows, cols)) {
+        printf("SVD computation failed\n");
+        free(data_f);
+        free(U_f);
+        free(S_f);
+        free(VT_f);
+        return;
+    }
+    
+    // Convert results back
+    for (size_t i = 0; i < rows * rows; i++) {
+        U[i] = U_f[i].real + I * U_f[i].imag;
+    }
+    
+    for (size_t i = 0; i < min(rows, cols); i++) {
+        S[i] = S_f[i];
+    }
+    
+    // VT_f is in row-major order, need to transpose while converting
+    for (size_t i = 0; i < cols; i++) {
+        for (size_t j = 0; j < cols; j++) {
+            V[i * cols + j] = VT_f[j * cols + i].real + I * VT_f[j * cols + i].imag;
+        }
+    }
+    
+    free(data_f);
+    free(U_f);
+    free(S_f);
+    free(VT_f);
 }
 
 // Original linear search implementation
