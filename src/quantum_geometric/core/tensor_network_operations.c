@@ -216,8 +216,18 @@ bool add_tensor_node(tensor_network_t* network,
     memcpy(node->dimensions, dimensions, num_dimensions * sizeof(size_t));
     
     node->num_dimensions = num_dimensions;
-    node->connected_nodes = NULL;
-    node->connected_dims = NULL;
+    // Initialize connection arrays with some capacity
+    node->connected_nodes = malloc(num_dimensions * sizeof(size_t));
+    node->connected_dims = malloc(num_dimensions * sizeof(size_t));
+    if (!node->connected_nodes || !node->connected_dims) {
+        free(node->connected_nodes);
+        free(node->connected_dims);
+        free(node->dimensions);
+        free(node->data);
+        free(node);
+        set_error(network, TENSOR_NETWORK_ERROR_MEMORY);
+        return false;
+    }
     node->num_connections = 0;
     node->id = network->next_id++;
     node->is_valid = true;

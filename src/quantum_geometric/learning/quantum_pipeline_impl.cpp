@@ -169,21 +169,27 @@ int quantum_pipeline_train_impl(void* pipeline, const float* data, const int* la
         const size_t batch_size = static_cast<size_t>(state->config[QG_CONFIG_BATCH_SIZE]);
         
         // Convert data to complex format
-        std::vector<ComplexFloat> complex_data(num_samples * static_cast<size_t>(state->config[QG_CONFIG_INPUT_DIM]));
-        for (size_t i = 0; i < complex_data.size(); i++) {
-            complex_data[i] = complex_float_create(data[i], 0.0f);
-        }
-        
-        // Create array of pointers for the learning task interface
+        const size_t input_dim = static_cast<size_t>(state->config[QG_CONFIG_INPUT_DIM]);
+        std::vector<std::vector<ComplexFloat>> complex_data(num_samples);
         std::vector<const ComplexFloat*> data_ptrs(num_samples);
         for (size_t i = 0; i < num_samples; i++) {
-            data_ptrs[i] = &complex_data[i * static_cast<size_t>(state->config[QG_CONFIG_INPUT_DIM])];
+            complex_data[i].resize(input_dim);
+            for (size_t j = 0; j < input_dim; j++) {
+                complex_data[i][j] = complex_float_create(data[i * input_dim + j], 0.0f);
+            }
+            data_ptrs[i] = complex_data[i].data();
+        }
+        
+        // Convert labels to complex format
+        std::vector<ComplexFloat> complex_labels(num_samples);
+        for (size_t i = 0; i < num_samples; i++) {
+            complex_labels[i] = complex_float_create(static_cast<float>(labels[i]), 0.0f);
         }
         
         // Train using learning task interface
         if (!quantum_train_task(state->learning_task, 
                               data_ptrs.data(),
-                              nullptr, // TODO: Convert labels to complex format if needed
+                              complex_labels.data(),
                               num_samples)) {
             return QG_ERROR_RUNTIME;
         }
@@ -232,22 +238,28 @@ int quantum_pipeline_evaluate_impl(void* pipeline, const float* data, const int*
         }
         
         // Convert data to complex format
-        std::vector<ComplexFloat> complex_data(num_samples * static_cast<size_t>(state->config[QG_CONFIG_INPUT_DIM]));
-        for (size_t i = 0; i < complex_data.size(); i++) {
-            complex_data[i] = complex_float_create(data[i], 0.0f);
-        }
-        
-        // Create array of pointers for the learning task interface
+        const size_t input_dim = static_cast<size_t>(state->config[QG_CONFIG_INPUT_DIM]);
+        std::vector<std::vector<ComplexFloat>> complex_data(num_samples);
         std::vector<const ComplexFloat*> data_ptrs(num_samples);
         for (size_t i = 0; i < num_samples; i++) {
-            data_ptrs[i] = &complex_data[i * static_cast<size_t>(state->config[QG_CONFIG_INPUT_DIM])];
+            complex_data[i].resize(input_dim);
+            for (size_t j = 0; j < input_dim; j++) {
+                complex_data[i][j] = complex_float_create(data[i * input_dim + j], 0.0f);
+            }
+            data_ptrs[i] = complex_data[i].data();
         }
         
+        // Convert labels to complex format
+        std::vector<ComplexFloat> complex_labels(num_samples);
+        for (size_t i = 0; i < num_samples; i++) {
+            complex_labels[i] = complex_float_create(static_cast<float>(labels[i]), 0.0f);
+        }
+
         // Evaluate using learning task interface
         task_metrics_t task_metrics;
         if (!quantum_evaluate_task(state->learning_task,
                                  data_ptrs.data(),
-                                 nullptr, // TODO: Convert labels to complex format if needed
+                                 complex_labels.data(),
                                  num_samples,
                                  &task_metrics)) {
             return QG_ERROR_RUNTIME;

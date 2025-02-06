@@ -6,6 +6,18 @@
 // Include system headers
 #include <TargetConditionals.h>
 
+// CBLAS enum definitions - moved to global scope
+enum CBLAS_ORDER {
+    CblasRowMajor = 101,
+    CblasColMajor = 102
+};
+
+enum CBLAS_TRANSPOSE {
+    CblasNoTrans = 111,
+    CblasTrans = 112,
+    CblasConjTrans = 113
+};
+
 // Forward declarations for Accelerate types we need
 typedef struct {
     float real;
@@ -26,7 +38,6 @@ typedef double __CLPK_doublereal;
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 #endif
 
-// Function declarations for LAPACK routines
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -39,8 +50,7 @@ int cgesvd_(char* jobu, char* jobvt,
             __CLPK_complex* u, __CLPK_integer* ldu,
             __CLPK_complex* vt, __CLPK_integer* ldvt,
             __CLPK_complex* work, __CLPK_integer* lwork,
-            __CLPK_real* rwork,
-            __CLPK_integer* info);
+            __CLPK_real* rwork, __CLPK_integer* info);
 
 // Double precision SVD
 int zgesvd_(char* jobu, char* jobvt,
@@ -54,18 +64,18 @@ int zgesvd_(char* jobu, char* jobvt,
             __CLPK_integer* info);
 
 // Single precision matrix multiply
-void cblas_cgemm(const enum CBLAS_ORDER Order,
-                 const enum CBLAS_TRANSPOSE TransA,
-                 const enum CBLAS_TRANSPOSE TransB,
+void cblas_cgemm(enum CBLAS_ORDER Order,
+                 enum CBLAS_TRANSPOSE TransA,
+                 enum CBLAS_TRANSPOSE TransB,
                  const int M, const int N, const int K,
                  const void* alpha, const void* A, const int lda,
                  const void* B, const int ldb, const void* beta,
                  void* C, const int ldc);
 
 // Double precision matrix multiply
-void cblas_zgemm(const enum CBLAS_ORDER Order,
-                 const enum CBLAS_TRANSPOSE TransA,
-                 const enum CBLAS_TRANSPOSE TransB,
+void cblas_zgemm(enum CBLAS_ORDER Order,
+                 enum CBLAS_TRANSPOSE TransA,
+                 enum CBLAS_TRANSPOSE TransB,
                  const int M, const int N, const int K,
                  const void* alpha, const void* A, const int lda,
                  const void* B, const int ldb, const void* beta,
@@ -121,18 +131,6 @@ void vDSP_zrvmul(const float* __A, __CLPK_integer __IA,
     if (ptr == NULL) { \
         return false; \
     }
-
-// CBLAS enum definitions
-typedef enum CBLAS_ORDER {
-    CblasRowMajor = 101,
-    CblasColMajor = 102
-} CBLAS_ORDER;
-
-typedef enum CBLAS_TRANSPOSE {
-    CblasNoTrans = 111,
-    CblasTrans = 112,
-    CblasConjTrans = 113
-} CBLAS_TRANSPOSE;
 
 #endif // __APPLE__
 

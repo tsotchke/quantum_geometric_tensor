@@ -90,6 +90,26 @@ bool set_gradient_options(const gradient_options_t* options);
  */
 bool get_gradient_options(gradient_options_t* options);
 
+/**
+ * @brief Compute higher order gradient using multiple shifts
+ * 
+ * @param qgtn The quantum geometric tensor network
+ * @param param_idx Index of the parameter
+ * @param shift_amounts Array of shift amounts
+ * @param num_shifts Number of shifts
+ * @param gradient Output pointer to gradient array (caller must free)
+ * @param dimension Output dimension of gradient array
+ * @return true if successful, false otherwise
+ */
+bool compute_higher_order_gradient(
+    const quantum_geometric_tensor_network_t* qgtn,
+    size_t param_idx,
+    const double* shift_amounts,
+    size_t num_shifts,
+    ComplexFloat** gradient,
+    size_t* dimension
+);
+
 #ifdef __cplusplus
 }
 #endif

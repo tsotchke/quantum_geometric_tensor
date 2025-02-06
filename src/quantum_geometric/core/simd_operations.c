@@ -14,14 +14,6 @@
 #include <immintrin.h>
 #endif
 
-// Cache line size for alignment
-#define CACHE_LINE_SIZE 64
-
-// Align data to cache line boundary
-static inline void* align_ptr(void* ptr) {
-    return (void*)(((uintptr_t)ptr + CACHE_LINE_SIZE - 1) & ~(CACHE_LINE_SIZE - 1));
-}
-
 void simd_complex_copy(ComplexFloat* dest,
                       const ComplexFloat* src,
                       size_t count) {
@@ -643,7 +635,7 @@ void simd_tensor_contract(ComplexFloat* result,
     // Calculate output dimensions
     size_t free_dims_a = rank_a - num_indices;
     size_t free_dims_b = rank_b - num_indices;
-    
+
     // Calculate block size for efficient SIMD processing
     size_t block_size = 1;
 #ifdef __AVX512F__
@@ -651,6 +643,8 @@ void simd_tensor_contract(ComplexFloat* result,
 #elif defined(__ARM_NEON)
     block_size = 4;  // Process 4 complex numbers at a time
 #endif
+    // Use contract_size for block processing
+    block_size = min(block_size, contract_size);
 
     // Perform blocked contraction
     simd_tensor_contract_block(result, a, b, block_size, free_dims_a, free_dims_b);
@@ -822,15 +816,12 @@ void simd_tensor_transpose(ComplexFloat* result,
             dst_idx += coords[j] * new_strides[j];
         }
 
-        // Check if next 8 elements are contiguous in both source and destination
-        bool contiguous = true;
-        for (size_t k = 1; k < 8; k++) {
-            size_t next_src = src_idx + k;
-            size_t next_dst = dst_idx + k;
-            
-            // Update coordinates
-            size_t tmp = i + k;
-            for (int j = rank - 1; j >= 0; j--) {
+            // Check if next 8 elements are contiguous in both source and destination
+            bool contiguous = true;
+            for (size_t k = 1; k < 8; k++) {
+                // Update coordinates
+                size_t tmp = i + k;
+                for (int j = rank - 1; j >= 0; j--) {
                 size_t next_coord = (coords[j] + tmp % dimensions[j]) % dimensions[j];
                 tmp /= dimensions[j];
                 
@@ -875,9 +866,6 @@ void simd_tensor_transpose(ComplexFloat* result,
         // Check if next 4 elements are contiguous in both source and destination
         bool contiguous = true;
         for (size_t k = 1; k < 4; k++) {
-            size_t next_src = src_idx + k;
-            size_t next_dst = dst_idx + k;
-            
             // Update coordinates
             size_t tmp = i + k;
             for (int j = rank - 1; j >= 0; j--) {

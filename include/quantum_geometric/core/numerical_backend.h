@@ -1,5 +1,5 @@
-#ifndef NUMERICAL_BACKEND_H
-#define NUMERICAL_BACKEND_H
+#ifndef QUANTUM_GEOMETRIC_NUMERICAL_BACKEND_H
+#define QUANTUM_GEOMETRIC_NUMERICAL_BACKEND_H
 
 #include "quantum_geometric/core/quantum_complex.h"
 #include <stddef.h>
@@ -81,6 +81,39 @@ bool numerical_eigendecomposition(const ComplexFloat* a,
                                 ComplexFloat* eigenvalues,
                                 size_t n);
 
+bool numerical_cholesky(const ComplexFloat* a,
+                       ComplexFloat* l,
+                       size_t n,
+                       bool lower_triangular);
+
+bool numerical_lu(const ComplexFloat* a,
+                 ComplexFloat* l,
+                 ComplexFloat* u,
+                 int* ipiv,
+                 size_t m,
+                 size_t n);
+
+bool numerical_solve_triangular(const ComplexFloat* a,
+                              const ComplexFloat* b,
+                              ComplexFloat* x,
+                              size_t n,
+                              size_t nrhs,
+                              bool upper_triangular,
+                              bool unit_diagonal);
+
+bool numerical_solve_symmetric(const ComplexFloat* a,
+                             const ComplexFloat* b,
+                             ComplexFloat* x,
+                             size_t n,
+                             size_t nrhs,
+                             bool positive_definite);
+
+bool numerical_solve_general(const ComplexFloat* a,
+                           const ComplexFloat* b,
+                           ComplexFloat* x,
+                           size_t n,
+                           size_t nrhs);
+
 // Tensor operations
 bool numerical_tensor_contract(const ComplexFloat* a,
                              const ComplexFloat* b,
@@ -155,10 +188,54 @@ bool numerical_svd_accelerate(const ComplexFloat* a,
                             size_t m,
                             size_t n);
 
+bool numerical_qr_accelerate(const ComplexFloat* a,
+                           ComplexFloat* q,
+                           ComplexFloat* r,
+                           size_t m,
+                           size_t n);
+
+bool numerical_eigendecomposition_accelerate(const ComplexFloat* a,
+                                           ComplexFloat* eigenvectors,
+                                           ComplexFloat* eigenvalues,
+                                           size_t n);
+
+bool numerical_cholesky_accelerate(const ComplexFloat* a,
+                                 ComplexFloat* l,
+                                 size_t n,
+                                 bool lower_triangular);
+
+bool numerical_lu_accelerate(const ComplexFloat* a,
+                           ComplexFloat* l,
+                           ComplexFloat* u,
+                           int* ipiv,
+                           size_t m,
+                           size_t n);
+
+bool numerical_solve_triangular_accelerate(const ComplexFloat* a,
+                                         const ComplexFloat* b,
+                                         ComplexFloat* x,
+                                         size_t n,
+                                         size_t nrhs,
+                                         bool upper_triangular,
+                                         bool unit_diagonal);
+
+bool numerical_solve_symmetric_accelerate(const ComplexFloat* a,
+                                        const ComplexFloat* b,
+                                        ComplexFloat* x,
+                                        size_t n,
+                                        size_t nrhs,
+                                        bool positive_definite);
+
+bool numerical_solve_general_accelerate(const ComplexFloat* a,
+                                      const ComplexFloat* b,
+                                      ComplexFloat* x,
+                                      size_t n,
+                                      size_t nrhs);
+
 bool get_numerical_metrics_accelerate(numerical_metrics_t* metrics);
 bool reset_numerical_metrics_accelerate(void);
 numerical_error_t get_last_numerical_error_accelerate(void);
-#endif
+#endif // __APPLE__
 
 // CPU backend function declarations
 bool numerical_matrix_multiply_cpu(const ComplexFloat* a,
@@ -186,8 +263,52 @@ bool numerical_svd_cpu(const ComplexFloat* a,
                       size_t m,
                       size_t n);
 
+bool numerical_qr_cpu(const ComplexFloat* a,
+                     ComplexFloat* q,
+                     ComplexFloat* r,
+                     size_t m,
+                     size_t n);
+
+bool numerical_eigendecomposition_cpu(const ComplexFloat* a,
+                                    ComplexFloat* eigenvectors,
+                                    ComplexFloat* eigenvalues,
+                                    size_t n);
+
+bool numerical_cholesky_cpu(const ComplexFloat* a,
+                          ComplexFloat* l,
+                          size_t n,
+                          bool lower_triangular);
+
+bool numerical_lu_cpu(const ComplexFloat* a,
+                     ComplexFloat* l,
+                     ComplexFloat* u,
+                     int* ipiv,
+                     size_t m,
+                     size_t n);
+
+bool numerical_solve_triangular_cpu(const ComplexFloat* a,
+                                  const ComplexFloat* b,
+                                  ComplexFloat* x,
+                                  size_t n,
+                                  size_t nrhs,
+                                  bool upper_triangular,
+                                  bool unit_diagonal);
+
+bool numerical_solve_symmetric_cpu(const ComplexFloat* a,
+                                 const ComplexFloat* b,
+                                 ComplexFloat* x,
+                                 size_t n,
+                                 size_t nrhs,
+                                 bool positive_definite);
+
+bool numerical_solve_general_cpu(const ComplexFloat* a,
+                               const ComplexFloat* b,
+                               ComplexFloat* x,
+                               size_t n,
+                               size_t nrhs);
+
 bool get_numerical_metrics_cpu(numerical_metrics_t* metrics);
 bool reset_numerical_metrics_cpu(void);
 numerical_error_t get_last_numerical_error_cpu(void);
 
-#endif // NUMERICAL_BACKEND_H
+#endif // QUANTUM_GEOMETRIC_NUMERICAL_BACKEND_H

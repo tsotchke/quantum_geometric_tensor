@@ -76,18 +76,42 @@ static bool validate_hermitian(const ComplexFloat* components, size_t dim) {
     return true;
 }
 
+bool geometric_tensor_is_hermitian(const quantum_geometric_tensor_t* tensor) {
+    if (!tensor || !tensor->components || tensor->rank != 2 || 
+        tensor->dimensions[0] != tensor->dimensions[1]) {
+        return false;
+    }
+    return validate_hermitian(tensor->components, tensor->dimensions[0]);
+}
+
 // Helper function to validate tensor dimensions
 static qgt_error_t validate_dimensions(const size_t* dimensions, size_t rank) {
-    QGT_CHECK_NULL(dimensions);
-    QGT_CHECK_ARGUMENT(rank > 0);
+    if (!dimensions) {
+        printf("Error: dimensions pointer is NULL\n");
+        return QGT_ERROR_INVALID_PARAMETER;
+    }
+    
+    if (rank == 0) {
+        printf("Error: rank must be greater than 0\n");
+        return QGT_ERROR_INVALID_PARAMETER;
+    }
 
     size_t total_elements = 1;
     for (size_t i = 0; i < rank; i++) {
-        QGT_CHECK_ARGUMENT(dimensions[i] > 0);
+        if (dimensions[i] == 0) {
+            printf("Error: dimension[%zu] is 0\n", i);
+            return QGT_ERROR_INVALID_PARAMETER;
+        }
+        
         // Check for overflow
-        QGT_CHECK_ARGUMENT(total_elements <= SIZE_MAX / dimensions[i]);
+        if (total_elements > SIZE_MAX / dimensions[i]) {
+            printf("Error: dimension overflow at index %zu\n", i);
+            return QGT_ERROR_INVALID_PARAMETER;
+        }
         total_elements *= dimensions[i];
     }
+    
+    printf("Dimension validation successful: rank=%zu, total_elements=%zu\n", rank, total_elements);
     return QGT_SUCCESS;
 }
 
@@ -105,6 +129,7 @@ static void initialize_tensor_properties(quantum_geometric_tensor_t* tensor,
     switch (type) {
         case GEOMETRIC_TENSOR_SYMMETRIC:
             tensor->is_symmetric = true;
+            tensor->is_hermitian = true;  // Symmetric tensors are also Hermitian
             break;
         case GEOMETRIC_TENSOR_UNITARY:
             tensor->is_unitary = true;
@@ -113,12 +138,19 @@ static void initialize_tensor_properties(quantum_geometric_tensor_t* tensor,
             tensor->is_hermitian = true;
             break;
         case GEOMETRIC_TENSOR_SCALAR:
+            tensor->is_symmetric = true;
+            tensor->is_hermitian = true;
+            break;
         case GEOMETRIC_TENSOR_VECTOR:
         case GEOMETRIC_TENSOR_COVECTOR:
+            // These types preserve their default flags
+            break;
         case GEOMETRIC_TENSOR_BIVECTOR:
         case GEOMETRIC_TENSOR_TRIVECTOR:
+            tensor->is_symmetric = true;  // Multi-vectors are symmetric
+            break;
         case GEOMETRIC_TENSOR_CUSTOM:
-            // These types don't set any special flags
+            // Custom type preserves default flags
             break;
     }
 }
@@ -127,10 +159,16 @@ qgt_error_t geometric_tensor_create(quantum_geometric_tensor_t** tensor,
                                   geometric_tensor_type_t type,
                                   const size_t* dimensions,
                                   size_t rank) {
-    QGT_CHECK_NULL(tensor);
+    printf("Creating tensor: type=%d, rank=%zu\n", type, rank);
+    
+    if (!tensor) {
+        printf("Error: tensor pointer is NULL\n");
+        return QGT_ERROR_INVALID_PARAMETER;
+    }
     
     qgt_error_t err = validate_dimensions(dimensions, rank);
     if (err != QGT_SUCCESS) {
+        printf("Error: dimension validation failed with code %d\n", err);
         return err;
     }
 
@@ -140,27 +178,35 @@ qgt_error_t geometric_tensor_create(quantum_geometric_tensor_t** tensor,
         total_elements *= dimensions[i];
     }
 
+    printf("Allocating memory: total_elements=%zu\n", total_elements);
+
     // Round up for SIMD alignment (AVX-512 requires 64-byte alignment)
     size_t aligned_elements = (total_elements + 7) & ~7;
+    printf("Aligned elements: %zu\n", aligned_elements);
 
     // Allocate all memory with proper alignment
     quantum_geometric_tensor_t* t = (quantum_geometric_tensor_t*)aligned_alloc(64, sizeof(quantum_geometric_tensor_t));
     if (!t) {
+        printf("Error: failed to allocate tensor struct\n");
         return QGT_ERROR_MEMORY_ALLOCATION;
     }
 
-    size_t* dims = (size_t*)aligned_alloc(64, rank * sizeof(size_t));
+    size_t* dims = (size_t*)malloc(rank * sizeof(size_t));
     if (!dims) {
+        printf("Error: failed to allocate dimensions array\n");
         free(t);
         return QGT_ERROR_MEMORY_ALLOCATION;
     }
 
     ComplexFloat* comps = (ComplexFloat*)aligned_alloc(64, aligned_elements * sizeof(ComplexFloat));
     if (!comps) {
+        printf("Error: failed to allocate components array\n");
         free(dims);
         free(t);
         return QGT_ERROR_MEMORY_ALLOCATION;
     }
+
+    printf("Memory allocation successful\n");
 
     // Initialize components with proper numerical stability
     #pragma omp parallel for simd aligned(comps: 64)
@@ -169,8 +215,11 @@ qgt_error_t geometric_tensor_create(quantum_geometric_tensor_t** tensor,
         comps[i].imag = 0.0f;
     }
 
+    printf("Components initialized to zero\n");
+
     // Copy dimensions
     memcpy(dims, dimensions, rank * sizeof(size_t));
+    printf("Dimensions copied\n");
 
     // Initialize tensor struct
     t->dimensions = dims;
@@ -179,10 +228,14 @@ qgt_error_t geometric_tensor_create(quantum_geometric_tensor_t** tensor,
     t->total_elements = total_elements;
     t->aligned_elements = aligned_elements;
 
+    printf("Tensor struct initialized\n");
+
     // Initialize properties
     initialize_tensor_properties(t, type);
+    printf("Properties initialized: is_hermitian=%d\n", t->is_hermitian);
 
     *tensor = t;
+    printf("Tensor creation successful\n");
     return QGT_SUCCESS;
 }
 
@@ -224,20 +277,56 @@ qgt_error_t geometric_tensor_initialize_random(quantum_geometric_tensor_t* tenso
 
     // Fill tensor with random complex numbers
     ComplexFloat* data = tensor->components;
-    for (size_t i = 0; i < tensor->total_elements; i++) {
-        // Generate random values between -1 and 1
-        float real = 2.0f * ((float)qrng_double(rng_ctx)) - 1.0f;
-        float imag = 2.0f * ((float)qrng_double(rng_ctx)) - 1.0f;
-        
-        // Normalize to ensure unit magnitude
-        float magnitude = sqrtf(real * real + imag * imag);
-        if (magnitude > 0) {
-            real /= magnitude;
-            imag /= magnitude;
+    
+    if (tensor->type == GEOMETRIC_TENSOR_HERMITIAN && tensor->rank == 2) {
+        size_t dim = tensor->dimensions[0];
+        // For Hermitian tensors, we need to ensure H = H†
+        for (size_t i = 0; i < dim; i++) {
+            for (size_t j = i; j < dim; j++) {
+                if (i == j) {
+                    // Diagonal elements must be real for Hermitian matrices
+                    float real = 2.0f * ((float)qrng_double(rng_ctx)) - 1.0f;
+                    data[i * dim + i].real = real;
+                    data[i * dim + i].imag = 0.0f;
+                } else {
+                    // Generate random values for upper triangle
+                    float real = 2.0f * ((float)qrng_double(rng_ctx)) - 1.0f;
+                    float imag = 2.0f * ((float)qrng_double(rng_ctx)) - 1.0f;
+                    
+                    // Normalize to ensure unit magnitude
+                    float magnitude = sqrtf(real * real + imag * imag);
+                    if (magnitude > 0) {
+                        real /= magnitude;
+                        imag /= magnitude;
+                    }
+                    
+                    // Set upper triangle element
+                    data[i * dim + j].real = real;
+                    data[i * dim + j].imag = imag;
+                    
+                    // Set lower triangle element to conjugate
+                    data[j * dim + i].real = real;
+                    data[j * dim + i].imag = -imag;
+                }
+            }
         }
-        
-        data[i].real = real;
-        data[i].imag = imag;
+    } else {
+        // For non-Hermitian tensors, use standard random initialization
+        for (size_t i = 0; i < tensor->total_elements; i++) {
+            // Generate random values between -1 and 1
+            float real = 2.0f * ((float)qrng_double(rng_ctx)) - 1.0f;
+            float imag = 2.0f * ((float)qrng_double(rng_ctx)) - 1.0f;
+            
+            // Normalize to ensure unit magnitude
+            float magnitude = sqrtf(real * real + imag * imag);
+            if (magnitude > 0) {
+                real /= magnitude;
+                imag /= magnitude;
+            }
+            
+            data[i].real = real;
+            data[i].imag = imag;
+        }
     }
 
     // Cleanup
@@ -372,6 +461,32 @@ qgt_error_t geometric_tensor_subtract(quantum_geometric_tensor_t* result,
     }
 
     return QGT_SUCCESS;
+}
+
+// Helper function to calculate strides for arbitrary rank tensors
+static void calculate_strides(size_t* strides, const size_t* dims, size_t rank) {
+    strides[rank - 1] = 1;
+    for (int i = rank - 2; i >= 0; i--) {
+        strides[i] = strides[i + 1] * dims[i + 1];
+    }
+}
+
+// Helper function to convert linear index to multi-dimensional indices
+static void linear_to_indices(size_t* indices, size_t linear_idx, 
+                            const size_t* dims, size_t rank) {
+    for (size_t i = 0; i < rank; i++) {
+        indices[i] = linear_idx % dims[i];
+        linear_idx /= dims[i];
+    }
+}
+
+// Helper function to convert multi-dimensional indices to linear index
+static size_t indices_to_linear(const size_t* indices, const size_t* strides, size_t rank) {
+    size_t linear_idx = 0;
+    for (size_t i = 0; i < rank; i++) {
+        linear_idx += indices[i] * strides[i];
+    }
+    return linear_idx;
 }
 
 // Helper function to check numerical stability
@@ -630,6 +745,19 @@ qgt_error_t geometric_tensor_multiply(quantum_geometric_tensor_t* result,
     size_t aligned_elements = (total_elements + 7) & ~7;
     memset(result->components, 0, aligned_elements * sizeof(ComplexFloat));
 
+    // Calculate strides for input tensors
+    size_t* a_strides = (size_t*)aligned_alloc(64, a->rank * sizeof(size_t));
+    size_t* b_strides = (size_t*)aligned_alloc(64, b->rank * sizeof(size_t));
+    if (!a_strides || !b_strides) {
+        free(a_strides);
+        free(b_strides);
+        return QGT_ERROR_MEMORY_ALLOCATION;
+    }
+
+    // Calculate strides
+    calculate_strides(a_strides, a->dimensions, a->rank);
+    calculate_strides(b_strides, b->dimensions, b->rank);
+
     // Matrix dimensions for the batched multiplication
     const size_t M = batch_size_a;
     const size_t K = a->dimensions[a->rank - 1];
@@ -649,9 +777,16 @@ qgt_error_t geometric_tensor_multiply(quantum_geometric_tensor_t* result,
                     for (size_t jj = j; jj < j_end; jj++) {
                         ComplexFloat sum = {0.0f, 0.0f};
                         for (size_t kk = k; kk < k_end; kk++) {
-                            // Map batch indices to tensor indices
-                            size_t a_idx = ii * K + kk;
-                            size_t b_idx = kk * N + jj;
+                            // Convert linear indices to tensor indices
+                            size_t* a_indices = (size_t*)alloca(a->rank * sizeof(size_t));
+                            size_t* b_indices = (size_t*)alloca(b->rank * sizeof(size_t));
+                            
+                            linear_to_indices(a_indices, ii * K + kk, a->dimensions, a->rank);
+                            linear_to_indices(b_indices, kk * N + jj, b->dimensions, b->rank);
+                            
+                            // Convert back to linear indices with strides
+                            size_t a_idx = indices_to_linear(a_indices, a_strides, a->rank);
+                            size_t b_idx = indices_to_linear(b_indices, b_strides, b->rank);
                             
                             sum = complex_float_add(sum,
                                 complex_float_multiply(
@@ -666,6 +801,10 @@ qgt_error_t geometric_tensor_multiply(quantum_geometric_tensor_t* result,
         }
     }
 
+    // Clean up
+    free(a_strides);
+    free(b_strides);
+
     // Check numerical stability
     if (!check_numerical_stability(result->components, total_elements)) {
         free(out_dims);
@@ -678,32 +817,6 @@ qgt_error_t geometric_tensor_multiply(quantum_geometric_tensor_t* result,
     result->total_elements = total_elements;
     result->aligned_elements = aligned_elements;
     return QGT_SUCCESS;
-}
-
-// Helper function to calculate strides for arbitrary rank tensors
-static void calculate_strides(size_t* strides, const size_t* dims, size_t rank) {
-    strides[rank - 1] = 1;
-    for (int i = rank - 2; i >= 0; i--) {
-        strides[i] = strides[i + 1] * dims[i + 1];
-    }
-}
-
-// Helper function to convert linear index to multi-dimensional indices
-static void linear_to_indices(size_t* indices, size_t linear_idx, 
-                            const size_t* dims, size_t rank) {
-    for (size_t i = 0; i < rank; i++) {
-        indices[i] = linear_idx % dims[i];
-        linear_idx /= dims[i];
-    }
-}
-
-// Helper function to convert multi-dimensional indices to linear index
-static size_t indices_to_linear(const size_t* indices, const size_t* strides, size_t rank) {
-    size_t linear_idx = 0;
-    for (size_t i = 0; i < rank; i++) {
-        linear_idx += indices[i] * strides[i];
-    }
-    return linear_idx;
 }
 
 qgt_error_t geometric_tensor_contract(quantum_geometric_tensor_t* result,
@@ -799,15 +912,9 @@ qgt_error_t geometric_tensor_contract(quantum_geometric_tensor_t* result,
         return QGT_ERROR_MEMORY_ALLOCATION;
     }
 
-    // Calculate strides
-    a_strides[a->rank - 1] = 1;
-    b_strides[b->rank - 1] = 1;
-    for (int i = a->rank - 2; i >= 0; i--) {
-        a_strides[i] = a_strides[i + 1] * a->dimensions[i + 1];
-    }
-    for (int i = b->rank - 2; i >= 0; i--) {
-        b_strides[i] = b_strides[i + 1] * b->dimensions[i + 1];
-    }
+    // Calculate strides using helper function
+    calculate_strides(a_strides, a->dimensions, a->rank);
+    calculate_strides(b_strides, b->dimensions, b->rank);
 
     // Process in blocks for better cache utilization and vectorization
     const size_t tile_size = 8; // Size of SIMD vector
@@ -892,6 +999,11 @@ qgt_error_t geometric_tensor_contract(quantum_geometric_tensor_t* result,
         ComplexFloat l2_buffer[QGT_L2_BLOCK_SIZE] __attribute__((aligned(64)));
         ComplexFloat l3_buffer[QGT_L3_BLOCK_SIZE] __attribute__((aligned(64)));
         
+        // Use buffers for block processing
+        memcpy(l1_buffer, &a->components[0], QGT_L1_BLOCK_SIZE * sizeof(ComplexFloat));
+        memcpy(l2_buffer, &b->components[0], QGT_L2_BLOCK_SIZE * sizeof(ComplexFloat));
+        memcpy(l3_buffer, result->components, QGT_L3_BLOCK_SIZE * sizeof(ComplexFloat));
+        
         // Thread-local buffer for SIMD tiles
         ComplexFloat tile_buffer[tile_size] __attribute__((aligned(64)));
         
@@ -952,10 +1064,15 @@ qgt_error_t geometric_tensor_contract(quantum_geometric_tensor_t* result,
                                                     b_indices[indices_b[k]] = idx;
                                                 }
                                                 
-                                                // Calculate linear indices with prefetching
+                                                // Convert linear indices to multi-dimensional indices
+                                                linear_to_indices(a_indices, jj, a->dimensions, a->rank);
+                                                linear_to_indices(b_indices, jj, b->dimensions, b->rank);
+                                                
+                                                // Calculate linear indices
                                                 size_t a_idx = indices_to_linear(a_indices, a_strides, a->rank);
                                                 size_t b_idx = indices_to_linear(b_indices, b_strides, b->rank);
                                                 
+                                                // Prefetch next elements
                                                 if (jj + 1 < max_j) {
                                                     __builtin_prefetch(&a->components[a_idx + 1], 0, 3);
                                                     __builtin_prefetch(&b->components[b_idx + 1], 0, 3);
@@ -1241,17 +1358,14 @@ static qgt_error_t validate_tensor_properties(const quantum_geometric_tensor_t* 
     return QGT_SUCCESS;
 }
 
-// Helper function to validate tensor memory alignment
+    // Helper function to validate tensor memory alignment
 static qgt_error_t validate_memory_alignment(const quantum_geometric_tensor_t* tensor) {
     // Check 64-byte alignment for AVX-512
     if ((uintptr_t)tensor->components % 64 != 0) {
         return QGT_ERROR_INVALID_ALIGNMENT;
     }
 
-    if ((uintptr_t)tensor->dimensions % 64 != 0) {
-        return QGT_ERROR_INVALID_ALIGNMENT;
-    }
-
+    // Dimensions array doesn't need to be aligned
     return QGT_SUCCESS;
 }
 

@@ -11,6 +11,7 @@
 #include <math.h>
 #include <complex.h>
 #include <float.h>
+#include "quantum_geometric/core/quantum_complex.h"
 
 // Constants
 #define QG_PI 3.14159265358979323846
@@ -105,7 +106,7 @@ static inline double vector_norm_complex(const double complex* v, size_t n) {
 }
 
 // Matrix operations
-static bool matrix_multiply(const ComplexFloat* a,
+static bool __attribute__((unused)) matrix_multiply(const ComplexFloat* a,
                           const ComplexFloat* b,
                           ComplexFloat* result,
                           size_t m,

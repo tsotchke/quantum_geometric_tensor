@@ -1,6 +1,7 @@
 #include "quantum_geometric/core/quantum_gate_operations.h"
 #include "quantum_geometric/core/numerical_backend.h"
 #include "quantum_geometric/core/error_handling.h"
+#include "quantum_geometric/core/numeric_utils.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -132,25 +133,91 @@ static void compute_controlled_matrix(
     ComplexFloat* controlled_matrix) {
     
     size_t dim = 1 << num_qubits;
-    size_t base_dim = 2;  // Base matrices are 2x2
     
-    // Initialize to identity
+    // Create control projector |1⟩⟨1|
+    ComplexFloat* control_proj = malloc(4 * sizeof(ComplexFloat));
+    control_proj[0] = (ComplexFloat){0, 0};
+    control_proj[1] = (ComplexFloat){0, 0};
+    control_proj[2] = (ComplexFloat){0, 0};
+    control_proj[3] = (ComplexFloat){1, 0};
+    
+    // Create identity matrix
+    ComplexFloat* identity = malloc(4 * sizeof(ComplexFloat));
+    identity[0] = (ComplexFloat){1, 0};
+    identity[1] = (ComplexFloat){0, 0};
+    identity[2] = (ComplexFloat){0, 0};
+    identity[3] = (ComplexFloat){1, 0};
+    
+    // Compute |0⟩⟨0| ⊗ I + |1⟩⟨1| ⊗ U
+    ComplexFloat* temp = malloc(dim * dim * sizeof(ComplexFloat));
+    
+    // First term: (I - |1⟩⟨1|) ⊗ I
     for (size_t i = 0; i < dim * dim; i++) {
         controlled_matrix[i] = (ComplexFloat){0, 0};
     }
-    for (size_t i = 0; i < dim; i++) {
+    for (size_t i = 0; i < dim/2; i++) {
         controlled_matrix[i * dim + i] = (ComplexFloat){1, 0};
     }
     
-    // Add controlled operation
-    size_t control_mask = (1 << (num_qubits - 1)) - 1;
-    for (size_t i = 0; i < base_dim; i++) {
-        for (size_t j = 0; j < base_dim; j++) {
-            size_t ii = control_mask | (i << (num_qubits - 1));
-            size_t jj = control_mask | (j << (num_qubits - 1));
-            controlled_matrix[ii * dim + jj] = base_matrix[i * base_dim + j];
+    // Second term: |1⟩⟨1| ⊗ U
+    matrix_multiply(control_proj, base_matrix, temp, 2, 2, 2);
+    
+    // Add the terms
+    for (size_t i = dim/2; i < dim; i++) {
+        for (size_t j = dim/2; j < dim; j++) {
+            controlled_matrix[i * dim + j] = base_matrix[(i-dim/2) * 2 + (j-dim/2)];
         }
     }
+    
+    free(control_proj);
+    free(identity);
+    free(temp);
+}
+
+// Create a deep copy of a quantum gate
+quantum_gate_t* copy_quantum_gate(const quantum_gate_t* gate) {
+    if (!gate) return NULL;
+    
+    quantum_gate_t* new_gate = malloc(sizeof(quantum_gate_t));
+    if (!new_gate) return NULL;
+    
+    // Copy basic fields
+    new_gate->num_qubits = gate->num_qubits;
+    new_gate->num_controls = gate->num_controls;
+    new_gate->is_controlled = gate->is_controlled;
+    new_gate->type = gate->type;
+    new_gate->num_parameters = gate->num_parameters;
+    new_gate->is_parameterized = gate->is_parameterized;
+    
+    // Allocate and copy arrays
+    size_t matrix_size = 1 << (2 * gate->num_qubits);  // 2^n x 2^n matrix
+    new_gate->matrix = malloc(matrix_size * sizeof(ComplexFloat));
+    new_gate->target_qubits = malloc(gate->num_qubits * sizeof(size_t));
+    new_gate->control_qubits = gate->num_controls ? malloc(gate->num_controls * sizeof(size_t)) : NULL;
+    new_gate->parameters = gate->num_parameters ? malloc(gate->num_parameters * sizeof(double)) : NULL;
+    
+    if (!new_gate->matrix || !new_gate->target_qubits || 
+        (gate->num_controls && !new_gate->control_qubits) ||
+        (gate->num_parameters && !new_gate->parameters)) {
+        free(new_gate->matrix);
+        free(new_gate->target_qubits);
+        free(new_gate->control_qubits);
+        free(new_gate->parameters);
+        free(new_gate);
+        return NULL;
+    }
+    
+    // Copy data
+    memcpy(new_gate->matrix, gate->matrix, matrix_size * sizeof(ComplexFloat));
+    memcpy(new_gate->target_qubits, gate->target_qubits, gate->num_qubits * sizeof(size_t));
+    if (gate->num_controls) {
+        memcpy(new_gate->control_qubits, gate->control_qubits, gate->num_controls * sizeof(size_t));
+    }
+    if (gate->num_parameters) {
+        memcpy(new_gate->parameters, gate->parameters, gate->num_parameters * sizeof(double));
+    }
+    
+    return new_gate;
 }
 
 // Create a new quantum gate
@@ -169,6 +236,7 @@ quantum_gate_t* create_quantum_gate(
     quantum_gate_t* gate = malloc(sizeof(quantum_gate_t));
     if (!gate) return NULL;
     
+    gate->type = type;
     gate->num_qubits = num_qubits;
     gate->target_qubits = malloc(num_qubits * sizeof(size_t));
     if (!gate->target_qubits) {
@@ -176,6 +244,12 @@ quantum_gate_t* create_quantum_gate(
         return NULL;
     }
     memcpy(gate->target_qubits, qubits, num_qubits * sizeof(size_t));
+    gate->num_controls = 0;
+    gate->control_qubits = NULL;
+    gate->is_controlled = (type == GATE_TYPE_CNOT || type == GATE_TYPE_CZ);
+    gate->is_parameterized = false;
+    gate->parameters = NULL;
+    gate->num_parameters = 0;
     
     // Allocate matrix
     size_t matrix_dim = 1 << num_qubits;
@@ -199,6 +273,16 @@ quantum_gate_t* create_quantum_gate(
                 free(gate);
                 return NULL;
             }
+            gate->is_parameterized = true;
+            gate->parameters = malloc(sizeof(double));
+            if (!gate->parameters) {
+                free(gate->matrix);
+                free(gate->target_qubits);
+                free(gate);
+                return NULL;
+            }
+            gate->parameters[0] = parameters[0];
+            gate->num_parameters = 1;
             compute_rotation_matrix(parameters[0], 
                                  type == GATE_TYPE_RX ? 'x' :
                                  type == GATE_TYPE_RY ? 'y' : 'z',
@@ -239,16 +323,31 @@ bool update_gate_parameters(
     const double* parameters,
     size_t num_parameters) {
     
-    if (!gate || !parameters || num_parameters == 0) {
+    if (!gate || !gate->is_parameterized || !parameters || num_parameters != gate->num_parameters ||
+        (gate->type != GATE_TYPE_RX && gate->type != GATE_TYPE_RY && gate->type != GATE_TYPE_RZ)) {
         return false;
     }
     
     // Recompute gate matrix with new parameters
     ComplexFloat base_matrix[4];
     
-    // Determine gate type and update accordingly
-    // For now, assume it's a rotation gate
-    compute_rotation_matrix(parameters[0], 'z', base_matrix);  // Default to Z rotation
+    // Update parameters
+    memcpy(gate->parameters, parameters, num_parameters * sizeof(double));
+
+    // Recompute matrix based on gate type
+    switch (gate->type) {
+        case GATE_TYPE_RX:
+            compute_rotation_matrix(parameters[0], 'x', base_matrix);
+            break;
+        case GATE_TYPE_RY:
+            compute_rotation_matrix(parameters[0], 'y', base_matrix);
+            break;
+        case GATE_TYPE_RZ:
+            compute_rotation_matrix(parameters[0], 'z', base_matrix);
+            break;
+        default:
+            return false;
+    }
     
     if (gate->is_controlled) {
         compute_controlled_matrix(base_matrix, gate->num_qubits, gate->matrix);
@@ -265,12 +364,12 @@ bool shift_gate_parameters(
     size_t param_idx,
     double shift_amount) {
     
-    if (!gate || param_idx >= gate->num_qubits) {
+    if (!gate || !gate->is_parameterized || param_idx >= gate->num_parameters) {
         return false;
     }
     
     // For now, assume single parameter rotation gates
-    double shifted_param = shift_amount;  // Original parameter + shift
+    double shifted_param = gate->parameters[param_idx] + shift_amount;
     return update_gate_parameters(gate, &shifted_param, 1);
 }
 
@@ -281,5 +380,6 @@ void destroy_quantum_gate(quantum_gate_t* gate) {
     free(gate->matrix);
     free(gate->target_qubits);
     free(gate->control_qubits);
+    free(gate->parameters);
     free(gate);
 }

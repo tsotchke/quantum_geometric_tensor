@@ -1,31 +1,13 @@
 #ifndef QUANTUM_GATE_OPERATIONS_H
 #define QUANTUM_GATE_OPERATIONS_H
 
-#include "quantum_geometric/core/quantum_geometric_types.h"
+#include "quantum_geometric/core/quantum_types.h"
 #include <stdbool.h>
 #include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-// Gate types
-typedef enum {
-    GATE_TYPE_I = 0,   // Identity
-    GATE_TYPE_X = 1,   // Pauli-X
-    GATE_TYPE_Y = 2,   // Pauli-Y
-    GATE_TYPE_Z = 3,   // Pauli-Z
-    GATE_TYPE_H = 4,   // Hadamard
-    GATE_TYPE_S = 5,   // Phase
-    GATE_TYPE_T = 6,   // T gate
-    GATE_TYPE_RX = 7,  // Rotation around X
-    GATE_TYPE_RY = 8,  // Rotation around Y
-    GATE_TYPE_RZ = 9,  // Rotation around Z
-    GATE_TYPE_CNOT = 10, // Controlled-NOT
-    GATE_TYPE_CZ = 11,   // Controlled-Z
-    GATE_TYPE_SWAP = 12, // SWAP
-    GATE_TYPE_CUSTOM = 13 // Custom unitary
-} gate_type_t;
 
 /**
  * @brief Create a new quantum gate
@@ -43,6 +25,14 @@ quantum_gate_t* create_quantum_gate(
     size_t num_qubits,
     const double* parameters,
     size_t num_parameters);
+
+/**
+ * @brief Create a deep copy of a quantum gate
+ * 
+ * @param gate Gate to copy
+ * @return quantum_gate_t* Pointer to copied gate, NULL on failure
+ */
+quantum_gate_t* copy_quantum_gate(const quantum_gate_t* gate);
 
 /**
  * @brief Update gate parameters

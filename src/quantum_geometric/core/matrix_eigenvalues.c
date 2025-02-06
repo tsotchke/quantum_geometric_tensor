@@ -3,6 +3,8 @@
 #include "quantum_geometric/core/matrix_operations.h"
 #include "quantum_geometric/core/quantum_complex.h"
 #include "quantum_geometric/core/error_handling.h"
+#include "quantum_geometric/core/complex_arithmetic.h"
+#include "quantum_geometric/core/lapack_wrapper.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -36,19 +38,19 @@ static bool is_negligible(
     size_t n,
     size_t i) {
     
-    double scale = complex_float_abs(a[i * n + i]) + 
-                   complex_float_abs(a[(i + 1) * n + i + 1]);
+    double scale = complex_abs(a[i * n + i]) + 
+                   complex_abs(a[(i + 1) * n + i + 1]);
     
     if (scale == 0.0) scale = 1.0;
     
-    return complex_float_abs(a[(i + 1) * n + i]) <= 
+    return complex_abs(a[(i + 1) * n + i]) <= 
            g_qr_config.convergence_threshold * scale;
 }
 
 // Helper function to select eigenvalue closer to a22
 static ComplexFloat select_eigenvalue(ComplexFloat e1, ComplexFloat e2, ComplexFloat a22) {
-    double dist1 = (double)complex_float_abs_squared(complex_float_subtract(e1, a22));
-    double dist2 = (double)complex_float_abs_squared(complex_float_subtract(e2, a22));
+    double dist1 = (double)complex_abs_squared(complex_subtract(e1, a22));
+    double dist2 = (double)complex_abs_squared(complex_subtract(e2, a22));
     if (dist1 <= dist2) {
         return e1;
     } else {
@@ -68,21 +70,29 @@ static ComplexFloat compute_wilkinson_shift(
     ComplexFloat a22 = a[m * n + m];
     
     // Compute eigenvalues of 2x2 block
-    ComplexFloat sum = complex_float_add(a11, a22);
-    ComplexFloat d = complex_float_multiply_real(sum, 0.5f);
+    ComplexFloat sum = complex_add(a11, a22);
+    ComplexFloat d;
+    d.real = sum.real * 0.5f;
+    d.imag = sum.imag * 0.5f;
     
-    ComplexFloat prod1 = complex_float_multiply(a11, a22);
-    ComplexFloat prod2 = complex_float_multiply(a12, a21);
-    ComplexFloat t = complex_float_subtract(prod1, prod2);
+    ComplexFloat prod1 = complex_multiply(a11, a22);
+    ComplexFloat prod2 = complex_multiply(a12, a21);
+    ComplexFloat t = complex_subtract(prod1, prod2);
     
-    ComplexFloat s = complex_float_sqrt(complex_float_subtract(
-        complex_float_multiply(d, d),
-        t
-    ));
+    // Compute sqrt(d^2 - t)
+    ComplexFloat d_squared = complex_multiply(d, d);
+    ComplexFloat diff = complex_subtract(d_squared, t);
+    ComplexFloat s = {0}; // We need to implement complex_sqrt in complex_arithmetic.h
+    
+    // For now use a simple approximation
+    float r = sqrtf(diff.real * diff.real + diff.imag * diff.imag);
+    float theta = 0.5f * atan2f(diff.imag, diff.real);
+    s.real = r * cosf(theta);
+    s.imag = r * sinf(theta);
     
     // Return eigenvalue closer to a22
-    ComplexFloat e1 = complex_float_add(d, s);
-    ComplexFloat e2 = complex_float_subtract(d, s);
+    ComplexFloat e1 = complex_add(d, s);
+    ComplexFloat e2 = complex_subtract(d, s);
     
     return select_eigenvalue(e1, e2, a22);
 }
@@ -108,7 +118,7 @@ static bool qr_iteration(
     
     // Apply shift
     for (size_t i = start; i < end; i++) {
-        h[i * n + i] = complex_float_subtract(h[i * n + i], shift);
+        h[i * n + i] = complex_subtract(h[i * n + i], shift);
     }
     
     // Allocate workspace
@@ -142,7 +152,7 @@ static bool qr_iteration(
     
     // Unapply shift
     for (size_t i = start; i < end; i++) {
-        h[i * n + i] = complex_float_add(h[i * n + i], shift);
+        h[i * n + i] = complex_add(h[i * n + i], shift);
     }
     
     // Update similarity transformation
@@ -174,8 +184,13 @@ bool find_eigenvalues(
     if (!a || !eigenvalues || n == 0) {
         return false;
     }
+
+    // Try using LAPACK first if available
+    if (lapack_has_capability("eigendecomposition")) {
+        return lapack_eigendecomposition(a, n, eigenvectors, eigenvalues, LAPACK_ROW_MAJOR);
+    }
     
-    // Allocate workspace
+    // Fall back to QR algorithm if LAPACK is not available
     ComplexFloat* h = malloc(n * n * sizeof(ComplexFloat));
     ComplexFloat* s = NULL;
     if (g_qr_config.compute_eigenvectors) {
@@ -196,10 +211,12 @@ bool find_eigenvalues(
     // Initialize similarity transformation
     if (s) {
         for (size_t i = 0; i < n * n; i++) {
-            s[i] = complex_float_create(0.0f, 0.0f);
+            s[i].real = 0.0f;
+            s[i].imag = 0.0f;
         }
         for (size_t i = 0; i < n; i++) {
-            s[i * n + i] = complex_float_create(1.0f, 0.0f);
+            s[i * n + i].real = 1.0f;
+            s[i * n + i].imag = 0.0f;
         }
     }
     
@@ -225,10 +242,7 @@ bool find_eigenvalues(
         
         if (l == m - 1) {
             // One eigenvalue found
-            eigenvalues[m - 1] = complex_float_create(
-                h[(m - 1) * n + (m - 1)].real,
-                h[(m - 1) * n + (m - 1)].imag
-            );
+            eigenvalues[m - 1] = h[(m - 1) * n + (m - 1)];
             m--;
         } else {
             // QR iteration on active submatrix
@@ -244,7 +258,7 @@ bool find_eigenvalues(
     
     // Get last eigenvalue
     if (m == 1) {
-        eigenvalues[0] = complex_float_create(h[0].real, h[0].imag);
+        eigenvalues[0] = h[0];
     }
     
     // Copy eigenvectors if requested

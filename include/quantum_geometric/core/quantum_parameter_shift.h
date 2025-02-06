@@ -25,7 +25,7 @@ extern "C" {
  * @return true if successful, false otherwise
  */
 bool compute_parameter_shift_gradient(
-    quantum_geometric_tensor_network_t* qgtn,
+    const quantum_geometric_tensor_network_t* qgtn,
     size_t param_idx,
     double shift_amount,
     ComplexFloat** gradient,
@@ -46,7 +46,7 @@ bool compute_parameter_shift_gradient(
  * @return true if successful, false otherwise
  */
 bool compute_higher_order_gradient(
-    quantum_geometric_tensor_network_t* qgtn,
+    const quantum_geometric_tensor_network_t* qgtn,
     size_t param_idx,
     const double* shift_amounts,
     size_t num_shifts,
@@ -68,7 +68,7 @@ bool compute_higher_order_gradient(
  * @return true if successful, false otherwise
  */
 bool compute_centered_difference_gradient(
-    quantum_geometric_tensor_network_t* qgtn,
+    const quantum_geometric_tensor_network_t* qgtn,
     size_t param_idx,
     double step_size,
     ComplexFloat** gradient,
@@ -88,7 +88,7 @@ bool compute_centered_difference_gradient(
  * @return true if successful, false otherwise
  */
 bool compute_gradient_with_error(
-    quantum_geometric_tensor_network_t* qgtn,
+    const quantum_geometric_tensor_network_t* qgtn,
     size_t param_idx,
     ComplexFloat** gradient,
     double* error_estimate,

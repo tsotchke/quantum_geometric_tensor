@@ -1,4 +1,4 @@
-#include "quantum_geometric/core/geometric_attention.h"
+ #include "quantum_geometric/core/geometric_attention.h"
 #include "quantum_geometric/core/hierarchical_matrix.h"
 #include "quantum_geometric/core/numerical_backend.h"
 #include <stdlib.h>
@@ -295,6 +295,12 @@ void attention_forward(GeometricAttention* attn,
     if (!input_mat) return;
     input_mat->tolerance = ATTENTION_TOLERANCE;  // Set tolerance
     
+    // Check if input matrix data is allocated
+    if (!input_mat->data) {
+        destroy_hierarchical_matrix(input_mat);
+        return;
+    }
+    
     // Copy input data
     for (size_t i = 0; i < seq_length * attn->dim; i++) {
         input_mat->data[i] = input[i];
@@ -325,6 +331,16 @@ void attention_forward(GeometricAttention* attn,
         return;
     }
     
+    // Check if matrices have allocated data
+    if (!input_mat->data || !attn->W_query->data || !attn->W_key->data || !attn->W_value->data) {
+        destroy_hierarchical_matrix(input_mat);
+        destroy_hierarchical_matrix(ctx.query);
+        destroy_hierarchical_matrix(ctx.key);
+        destroy_hierarchical_matrix(ctx.value);
+        destroy_hierarchical_matrix(ctx.output);
+        return;
+    }
+
     // Project input to Q, K, V using hierarchical operations - O(log n)
     #pragma omp parallel sections
     {
@@ -339,6 +355,15 @@ void attention_forward(GeometricAttention* attn,
     }
     
     destroy_hierarchical_matrix(input_mat);
+
+    // Check if matrices were properly initialized after multiplication
+    if (!ctx.query->data || !ctx.key->data || !ctx.value->data) {
+        destroy_hierarchical_matrix(ctx.query);
+        destroy_hierarchical_matrix(ctx.key);
+        destroy_hierarchical_matrix(ctx.value);
+        destroy_hierarchical_matrix(ctx.output);
+        return;
+    }
     
     // Split heads
     for (size_t h = 0; h < attn->num_heads; h++) {
@@ -355,13 +380,40 @@ void attention_forward(GeometricAttention* attn,
             return;
         }
         head_ctx.output->tolerance = ATTENTION_TOLERANCE;
+
+        // Check if output matrix data is allocated
+        if (!head_ctx.output->data) {
+            hmatrix_destroy(head_ctx.query);
+            hmatrix_destroy(head_ctx.key);
+            hmatrix_destroy(head_ctx.value);
+            hmatrix_destroy(head_ctx.output);
+            return;
+        }
         
         // Compute attention scores - O(log n) with hierarchical operations
         compute_attention_scores(&head_ctx);
         
+        // Check if output matrix data is still valid after attention computation
+        if (!head_ctx.output->data) {
+            hmatrix_destroy(head_ctx.query);
+            hmatrix_destroy(head_ctx.key);
+            hmatrix_destroy(head_ctx.value);
+            hmatrix_destroy(head_ctx.output);
+            return;
+        }
+        
         // Merge back to output
         merge_head(ctx.output, head_ctx.output, h, attn->head_dim);
         
+        // Check if output matrix data is still valid after merge
+        if (!ctx.output->data) {
+            destroy_hierarchical_matrix(ctx.query);
+            destroy_hierarchical_matrix(ctx.key);
+            destroy_hierarchical_matrix(ctx.value);
+            destroy_hierarchical_matrix(ctx.output);
+            return;
+        }
+
         // Cleanup head matrices
         hmatrix_destroy(head_ctx.query);
         hmatrix_destroy(head_ctx.key);
@@ -380,8 +432,28 @@ void attention_forward(GeometricAttention* attn,
     }
     output_mat->tolerance = ATTENTION_TOLERANCE;  // Set tolerance
     
+    // Check if matrices have allocated data
+    if (!output_mat->data || !ctx.output->data || !attn->W_output->data) {
+        destroy_hierarchical_matrix(output_mat);
+        destroy_hierarchical_matrix(ctx.query);
+        destroy_hierarchical_matrix(ctx.key);
+        destroy_hierarchical_matrix(ctx.value);
+        destroy_hierarchical_matrix(ctx.output);
+        return;
+    }
+
     // Final projection - O(log n)
     hmatrix_multiply(output_mat, ctx.output, attn->W_output);
+    
+    // Check if output matrix data is still valid after multiplication
+    if (!output_mat->data) {
+        destroy_hierarchical_matrix(output_mat);
+        destroy_hierarchical_matrix(ctx.query);
+        destroy_hierarchical_matrix(ctx.key);
+        destroy_hierarchical_matrix(ctx.value);
+        destroy_hierarchical_matrix(ctx.output);
+        return;
+    }
     
     // Copy result to output array
     if (output_mat->is_leaf) {
@@ -411,16 +483,51 @@ static void compute_attention_scores(AttentionContext* ctx) {
     scores->tolerance = ctx->query->tolerance;
     key_t->tolerance = ctx->key->tolerance;
     
+    // Check if matrices have allocated data
+    if (!ctx->query->data || !ctx->key->data || !ctx->value->data || !key_t->data || !scores->data) {
+        destroy_hierarchical_matrix(scores);
+        destroy_hierarchical_matrix(key_t);
+        return;
+    }
+
     // Transpose key matrix
     hmatrix_transpose(key_t, ctx->key);
     
     hmatrix_multiply(scores, ctx->query, key_t);
     
+    // Check if scores matrix data is still valid after multiplication
+    if (!scores->data) {
+        destroy_hierarchical_matrix(scores);
+        destroy_hierarchical_matrix(key_t);
+        return;
+    }
+    
     // Scale and apply softmax
     scale_and_softmax(scores, ctx->temperature);
     
+    // Check if scores matrix data is still valid after softmax
+    if (!scores->data) {
+        destroy_hierarchical_matrix(scores);
+        destroy_hierarchical_matrix(key_t);
+        return;
+    }
+    
+    // Check if output matrix data is allocated
+    if (!ctx->output->data) {
+        destroy_hierarchical_matrix(scores);
+        destroy_hierarchical_matrix(key_t);
+        return;
+    }
+    
     // Apply attention to values - O(log n)
     hmatrix_multiply(ctx->output, scores, ctx->value);
+    
+    // Check if output matrix data is still valid after multiplication
+    if (!ctx->output->data) {
+        destroy_hierarchical_matrix(scores);
+        destroy_hierarchical_matrix(key_t);
+        return;
+    }
     
     // Cleanup
     destroy_hierarchical_matrix(scores);
@@ -428,6 +535,8 @@ static void compute_attention_scores(AttentionContext* ctx) {
 }
 
 static void scale_and_softmax(HierarchicalMatrix* mat, double temperature) {
+    if (!mat || !mat->data) return;
+    
     // Scale scores
     #pragma omp parallel for collapse(2)
     for (size_t i = 0; i < mat->rows; i++) {
@@ -474,7 +583,7 @@ static HierarchicalMatrix* extract_head(HierarchicalMatrix* mat, size_t head_idx
     if (!head) return NULL;
     head->tolerance = mat->tolerance;  // Propagate tolerance
     
-    if (mat->is_leaf) {
+    if (mat->is_leaf && mat->data && head->data) {
         #pragma omp parallel for
         for (size_t i = 0; i < mat->rows; i++) {
             memcpy(&head->data[i * head_dim],
@@ -484,6 +593,12 @@ static HierarchicalMatrix* extract_head(HierarchicalMatrix* mat, size_t head_idx
     } else {
         // Handle hierarchical extraction
         extract_head_recursive(head, mat, head_idx, head_dim);
+        
+        // Check if head data is allocated after recursive extraction
+        if (!head->data) {
+            destroy_hierarchical_matrix(head);
+            return NULL;
+        }
     }
     
     return head;
@@ -494,7 +609,7 @@ static void extract_head_recursive(HierarchicalMatrix* head, HierarchicalMatrix*
     if (!head || !mat) return;
     
     // Base case: both matrices are leaves
-    if (head->is_leaf && mat->is_leaf) {
+    if (head->is_leaf && mat->is_leaf && head->data && mat->data) {
         size_t start_col = head_idx * head_dim;
         #pragma omp parallel for
         for (size_t i = 0; i < mat->rows; i++) {
@@ -532,7 +647,7 @@ static void merge_head_recursive(HierarchicalMatrix* output, HierarchicalMatrix*
     if (!output || !head) return;
     
     // Base case: both matrices are leaves
-    if (output->is_leaf && head->is_leaf) {
+    if (output->is_leaf && head->is_leaf && output->data && head->data) {
         size_t start_col = head_idx * head_dim;
         #pragma omp parallel for
         for (size_t i = 0; i < output->rows; i++) {
@@ -563,6 +678,11 @@ static void merge_head_recursive(HierarchicalMatrix* output, HierarchicalMatrix*
     for (int i = 0; i < 4; i++) {
         merge_head_recursive(output->children[i], head->children[i], head_idx, head_dim);
     }
+    
+    // Check if output data is still valid after recursive merging
+    if (!output->data) {
+        return;
+    }
 }
 
 static void merge_head(HierarchicalMatrix* output, HierarchicalMatrix* head,
@@ -570,7 +690,7 @@ static void merge_head(HierarchicalMatrix* output, HierarchicalMatrix* head,
     // Merge attention head back into output matrix
     size_t start_col = head_idx * head_dim;
     
-    if (output->is_leaf && head->is_leaf) {
+    if (output->is_leaf && head->is_leaf && output->data && head->data) {
         #pragma omp parallel for
         for (size_t i = 0; i < output->rows; i++) {
             memcpy(&output->data[i * output->cols + start_col],

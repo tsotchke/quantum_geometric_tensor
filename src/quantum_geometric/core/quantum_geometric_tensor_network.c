@@ -1,4 +1,5 @@
 #include "quantum_geometric/core/quantum_geometric_tensor_network.h"
+#include "quantum_geometric/core/quantum_geometric_gradient.h"
 #include "quantum_geometric/core/tensor_network_operations.h"
 #include "quantum_geometric/core/numerical_backend.h"
 #include "quantum_geometric/core/error_handling.h"
@@ -36,6 +37,19 @@ quantum_geometric_tensor_network_t* create_quantum_geometric_tensor_network(
         free(qgtn);
         set_error("Failed to create tensor network");
         return NULL;
+    }
+
+    // Initialize with |0> state for each qubit
+    ComplexFloat zero_state[2] = {{1.0f, 0.0f}, {0.0f, 0.0f}};
+    size_t dim = 2;
+    for (size_t i = 0; i < num_qubits; i++) {
+        size_t node_id;
+        if (!add_tensor_node(qgtn->network, zero_state, &dim, 1, &node_id)) {
+            destroy_tensor_network(qgtn->network);
+            free(qgtn);
+            set_error("Failed to initialize qubit state");
+            return NULL;
+        }
     }
 
     // Initialize empty quantum circuit
@@ -315,6 +329,21 @@ bool compute_quantum_geometric_tensor(
     
     if (!qgtn || !result) {
         set_error("Invalid arguments to compute_quantum_geometric_tensor");
+        return false;
+    }
+
+    // Initialize numerical backend if needed
+    numerical_config_t config = {
+        .type = NUMERICAL_BACKEND_CPU,
+        .max_threads = 1,
+        .use_fma = true,
+        .use_avx = true,
+        .use_neon = true,
+        .cache_size = 32 * 1024 * 1024
+    };
+    
+    if (!initialize_numerical_backend(&config)) {
+        set_error("Failed to initialize numerical backend");
         return false;
     }
     

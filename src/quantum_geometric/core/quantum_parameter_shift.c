@@ -1,4 +1,5 @@
 #include "quantum_geometric/core/quantum_geometric_gradient.h"
+#include "quantum_geometric/core/quantum_gate_operations.h"
 #include "quantum_geometric/core/numerical_backend.h"
 #include "quantum_geometric/core/error_handling.h"
 #include <stdlib.h>
@@ -200,8 +201,128 @@ static bool compute_shifted_states(
 }
 
 // Compute gradient using parameter shift rule
+// Helper function to create a mutable copy of a quantum geometric tensor network
+static quantum_geometric_tensor_network_t* copy_quantum_geometric_tensor_network(
+    const quantum_geometric_tensor_network_t* qgtn) {
+    
+    quantum_geometric_tensor_network_t* copy = malloc(sizeof(quantum_geometric_tensor_network_t));
+    if (!copy) return NULL;
+    
+    // Copy basic fields
+    copy->num_qubits = qgtn->num_qubits;
+    copy->num_layers = qgtn->num_layers;
+    copy->is_distributed = qgtn->is_distributed;
+    copy->use_hardware_acceleration = qgtn->use_hardware_acceleration;
+    
+    // Create new tensor network
+    copy->network = create_tensor_network();
+    if (!copy->network) {
+        free(copy);
+        return NULL;
+    }
+    
+    // Copy circuit
+    copy->circuit = malloc(sizeof(quantum_circuit_t));
+    if (!copy->circuit) {
+        destroy_tensor_network(copy->network);
+        free(copy);
+        return NULL;
+    }
+    
+    copy->circuit->layers = malloc(qgtn->num_layers * sizeof(circuit_layer_t*));
+    if (!copy->circuit->layers) {
+        free(copy->circuit);
+        destroy_tensor_network(copy->network);
+        free(copy);
+        return NULL;
+    }
+    
+    copy->circuit->num_layers = qgtn->num_layers;
+    copy->circuit->num_qubits = qgtn->num_qubits;
+    copy->circuit->is_parameterized = qgtn->circuit->is_parameterized;
+    
+    // Copy each layer
+    for (size_t l = 0; l < qgtn->num_layers; l++) {
+        if (qgtn->circuit->layers[l]) {
+            circuit_layer_t* layer = malloc(sizeof(circuit_layer_t));
+            if (!layer) {
+                // Clean up on failure
+                for (size_t j = 0; j < l; j++) {
+                    if (copy->circuit->layers[j]) {
+                        for (size_t g = 0; g < copy->circuit->layers[j]->num_gates; g++) {
+                            free(copy->circuit->layers[j]->gates[g]);
+                        }
+                        free(copy->circuit->layers[j]->gates);
+                        free(copy->circuit->layers[j]);
+                    }
+                }
+                free(copy->circuit->layers);
+                free(copy->circuit);
+                destroy_tensor_network(copy->network);
+                free(copy);
+                return NULL;
+            }
+            
+            layer->num_gates = qgtn->circuit->layers[l]->num_gates;
+            layer->is_parameterized = qgtn->circuit->layers[l]->is_parameterized;
+            
+            layer->gates = malloc(layer->num_gates * sizeof(quantum_gate_t*));
+            if (!layer->gates) {
+                free(layer);
+                for (size_t j = 0; j < l; j++) {
+                    if (copy->circuit->layers[j]) {
+                        for (size_t g = 0; g < copy->circuit->layers[j]->num_gates; g++) {
+                            free(copy->circuit->layers[j]->gates[g]);
+                        }
+                        free(copy->circuit->layers[j]->gates);
+                        free(copy->circuit->layers[j]);
+                    }
+                }
+                free(copy->circuit->layers);
+                free(copy->circuit);
+                destroy_tensor_network(copy->network);
+                free(copy);
+                return NULL;
+            }
+            
+            // Copy each gate
+            for (size_t g = 0; g < layer->num_gates; g++) {
+                layer->gates[g] = copy_quantum_gate(qgtn->circuit->layers[l]->gates[g]);
+                if (!layer->gates[g]) {
+                    // Clean up on failure
+                    for (size_t h = 0; h < g; h++) {
+                        free(layer->gates[h]);
+                    }
+                    free(layer->gates);
+                    free(layer);
+                    for (size_t j = 0; j < l; j++) {
+                        if (copy->circuit->layers[j]) {
+                            for (size_t h = 0; h < copy->circuit->layers[j]->num_gates; h++) {
+                                free(copy->circuit->layers[j]->gates[h]);
+                            }
+                            free(copy->circuit->layers[j]->gates);
+                            free(copy->circuit->layers[j]);
+                        }
+                    }
+                    free(copy->circuit->layers);
+                    free(copy->circuit);
+                    destroy_tensor_network(copy->network);
+                    free(copy);
+                    return NULL;
+                }
+            }
+            
+            copy->circuit->layers[l] = layer;
+        } else {
+            copy->circuit->layers[l] = NULL;
+        }
+    }
+    
+    return copy;
+}
+
 bool compute_parameter_shift_gradient(
-    quantum_geometric_tensor_network_t* qgtn,
+    const quantum_geometric_tensor_network_t* qgtn,
     size_t param_idx,
     double shift_amount,
     ComplexFloat** gradient,
@@ -211,12 +332,19 @@ bool compute_parameter_shift_gradient(
         return false;
     }
     
+    // Create mutable copy
+    quantum_geometric_tensor_network_t* qgtn_copy = copy_quantum_geometric_tensor_network(qgtn);
+    if (!qgtn_copy) {
+        return false;
+    }
+    
     // Get shifted states
     ComplexFloat* forward_state;
     ComplexFloat* backward_state;
     size_t state_dim;
-    if (!compute_shifted_states(qgtn, param_idx, shift_amount,
+    if (!compute_shifted_states(qgtn_copy, param_idx, shift_amount,
                               &forward_state, &backward_state, &state_dim)) {
+        destroy_quantum_geometric_tensor_network(qgtn_copy);
         return false;
     }
     
@@ -285,7 +413,7 @@ static void richardson_extrapolate(
 
 // Compute higher order gradient using multiple shifts
 bool compute_higher_order_gradient(
-    quantum_geometric_tensor_network_t* qgtn,
+    const quantum_geometric_tensor_network_t* qgtn,
     size_t param_idx,
     const double* shift_amounts,
     size_t num_shifts,
@@ -357,7 +485,7 @@ bool compute_higher_order_gradient(
 
 // Compute centered finite difference gradient
 bool compute_centered_difference_gradient(
-    quantum_geometric_tensor_network_t* qgtn,
+    const quantum_geometric_tensor_network_t* qgtn,
     size_t param_idx,
     double step_size,
     ComplexFloat** gradient,
@@ -385,7 +513,7 @@ static double estimate_gradient_error(
 
 // Compute gradient with error estimation
 bool compute_gradient_with_error(
-    quantum_geometric_tensor_network_t* qgtn,
+    const quantum_geometric_tensor_network_t* qgtn,
     size_t param_idx,
     ComplexFloat** gradient,
     double* error_estimate,
