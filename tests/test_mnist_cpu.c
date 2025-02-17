@@ -1,8 +1,9 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include "quantum_geometric/core/numerical_backend.h"
+#include "quantum_geometric/core/quantum_geometric_compute.h"
 #include "quantum_geometric/core/error_codes.h"
 #include "quantum_geometric/learning/quantum_pipeline.h"
+#include "quantum_geometric/core/numerical_backend.h"
 
 #define INPUT_SIZE 784  // 28x28 MNIST image
 #define OUTPUT_SIZE 10  // 10 digits
@@ -12,8 +13,8 @@
 #define LEARNING_RATE 0.001f
 
 int main() {
-    printf("Testing MNIST Metal Implementation\n");
-    printf("==================================\n\n");
+    printf("Testing MNIST CPU Implementation\n");
+    printf("================================\n\n");
 
     // Create test input data (normalized pixel values)
     float* input_data = (float*)malloc(INPUT_SIZE * sizeof(float));
@@ -33,37 +34,8 @@ int main() {
     }
     printf("\n");
 
-    // Initialize Metal backend
-    printf("Initializing quantum pipeline (Metal backend)...\n");
-    numerical_config_t backend_config = {
-        .type = NUMERICAL_BACKEND_METAL,
-        .max_threads = 0,  // Let Metal decide
-        .use_fma = true,   // Use Metal's native FMA
-        .use_avx = false,  // Not applicable for Metal
-        .use_neon = false, // Not applicable for Metal
-        .cache_size = 0,   // Let Metal manage cache
-        .backend_specific = NULL
-    };
-    
-    // First check if Metal is available
-    numerical_error_t error = is_backend_available(NUMERICAL_BACKEND_METAL);
-    if (error != NUMERICAL_SUCCESS) {
-        printf("Metal backend is not available: %s\n",
-               get_numerical_error_string(error));
-        free(input_data);
-        return 1;
-    }
-
-    error = initialize_numerical_backend(&backend_config);
-    if (error != NUMERICAL_SUCCESS) {
-        printf("Failed to initialize Metal backend: %s\n",
-               get_numerical_error_string(error));
-        free(input_data);
-        return 1;
-    }
-
-    // Initialize quantum pipeline
-    printf("Creating quantum pipeline...\n");
+    // Initialize quantum pipeline with CPU backend
+    printf("Initializing quantum pipeline (CPU backend)...\n");
     float pipeline_config[] = {
         (float)INPUT_SIZE,   // input_dim
         (float)LATENT_DIM,   // latent_dim
@@ -71,8 +43,26 @@ int main() {
         (float)OUTPUT_SIZE,  // num_classes
         (float)BATCH_SIZE,   // batch_size
         LEARNING_RATE,       // learning_rate
-        1.0f                 // use_gpu
+        0.0f                 // use_gpu (0 for CPU)
     };
+    
+    // Force CPU backend with optimizations disabled for testing
+    numerical_config_t backend_config = {
+        .type = NUMERICAL_BACKEND_CPU,
+        .max_threads = 1,
+        .use_fma = false,
+        .use_avx = false,
+        .use_neon = false,
+        .cache_size = 0,
+        .backend_specific = NULL
+    };
+    numerical_error_t error = initialize_numerical_backend(&backend_config);
+    if (error != NUMERICAL_SUCCESS) {
+        printf("Failed to initialize numerical backend: %s\n",
+               get_numerical_error_string(error));
+        free(input_data);
+        return 1;
+    }
     
     quantum_pipeline_handle_t pipeline = quantum_pipeline_create(pipeline_config);
     if (!pipeline) {
@@ -119,28 +109,20 @@ int main() {
         return 1;
     }
 
-    // Get GPU metrics
-    float gpu_metrics[2];  // utilization, TFLOPS
-    result = quantum_pipeline_get_gpu_metrics(pipeline, gpu_metrics);
-    if (result == QGT_SUCCESS) {
-        printf("\nGPU Metrics:\n");
-        printf("GPU Utilization: %.1f%%\n", gpu_metrics[0] * 100);
-        printf("Performance: %.2f TFLOPS\n", gpu_metrics[1]);
-    }
-
-    // Print results
+    // Print results with more detail
     printf("\nResults:\n");
-    printf("Accuracy: %.2f%%\n", metrics[0] * 100);
-    printf("Execution time: %.2f ms\n", metrics[1]);
-    printf("Memory usage: %.2f MB\n", metrics[2]);
+    printf("Classification accuracy: %.2f%%\n", metrics[0] * 100);
+    printf("Training time: %.2f ms\n", metrics[1]);
+    printf("Peak memory usage: %.2f MB\n", metrics[2]);
+    printf("Note: Running on CPU with optimizations disabled for testing\n");
 
     // Save model
     printf("\nSaving model...\n");
-    result = quantum_pipeline_save(pipeline, "mnist_model.qg");
+    result = quantum_pipeline_save(pipeline, "mnist_model_cpu.qg");
     if (result != QGT_SUCCESS) {
         printf("Failed to save model\n");
     } else {
-        printf("Model saved successfully to mnist_model.qg\n");
+        printf("Model saved successfully to mnist_model_cpu.qg\n");
     }
 
     // Cleanup

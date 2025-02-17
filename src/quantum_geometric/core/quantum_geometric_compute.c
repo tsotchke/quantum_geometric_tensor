@@ -4,38 +4,20 @@
 #include "quantum_geometric/core/numerical_backend.h"
 #include "quantum_geometric/core/quantum_scheduler.h"
 #include "quantum_geometric/core/operation_fusion.h"
+#include "quantum_geometric/core/geometric_processor.h"
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
-// Computational graph node types
-typedef enum {
-    NODE_UNITARY,
-    NODE_MEASUREMENT,
-    NODE_TENSOR_PRODUCT,
-    NODE_PARTIAL_TRACE,
-    NODE_QUANTUM_FOURIER,
-    NODE_QUANTUM_PHASE
-} quantum_node_type_t;
-
-// Node structure for quantum operations
-typedef struct quantum_compute_node {
-    quantum_node_type_t type;
-    size_t num_qubits;
-    size_t* qubit_indices;
-    ComplexFloat* parameters;
-    size_t num_parameters;
-    void* additional_data;
-} quantum_compute_node_t;
-
-// Quantum circuit structure
-typedef struct quantum_circuit {
-    computational_graph_t* graph;
-    size_t num_qubits;
-    quantum_geometric_state_t* state;
-    quantum_compute_node_t** nodes;
-    size_t num_nodes;
-    size_t capacity;
-} quantum_circuit_t;
+// Add fields to existing quantum_circuit_t from quantum_types.h
+static bool extend_quantum_circuit(quantum_circuit_t* circuit) {
+    circuit->graph = NULL;
+    circuit->state = NULL;
+    circuit->nodes = NULL;
+    circuit->num_nodes = 0;
+    circuit->capacity = 0;
+    return true;
+}
 
 // Initialize quantum circuit
 quantum_circuit_t* quantum_circuit_create(size_t num_qubits) {
@@ -144,8 +126,8 @@ bool quantum_circuit_add_operation(quantum_circuit_t* circuit,
     circuit->nodes[circuit->num_nodes++] = node;
     
     // Add to computational graph
-    graph_node_t* graph_node = add_graph_node(circuit->graph, node);
-    if (!graph_node) {
+    computation_node_t* comp_node = add_node(circuit->graph, NODE_OPERATION, OP_QUANTUM, node);
+    if (!comp_node) {
         free(node->parameters);
         free(node->qubit_indices);
         free(node);

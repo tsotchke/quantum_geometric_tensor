@@ -14,15 +14,13 @@ static struct {
     bool has_lapack;
 } backend_state = {0};
 
-bool initialize_numerical_backend(const numerical_config_t* config) {
+numerical_error_t initialize_numerical_backend_cpu(const numerical_config_t* config) {
     if (!config) {
-        backend_state.last_error = NUMERICAL_ERROR_INVALID_ARGUMENT;
-        return false;
+        return NUMERICAL_ERROR_INVALID_ARGUMENT;
     }
     
     backend_state.config = *config;
     backend_state.initialized = true;
-    backend_state.last_error = NUMERICAL_SUCCESS;
     
     // Reset metrics
     memset(&backend_state.metrics, 0, sizeof(numerical_metrics_t));
@@ -38,22 +36,25 @@ bool initialize_numerical_backend(const numerical_config_t* config) {
         lapack_has_capability("SYMMETRIC_SOLVE") &&
         lapack_has_capability("GENERAL_SOLVE");
     
-    return true;
+    return NUMERICAL_SUCCESS;
 }
 
-void shutdown_numerical_backend(void) {
+void shutdown_numerical_backend_cpu(void) {
     backend_state.initialized = false;
 }
 
-bool numerical_matrix_multiply(const ComplexFloat* a,
-                             const ComplexFloat* b,
-                             ComplexFloat* c,
-                             size_t m, size_t k, size_t n,
-                             bool transpose_a,
-                             bool transpose_b) {
-    if (!backend_state.initialized || !a || !b || !c) {
-        backend_state.last_error = NUMERICAL_ERROR_INVALID_ARGUMENT;
-        return false;
+numerical_error_t numerical_matrix_multiply_cpu(const ComplexFloat* a,
+                                          const ComplexFloat* b,
+                                          ComplexFloat* c,
+                                          size_t m, size_t k, size_t n,
+                                          bool transpose_a,
+                                          bool transpose_b) {
+    if (!backend_state.initialized) {
+        return NUMERICAL_ERROR_INVALID_STATE;
+    }
+    
+    if (!a || !b || !c) {
+        return NUMERICAL_ERROR_INVALID_ARGUMENT;
     }
 
     if (backend_state.has_lapack) {
@@ -61,10 +62,9 @@ bool numerical_matrix_multiply(const ComplexFloat* a,
                                            transpose_a, transpose_b,
                                            LAPACK_ROW_MAJOR);
         if (!success) {
-            backend_state.last_error = NUMERICAL_ERROR_COMPUTATION;
-            return false;
+            return NUMERICAL_ERROR_COMPUTATION;
         }
-        return true;
+        return NUMERICAL_SUCCESS;
     }
     
     // Fallback to basic implementation
@@ -81,144 +81,154 @@ bool numerical_matrix_multiply(const ComplexFloat* a,
         }
     }
     
-    backend_state.last_error = NUMERICAL_SUCCESS;
-    return true;
+    return NUMERICAL_SUCCESS;
 }
 
-bool numerical_matrix_add(const ComplexFloat* a,
-                         const ComplexFloat* b,
-                         ComplexFloat* c,
-                         size_t rows,
-                         size_t cols) {
-    if (!backend_state.initialized || !a || !b || !c) {
-        backend_state.last_error = NUMERICAL_ERROR_INVALID_ARGUMENT;
-        return false;
+numerical_error_t numerical_matrix_add_cpu(const ComplexFloat* a,
+                                     const ComplexFloat* b,
+                                     ComplexFloat* c,
+                                     size_t rows,
+                                     size_t cols) {
+    if (!backend_state.initialized) {
+        return NUMERICAL_ERROR_INVALID_STATE;
+    }
+    
+    if (!a || !b || !c) {
+        return NUMERICAL_ERROR_INVALID_ARGUMENT;
     }
     
     complex_vector_add(a, b, c, rows * cols);
-    backend_state.last_error = NUMERICAL_SUCCESS;
-    return true;
+    return NUMERICAL_SUCCESS;
 }
 
-bool numerical_vector_dot(const ComplexFloat* a,
-                         const ComplexFloat* b,
-                         ComplexFloat* result,
-                         size_t length) {
-    if (!backend_state.initialized || !a || !b || !result) {
-        backend_state.last_error = NUMERICAL_ERROR_INVALID_ARGUMENT;
-        return false;
+numerical_error_t numerical_vector_dot_cpu(const ComplexFloat* a,
+                                     const ComplexFloat* b,
+                                     ComplexFloat* result,
+                                     size_t length) {
+    if (!backend_state.initialized) {
+        return NUMERICAL_ERROR_INVALID_STATE;
+    }
+    
+    if (!a || !b || !result) {
+        return NUMERICAL_ERROR_INVALID_ARGUMENT;
     }
     
     *result = complex_vector_dot(a, b, length);
-    backend_state.last_error = NUMERICAL_SUCCESS;
-    return true;
+    return NUMERICAL_SUCCESS;
 }
 
-bool numerical_qr(const ComplexFloat* a,
-                 ComplexFloat* q,
-                 ComplexFloat* r,
-                 size_t m,
-                 size_t n) {
-    if (!backend_state.initialized || !a || !q || !r) {
-        backend_state.last_error = NUMERICAL_ERROR_INVALID_ARGUMENT;
-        return false;
+numerical_error_t numerical_qr_cpu(const ComplexFloat* a,
+                             ComplexFloat* q,
+                             ComplexFloat* r,
+                             size_t m,
+                             size_t n) {
+    if (!backend_state.initialized) {
+        return NUMERICAL_ERROR_INVALID_STATE;
+    }
+    
+    if (!a || !q || !r) {
+        return NUMERICAL_ERROR_INVALID_ARGUMENT;
     }
 
     if (backend_state.has_lapack) {
         bool success = lapack_qr(a, m, n, q, r, LAPACK_ROW_MAJOR);
         if (!success) {
-            backend_state.last_error = NUMERICAL_ERROR_COMPUTATION;
-            return false;
+            return NUMERICAL_ERROR_COMPUTATION;
         }
-        return true;
+        return NUMERICAL_SUCCESS;
     }
 
     // Fallback not implemented - QR is complex
-    backend_state.last_error = NUMERICAL_ERROR_NOT_IMPLEMENTED;
-    return false;
+    return NUMERICAL_ERROR_NOT_IMPLEMENTED;
 }
 
-bool numerical_eigendecomposition(const ComplexFloat* a,
-                                ComplexFloat* eigenvectors,
-                                ComplexFloat* eigenvalues,
-                                size_t n) {
-    if (!backend_state.initialized || !a || !eigenvectors || !eigenvalues) {
-        backend_state.last_error = NUMERICAL_ERROR_INVALID_ARGUMENT;
-        return false;
+numerical_error_t numerical_eigendecomposition_cpu(const ComplexFloat* a,
+                                             ComplexFloat* eigenvectors,
+                                             ComplexFloat* eigenvalues,
+                                             size_t n) {
+    if (!backend_state.initialized) {
+        return NUMERICAL_ERROR_INVALID_STATE;
+    }
+    
+    if (!a || !eigenvectors || !eigenvalues) {
+        return NUMERICAL_ERROR_INVALID_ARGUMENT;
     }
 
     if (backend_state.has_lapack) {
         bool success = lapack_eigendecomposition(a, n, eigenvectors, eigenvalues, LAPACK_ROW_MAJOR);
         if (!success) {
-            backend_state.last_error = NUMERICAL_ERROR_COMPUTATION;
-            return false;
+            return NUMERICAL_ERROR_COMPUTATION;
         }
-        return true;
+        return NUMERICAL_SUCCESS;
     }
 
     // Fallback not implemented - eigendecomposition is complex
-    backend_state.last_error = NUMERICAL_ERROR_NOT_IMPLEMENTED;
-    return false;
+    return NUMERICAL_ERROR_NOT_IMPLEMENTED;
 }
 
-bool numerical_cholesky(const ComplexFloat* a,
-                       ComplexFloat* l,
-                       size_t n,
-                       bool lower_triangular) {
-    if (!backend_state.initialized || !a || !l) {
-        backend_state.last_error = NUMERICAL_ERROR_INVALID_ARGUMENT;
-        return false;
+numerical_error_t numerical_cholesky_cpu(const ComplexFloat* a,
+                                   ComplexFloat* l,
+                                   size_t n,
+                                   bool lower_triangular) {
+    if (!backend_state.initialized) {
+        return NUMERICAL_ERROR_INVALID_STATE;
+    }
+    
+    if (!a || !l) {
+        return NUMERICAL_ERROR_INVALID_ARGUMENT;
     }
 
     if (backend_state.has_lapack) {
         bool success = lapack_cholesky(a, n, l, lower_triangular, LAPACK_ROW_MAJOR);
         if (!success) {
-            backend_state.last_error = NUMERICAL_ERROR_COMPUTATION;
-            return false;
+            return NUMERICAL_ERROR_COMPUTATION;
         }
-        return true;
+        return NUMERICAL_SUCCESS;
     }
 
     // Fallback not implemented - Cholesky is complex
-    backend_state.last_error = NUMERICAL_ERROR_NOT_IMPLEMENTED;
-    return false;
+    return NUMERICAL_ERROR_NOT_IMPLEMENTED;
 }
 
-bool numerical_lu(const ComplexFloat* a,
-                 ComplexFloat* l,
-                 ComplexFloat* u,
-                 int* ipiv,
-                 size_t m,
-                 size_t n) {
-    if (!backend_state.initialized || !a || !l || !u || !ipiv) {
-        backend_state.last_error = NUMERICAL_ERROR_INVALID_ARGUMENT;
-        return false;
+numerical_error_t numerical_lu_cpu(const ComplexFloat* a,
+                             ComplexFloat* l,
+                             ComplexFloat* u,
+                             int* ipiv,
+                             size_t m,
+                             size_t n) {
+    if (!backend_state.initialized) {
+        return NUMERICAL_ERROR_INVALID_STATE;
+    }
+    
+    if (!a || !l || !u || !ipiv) {
+        return NUMERICAL_ERROR_INVALID_ARGUMENT;
     }
 
     if (backend_state.has_lapack) {
         bool success = lapack_lu(a, m, n, l, u, ipiv, LAPACK_ROW_MAJOR);
         if (!success) {
-            backend_state.last_error = NUMERICAL_ERROR_COMPUTATION;
-            return false;
+            return NUMERICAL_ERROR_COMPUTATION;
         }
-        return true;
+        return NUMERICAL_SUCCESS;
     }
 
     // Fallback not implemented - LU is complex
-    backend_state.last_error = NUMERICAL_ERROR_NOT_IMPLEMENTED;
-    return false;
+    return NUMERICAL_ERROR_NOT_IMPLEMENTED;
 }
 
-bool numerical_solve_triangular(const ComplexFloat* a,
-                              const ComplexFloat* b,
-                              ComplexFloat* x,
-                              size_t n,
-                              size_t nrhs,
-                              bool upper_triangular,
-                              bool unit_diagonal) {
-    if (!backend_state.initialized || !a || !b || !x) {
-        backend_state.last_error = NUMERICAL_ERROR_INVALID_ARGUMENT;
-        return false;
+numerical_error_t numerical_solve_triangular_cpu(const ComplexFloat* a,
+                                          const ComplexFloat* b,
+                                          ComplexFloat* x,
+                                          size_t n,
+                                          size_t nrhs,
+                                          bool upper_triangular,
+                                          bool unit_diagonal) {
+    if (!backend_state.initialized) {
+        return NUMERICAL_ERROR_INVALID_STATE;
+    }
+    
+    if (!a || !b || !x) {
+        return NUMERICAL_ERROR_INVALID_ARGUMENT;
     }
 
     if (backend_state.has_lapack) {
@@ -226,26 +236,27 @@ bool numerical_solve_triangular(const ComplexFloat* a,
                                              upper_triangular, unit_diagonal,
                                              LAPACK_ROW_MAJOR);
         if (!success) {
-            backend_state.last_error = NUMERICAL_ERROR_COMPUTATION;
-            return false;
+            return NUMERICAL_ERROR_COMPUTATION;
         }
-        return true;
+        return NUMERICAL_SUCCESS;
     }
 
     // Fallback not implemented - triangular solve is complex
-    backend_state.last_error = NUMERICAL_ERROR_NOT_IMPLEMENTED;
-    return false;
+    return NUMERICAL_ERROR_NOT_IMPLEMENTED;
 }
 
-bool numerical_solve_symmetric(const ComplexFloat* a,
-                             const ComplexFloat* b,
-                             ComplexFloat* x,
-                             size_t n,
-                             size_t nrhs,
-                             bool positive_definite) {
-    if (!backend_state.initialized || !a || !b || !x) {
-        backend_state.last_error = NUMERICAL_ERROR_INVALID_ARGUMENT;
-        return false;
+numerical_error_t numerical_solve_symmetric_cpu(const ComplexFloat* a,
+                                         const ComplexFloat* b,
+                                         ComplexFloat* x,
+                                         size_t n,
+                                         size_t nrhs,
+                                         bool positive_definite) {
+    if (!backend_state.initialized) {
+        return NUMERICAL_ERROR_INVALID_STATE;
+    }
+    
+    if (!a || !b || !x) {
+        return NUMERICAL_ERROR_INVALID_ARGUMENT;
     }
 
     if (backend_state.has_lapack) {
@@ -253,26 +264,27 @@ bool numerical_solve_symmetric(const ComplexFloat* a,
                                             positive_definite,
                                             LAPACK_ROW_MAJOR);
         if (!success) {
-            backend_state.last_error = NUMERICAL_ERROR_COMPUTATION;
-            return false;
+            return NUMERICAL_ERROR_COMPUTATION;
         }
-        return true;
+        return NUMERICAL_SUCCESS;
     }
 
     // Fallback not implemented - symmetric solve is complex
-    backend_state.last_error = NUMERICAL_ERROR_NOT_IMPLEMENTED;
-    return false;
+    return NUMERICAL_ERROR_NOT_IMPLEMENTED;
 }
 
-bool numerical_svd(const ComplexFloat* a,
-                  ComplexFloat* u,
-                  float* s,
-                  ComplexFloat* vt,
-                  size_t m,
-                  size_t n) {
-    if (!backend_state.initialized || !a || !u || !s || !vt) {
-        backend_state.last_error = NUMERICAL_ERROR_INVALID_ARGUMENT;
-        return false;
+numerical_error_t numerical_svd_cpu(const ComplexFloat* a,
+                              ComplexFloat* u,
+                              float* s,
+                              ComplexFloat* vt,
+                              size_t m,
+                              size_t n) {
+    if (!backend_state.initialized) {
+        return NUMERICAL_ERROR_INVALID_STATE;
+    }
+    
+    if (!a || !u || !s || !vt) {
+        return NUMERICAL_ERROR_INVALID_ARGUMENT;
     }
 
     if (backend_state.has_lapack) {
@@ -281,19 +293,14 @@ bool numerical_svd(const ComplexFloat* a,
             lapack_status_t status = lapack_get_last_status();
             switch (status) {
                 case LAPACK_MEMORY_ERROR:
-                    backend_state.last_error = NUMERICAL_ERROR_MEMORY;
-                    break;
+                    return NUMERICAL_ERROR_MEMORY;
                 case LAPACK_NOT_CONVERGENT:
-                    backend_state.last_error = NUMERICAL_ERROR_COMPUTATION;
-                    break;
+                    return NUMERICAL_ERROR_COMPUTATION;
                 default:
-                    backend_state.last_error = NUMERICAL_ERROR_BACKEND;
-                    break;
+                    return NUMERICAL_ERROR_BACKEND;
             }
-            return false;
         }
-        backend_state.last_error = NUMERICAL_SUCCESS;
-        return true;
+        return NUMERICAL_SUCCESS;
     }
 
     // Fallback to power iteration if LAPACK is not available
@@ -307,8 +314,7 @@ bool numerical_svd(const ComplexFloat* a,
     if (!work || !temp) {
         free(work);
         free(temp);
-        backend_state.last_error = NUMERICAL_ERROR_MEMORY;
-        return false;
+        return NUMERICAL_ERROR_MEMORY;
     }
     
     // Initialize work vector
@@ -339,7 +345,8 @@ bool numerical_svd(const ComplexFloat* a,
         bool converged = true;
         for (size_t i = 0; i < m; i++) {
             ComplexFloat new_val = {temp[i].real / norm, temp[i].imag / norm};
-            if (!complex_is_equal(new_val, work[i])) {
+            ComplexFloat diff = complex_subtract(new_val, work[i]);
+            if (complex_abs_squared(diff) > tol * tol) {
                 converged = false;
             }
             work[i] = new_val;
@@ -357,49 +364,31 @@ bool numerical_svd(const ComplexFloat* a,
     free(work);
     free(temp);
     
-    backend_state.last_error = NUMERICAL_SUCCESS;
-    return true;
+    return NUMERICAL_SUCCESS;
 }
 
-bool get_numerical_metrics(numerical_metrics_t* metrics) {
-    if (!backend_state.initialized || !metrics) {
-        backend_state.last_error = NUMERICAL_ERROR_INVALID_ARGUMENT;
-        return false;
+numerical_error_t get_numerical_metrics_cpu(numerical_metrics_t* metrics) {
+    if (!backend_state.initialized) {
+        return NUMERICAL_ERROR_INVALID_STATE;
+    }
+    
+    if (!metrics) {
+        return NUMERICAL_ERROR_INVALID_ARGUMENT;
     }
     
     *metrics = backend_state.metrics;
-    return true;
+    return NUMERICAL_SUCCESS;
 }
 
-bool reset_numerical_metrics(void) {
+numerical_error_t reset_numerical_metrics_cpu(void) {
     if (!backend_state.initialized) {
-        backend_state.last_error = NUMERICAL_ERROR_INVALID_ARGUMENT;
-        return false;
+        return NUMERICAL_ERROR_INVALID_STATE;
     }
     
     memset(&backend_state.metrics, 0, sizeof(numerical_metrics_t));
-    return true;
+    return NUMERICAL_SUCCESS;
 }
 
-numerical_error_t get_last_numerical_error(void) {
+numerical_error_t get_last_numerical_error_cpu(void) {
     return backend_state.last_error;
-}
-
-const char* get_numerical_error_string(numerical_error_t error) {
-    switch (error) {
-        case NUMERICAL_SUCCESS:
-            return "Success";
-        case NUMERICAL_ERROR_INVALID_ARGUMENT:
-            return "Invalid argument";
-        case NUMERICAL_ERROR_MEMORY:
-            return "Memory allocation failed";
-        case NUMERICAL_ERROR_BACKEND:
-            return "Backend error";
-        case NUMERICAL_ERROR_COMPUTATION:
-            return "Computation error";
-        case NUMERICAL_ERROR_NOT_IMPLEMENTED:
-            return "Not implemented";
-        default:
-            return "Unknown error";
-    }
 }

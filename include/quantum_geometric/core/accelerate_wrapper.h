@@ -5,6 +5,7 @@
 
 // Include system headers
 #include <TargetConditionals.h>
+#include "quantum_geometric/core/lapack_internal.h"
 
 // CBLAS enum definitions - moved to global scope
 enum CBLAS_ORDER {
@@ -41,27 +42,6 @@ typedef double __CLPK_doublereal;
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-// Single precision SVD
-int cgesvd_(char* jobu, char* jobvt,
-            __CLPK_integer* m, __CLPK_integer* n,
-            __CLPK_complex* a, __CLPK_integer* lda,
-            __CLPK_real* s,
-            __CLPK_complex* u, __CLPK_integer* ldu,
-            __CLPK_complex* vt, __CLPK_integer* ldvt,
-            __CLPK_complex* work, __CLPK_integer* lwork,
-            __CLPK_real* rwork, __CLPK_integer* info);
-
-// Double precision SVD
-int zgesvd_(char* jobu, char* jobvt,
-            __CLPK_integer* m, __CLPK_integer* n,
-            __CLPK_doublecomplex* a, __CLPK_integer* lda,
-            __CLPK_doublereal* s,
-            __CLPK_doublecomplex* u, __CLPK_integer* ldu,
-            __CLPK_doublecomplex* vt, __CLPK_integer* ldvt,
-            __CLPK_doublecomplex* work, __CLPK_integer* lwork,
-            __CLPK_doublereal* rwork,
-            __CLPK_integer* info);
 
 // Single precision matrix multiply
 void cblas_cgemm(enum CBLAS_ORDER Order,
@@ -115,6 +95,17 @@ void vDSP_zrvadd(const float* __A, __CLPK_integer __IA,
 void vDSP_zrvmul(const float* __A, __CLPK_integer __IA,
                  const DSPComplex* __B, __CLPK_integer __IB,
                  DSPComplex* __C, __CLPK_integer __IC,
+                 __CLPK_integer __N);
+
+// Additional vDSP operations needed for matrix operations
+void vDSP_zmmul(const DSPComplex* __A, __CLPK_integer __IA,
+                const DSPComplex* __B, __CLPK_integer __IB,
+                DSPComplex* __C, __CLPK_integer __IC,
+                __CLPK_integer __M, __CLPK_integer __N, __CLPK_integer __K);
+
+void vDSP_zdotpr(const DSPComplex* __A, __CLPK_integer __IA,
+                 const DSPComplex* __B, __CLPK_integer __IB,
+                 DSPComplex* __C,
                  __CLPK_integer __N);
 
 #ifdef __cplusplus

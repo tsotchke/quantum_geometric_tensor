@@ -10,8 +10,8 @@
 extern "C" {
 #endif
 
-// Opaque types
-typedef struct quantum_circuit quantum_circuit_t;
+// Forward declaration - actual type defined in quantum_types.h
+struct quantum_circuit_t;
 
 // Circuit creation and destruction
 quantum_circuit_t* quantum_circuit_create(size_t num_qubits);

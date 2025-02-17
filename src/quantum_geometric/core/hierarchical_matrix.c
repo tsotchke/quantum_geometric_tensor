@@ -14,7 +14,7 @@
 
 // Additional optimization constants for O(log n) paths
 #define OPT_MIN_MATRIX_SIZE 32  // Reduced to allow more hierarchical levels
-#define OPT_MAX_RANK 16        // Reduced to favor low-rank approximations
+#define OPT_MAX_RANK 16        // Reduced toi favor low-rank approximations
 #define OPT_SVD_TOLERANCE 1e-8  // Increased tolerance for more aggressive compression
 #define COMPRESSION_THRESHOLD 0.1  // Threshold for when to attempt compression
 #define ADAPTIVE_BLOCK_SIZE 1024   // Size threshold for adaptive blocking
@@ -355,6 +355,35 @@ static HierarchicalMatrix* hmatrix_create_optimized(size_t n, double tolerance) 
     }
     
     return mat;
+}
+
+// Validate hierarchical matrix structure
+bool validate_hierarchical_matrix(const HierarchicalMatrix* matrix) {
+    if (!matrix) return false;
+    
+    // Check dimensions
+    if (matrix->rows == 0 || matrix->cols == 0) return false;
+    
+    // Check data consistency
+    if (matrix->is_leaf) {
+        // Leaf nodes must have data
+        if (!matrix->data) return false;
+        // Leaf nodes shouldn't have children
+        for (int i = 0; i < 4; i++) {
+            if (matrix->children[i]) return false;
+        }
+    } else {
+        // Non-leaf nodes must have valid children
+        for (int i = 0; i < 4; i++) {
+            if (!matrix->children[i]) return false;
+        }
+    }
+    
+    // Check tolerance
+    if (matrix->tolerance <= 0.0) return false;
+    
+    // All checks passed
+    return true;
 }
 
 // Function to choose between implementations

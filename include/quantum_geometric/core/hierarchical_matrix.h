@@ -89,7 +89,7 @@ bool init_matrix_properties(HierarchicalMatrix* matrix,
                           const matrix_properties_t* props);
 bool init_block_structure(HierarchicalMatrix* matrix,
                          const block_config_t* config);
-bool validate_initialization(const HierarchicalMatrix* matrix);
+bool validate_hierarchical_matrix(const HierarchicalMatrix* matrix);
 
 // Block operations
 bool set_block_sizes(HierarchicalMatrix* matrix,

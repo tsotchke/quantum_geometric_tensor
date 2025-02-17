@@ -43,9 +43,9 @@ bool initialize_fusion_optimizer(fusion_config_t* config);
 bool shutdown_fusion_optimizer(void);
 
 // Fusion operations
-bool analyze_fusion_opportunities(computational_graph_t* graph);
-bool apply_fusion_rules(computational_graph_t* graph);
-fusion_group_t* identify_fusion_groups(computational_graph_t* graph,
+bool analyze_fusion_opportunities(struct computational_graph_t* graph);
+bool apply_fusion_rules(struct computational_graph_t* graph);
+fusion_group_t* identify_fusion_groups(struct computational_graph_t* graph,
                                      size_t* num_groups);
 
 // Rule management
@@ -78,7 +78,7 @@ typedef enum {
 } optimization_strategy_t;
 
 bool set_optimization_strategy(optimization_strategy_t strategy);
-bool optimize_fusion_groups(computational_graph_t* graph,
+bool optimize_fusion_groups(struct computational_graph_t* graph,
                           optimization_strategy_t strategy);
 
 // Quantum-specific fusion
@@ -93,7 +93,7 @@ bool register_quantum_fusion_constraints(quantum_fusion_constraints_t* constrain
 bool validate_quantum_fusion(fusion_group_t* group);
 
 // Utility functions
-void print_fusion_statistics(computational_graph_t* graph);
+void print_fusion_statistics(struct computational_graph_t* graph);
 bool export_fusion_rules(const char* filename);
 bool import_fusion_rules(const char* filename);
 
@@ -105,7 +105,7 @@ typedef struct {
     double effective_speedup;    // Effective speedup
 } fusion_metrics_t;
 
-bool collect_fusion_metrics(computational_graph_t* graph,
+bool collect_fusion_metrics(struct computational_graph_t* graph,
                           fusion_metrics_t* metrics);
 
 #endif // OPERATION_FUSION_H

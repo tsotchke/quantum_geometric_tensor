@@ -54,13 +54,13 @@ typedef struct {
     quantum_device_t device;  // Computation device
 } LMCConfig;
 
-// Performance metrics
+// Sampling performance metrics
 typedef struct {
     double training_time;      // Training time in seconds
     double memory_usage_mb;    // Memory usage in MB
     double gpu_utilization;    // GPU utilization percentage
     double sampling_efficiency; // Effective sample size per second
-} PerformanceMetrics;
+} SamplingMetrics;
 
 // Opaque sampler handle
 typedef struct StochasticSampler StochasticSampler;

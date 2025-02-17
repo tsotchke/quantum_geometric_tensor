@@ -21,8 +21,8 @@ static ComplexFloat complex_div(ComplexFloat a, ComplexFloat b) {
     };
 }
 
-// Matrix multiplication
-bool matrix_multiply(
+// Matrix multiplication implementation
+bool matrix_multiply_impl(
     const ComplexFloat* a,
     const ComplexFloat* b,
     ComplexFloat* result,

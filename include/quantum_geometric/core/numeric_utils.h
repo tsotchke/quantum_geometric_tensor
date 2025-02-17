@@ -105,26 +105,6 @@ static inline double vector_norm_complex(const double complex* v, size_t n) {
     return sqrt(creal(dot_product_complex(v, v, n)));
 }
 
-// Matrix operations
-static bool __attribute__((unused)) matrix_multiply(const ComplexFloat* a,
-                          const ComplexFloat* b,
-                          ComplexFloat* result,
-                          size_t m,
-                          size_t n,
-                          size_t p) {
-    for (size_t i = 0; i < m; i++) {
-        for (size_t j = 0; j < p; j++) {
-            ComplexFloat sum = complex_float_create(0.0f, 0.0f);
-            for (size_t k = 0; k < n; k++) {
-                sum = complex_float_add(sum, 
-                      complex_float_multiply(a[i * n + k], b[k * p + j]));
-            }
-            result[i * p + j] = sum;
-        }
-    }
-    return true;
-}
-
 // Quantum-specific operations
 static inline double quantum_phase(double complex z) {
     return atan2(cimag(z), creal(z));

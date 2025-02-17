@@ -39,24 +39,15 @@ typedef struct computation_node_t {
     void (*gradient)(struct computation_node_t*);  // Gradient computation
 } computation_node_t;
 
-// Graph structure
-typedef struct {
-    computation_node_t** nodes;          // Array of nodes
-    size_t num_nodes;                    // Number of nodes
-    size_t capacity;                     // Node array capacity
-    computation_node_t** inputs;         // Input nodes
-    computation_node_t** outputs;        // Output nodes
-    size_t num_inputs;                   // Number of input nodes
-    size_t num_outputs;                  // Number of output nodes
-    geometric_processor_t* processor;     // Associated geometric processor
-} computational_graph_t;
+// Forward declaration
+struct computational_graph_t;
 
 // Graph creation and destruction
-computational_graph_t* create_computational_graph(geometric_processor_t* processor);
-void destroy_computational_graph(computational_graph_t* graph);
+struct computational_graph_t* create_computational_graph(struct geometric_processor_t* processor);
+void destroy_computational_graph(struct computational_graph_t* graph);
 
 // Node management
-computation_node_t* add_node(computational_graph_t* graph, 
+computation_node_t* add_node(struct computational_graph_t* graph, 
                            node_type_t type,
                            operation_type_t op_type,
                            void* data);
@@ -66,10 +57,10 @@ bool disconnect_nodes(computation_node_t* source,
                      computation_node_t* target);
 
 // Graph operations
-bool validate_graph(computational_graph_t* graph);
-bool optimize_graph(computational_graph_t* graph);
-bool execute_graph(computational_graph_t* graph);
-bool compute_gradients(computational_graph_t* graph);
+bool validate_graph(struct computational_graph_t* graph);
+bool optimize_graph(struct computational_graph_t* graph);
+bool execute_graph(struct computational_graph_t* graph);
+bool compute_gradients(struct computational_graph_t* graph);
 
 // Operation registration
 typedef struct {
@@ -78,14 +69,14 @@ typedef struct {
     void (*gradient)(void* data, void** inputs, void* gradient);
 } operation_functions_t;
 
-bool register_operation(computational_graph_t* graph,
+bool register_operation(struct computational_graph_t* graph,
                        const char* name,
                        operation_functions_t functions);
 
 // Utility functions
-bool export_graph(computational_graph_t* graph, const char* filename);
-bool import_graph(computational_graph_t* graph, const char* filename);
-void print_graph(computational_graph_t* graph);
+bool export_graph(struct computational_graph_t* graph, const char* filename);
+bool import_graph(struct computational_graph_t* graph, const char* filename);
+void print_graph(struct computational_graph_t* graph);
 
 // Graph analysis
 typedef struct {
@@ -97,6 +88,6 @@ typedef struct {
     double memory_usage;
 } graph_metrics_t;
 
-bool analyze_graph(computational_graph_t* graph, graph_metrics_t* metrics);
+bool analyze_graph(struct computational_graph_t* graph, graph_metrics_t* metrics);
 
 #endif // COMPUTATIONAL_GRAPH_H

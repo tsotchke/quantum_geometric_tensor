@@ -12,15 +12,6 @@
 extern "C" {
 #endif
 
-// QR algorithm configuration
-typedef struct {
-    double convergence_threshold;
-    size_t max_iterations;
-    bool compute_eigenvectors;
-    bool use_shifts;
-    bool balance_matrix;
-    void* custom_config;
-} qr_config_t;
 
 /**
  * @brief Set QR algorithm configuration

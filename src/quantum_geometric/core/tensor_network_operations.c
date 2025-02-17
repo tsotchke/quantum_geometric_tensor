@@ -441,19 +441,22 @@ bool contract_nodes(tensor_network_t* network,
         return false;
     }
     
-    // Find nodes
+    // Find nodes and track their positions in the array
     tensor_node_t* node1 = NULL;
     tensor_node_t* node2 = NULL;
     size_t node1_idx = 0, node2_idx = 0;
+    bool found1 = false, found2 = false;
     
-    for (size_t i = 0; i < network->num_nodes; i++) {
-        if (network->nodes[i]->id == node1_id) {
+    for (size_t i = 0; i < network->num_nodes && (!found1 || !found2); i++) {
+        if (!found1 && network->nodes[i]->id == node1_id) {
             node1 = network->nodes[i];
             node1_idx = i;
+            found1 = true;
         }
-        if (network->nodes[i]->id == node2_id) {
+        if (!found2 && network->nodes[i]->id == node2_id) {
             node2 = network->nodes[i];
             node2_idx = i;
+            found2 = true;
         }
     }
     
@@ -531,28 +534,33 @@ bool contract_nodes(tensor_network_t* network,
     }
     
     // Initialize numerical backend if needed
+    printf("DEBUG: Initializing numerical backend for tensor contraction\n");
     numerical_config_t config = {
-        .type = NUMERICAL_BACKEND_CPU,
+        .type = NUMERICAL_BACKEND_CPU,  // Use CPU backend by default
         .max_threads = 8,
         .use_fma = true,
         .use_avx = true,
         .use_neon = true,
-        .cache_size = 32 * 1024 * 1024
+        .cache_size = 32 * 1024 * 1024,
+        .backend_specific = NULL
     };
     
     if (!initialize_numerical_backend(&config)) {
+        printf("DEBUG: Failed to initialize numerical backend\n");
         free(contracted_dims1);
         free(contracted_dims2);
         free(out_dims);
         set_error(network, TENSOR_NETWORK_ERROR_INVALID_STATE);
         return false;
     }
+    printf("DEBUG: Numerical backend initialized successfully\n");
     
     // Perform contraction using numerical backend
     size_t total_size = 1;
     for (size_t i = 0; i < num_out_dims; i++) {
         total_size *= out_dims[i];
     }
+    printf("DEBUG: Allocating result tensor of size %zu\n", total_size);
     
     ComplexFloat* result_data = malloc(total_size * sizeof(ComplexFloat));
     if (!result_data) {
@@ -565,11 +573,17 @@ bool contract_nodes(tensor_network_t* network,
     
     // Reshape tensors for matrix multiplication
     size_t m = 1, n = 1, k = 1;
+    
+    // Calculate k (contracted dimension) first
+    for (size_t i = 0; i < num_contracted; i++) {
+        k *= node1->dimensions[contracted_dims1[i]];
+    }
+    
+    // Calculate m (output rows from node1)
     for (size_t i = 0; i < node1->num_dimensions; i++) {
         bool is_contracted = false;
         for (size_t j = 0; j < num_contracted; j++) {
             if (contracted_dims1[j] == i) {
-                k *= node1->dimensions[i];
                 is_contracted = true;
                 break;
             }
@@ -579,6 +593,7 @@ bool contract_nodes(tensor_network_t* network,
         }
     }
     
+    // Calculate n (output columns from node2)
     for (size_t i = 0; i < node2->num_dimensions; i++) {
         bool is_contracted = false;
         for (size_t j = 0; j < num_contracted; j++) {
@@ -592,11 +607,15 @@ bool contract_nodes(tensor_network_t* network,
         }
     }
     
+    printf("DEBUG: Reshaping tensors: m=%zu, k=%zu, n=%zu\n", m, k, n);
+    
+    printf("DEBUG: Performing matrix multiplication: m=%zu, k=%zu, n=%zu\n", m, k, n);
     if (!numerical_matrix_multiply(node1->data,
                                 node2->data,
                                 result_data,
                                 m, k, n,
                                 false, false)) {
+        printf("DEBUG: Matrix multiplication failed\n");
         free(contracted_dims1);
         free(contracted_dims2);
         free(out_dims);
@@ -604,6 +623,7 @@ bool contract_nodes(tensor_network_t* network,
         set_error(network, TENSOR_NETWORK_ERROR_COMPUTATION);
         return false;
     }
+    printf("DEBUG: Matrix multiplication completed successfully\n");
     
     // Create result node
     if (!add_tensor_node(network, result_data, out_dims, num_out_dims, result_node_id)) {

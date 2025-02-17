@@ -3,6 +3,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Graph structure implementation
+struct computational_graph_t {
+    computation_node_t** nodes;          // Array of nodes
+    size_t num_nodes;                    // Number of nodes
+    size_t capacity;                     // Node array capacity
+    computation_node_t** inputs;         // Input nodes
+    computation_node_t** outputs;        // Output nodes
+    size_t num_inputs;                   // Number of input nodes
+    size_t num_outputs;                  // Number of output nodes
+    geometric_processor_t* processor;     // Associated geometric processor
+};
+
 // Forward declarations of static functions
 static bool resize_node_array(computational_graph_t* graph);
 static bool has_cycle(computational_graph_t* graph, size_t node_idx,

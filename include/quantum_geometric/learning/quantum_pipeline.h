@@ -25,7 +25,9 @@ extern "C" {
 #define QG_CONFIG_BATCH_SIZE 4
 #define QG_CONFIG_LEARNING_RATE 5
 #define QG_CONFIG_USE_GPU 6
-#define QG_CONFIG_SIZE 7
+#define QG_CONFIG_NUM_QUBITS 7
+#define QG_CONFIG_NUM_LAYERS 8
+#define QG_CONFIG_SIZE 9
 
 // Opaque handle to quantum pipeline
 typedef void* quantum_pipeline_handle_t;

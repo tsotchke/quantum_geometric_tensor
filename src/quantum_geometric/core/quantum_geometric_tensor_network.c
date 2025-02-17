@@ -3,6 +3,9 @@
 #include "quantum_geometric/core/tensor_network_operations.h"
 #include "quantum_geometric/core/numerical_backend.h"
 #include "quantum_geometric/core/error_handling.h"
+#include "quantum_geometric/core/geometric_processor.h"
+#include "quantum_geometric/core/computational_graph.h"
+#include "quantum_geometric/core/quantum_gate_operations.h"
 #include "quantum_geometric/hardware/quantum_hardware_types.h"
 #include <stdlib.h>
 #include <string.h>
@@ -39,18 +42,37 @@ quantum_geometric_tensor_network_t* create_quantum_geometric_tensor_network(
         return NULL;
     }
 
-    // Initialize with |0> state for each qubit
-    ComplexFloat zero_state[2] = {{1.0f, 0.0f}, {0.0f, 0.0f}};
-    size_t dim = 2;
-    for (size_t i = 0; i < num_qubits; i++) {
-        size_t node_id;
-        if (!add_tensor_node(qgtn->network, zero_state, &dim, 1, &node_id)) {
-            destroy_tensor_network(qgtn->network);
-            free(qgtn);
-            set_error("Failed to initialize qubit state");
-            return NULL;
-        }
+    // Initialize hardware configuration
+    qgtn->hardware_config.type = QGTN_BACKEND_SIMULATOR;  // Default to simulator
+    qgtn->hardware_config.backend_specific = NULL;
+    qgtn->hardware_config.supports_gradients = true;  // Simulator supports gradients
+    qgtn->hardware_config.supports_hybrid = true;     // Simulator supports hybrid computation
+    qgtn->backend_state = NULL;
+
+    // Initialize with |0> state for the entire system
+    size_t state_dim = 1 << num_qubits;  // 2^n dimensional state space
+    ComplexFloat* state_vector = calloc(state_dim, sizeof(ComplexFloat));
+    if (!state_vector) {
+        destroy_tensor_network(qgtn->network);
+        free(qgtn);
+        set_error("Failed to allocate state vector");
+        return NULL;
     }
+    
+    // Set initial state to |0...0>
+    state_vector[0] = (ComplexFloat){1.0f, 0.0f};
+    
+    // Add state vector as a single tensor node
+    size_t node_id;
+    if (!add_tensor_node(qgtn->network, state_vector, &state_dim, 1, &node_id)) {
+        free(state_vector);
+        destroy_tensor_network(qgtn->network);
+        free(qgtn);
+        set_error("Failed to initialize quantum state");
+        return NULL;
+    }
+    
+    free(state_vector);
 
     // Initialize empty quantum circuit
     qgtn->circuit = malloc(sizeof(quantum_circuit_t));
@@ -84,6 +106,313 @@ quantum_geometric_tensor_network_t* create_quantum_geometric_tensor_network(
     qgtn->use_hardware_acceleration = use_hardware_acceleration;
     
     return qgtn;
+}
+
+quantum_geometric_tensor_network_t* copy_quantum_geometric_tensor_network(
+    const quantum_geometric_tensor_network_t* qgtn) {
+    
+    quantum_geometric_tensor_network_t* copy = malloc(sizeof(quantum_geometric_tensor_network_t));
+    if (!copy) return NULL;
+    
+    // Copy basic fields
+    copy->num_qubits = qgtn->num_qubits;
+    copy->num_layers = qgtn->num_layers;
+    copy->is_distributed = qgtn->is_distributed;
+    copy->use_hardware_acceleration = qgtn->use_hardware_acceleration;
+    
+    // Copy hardware configuration
+    copy->hardware_config = qgtn->hardware_config;
+    copy->backend_state = NULL;  // Backend state needs to be initialized separately
+    
+    // Initialize hardware backend if needed
+    if (copy->use_hardware_acceleration) {
+        numerical_config_t config = {
+            .type = NUMERICAL_BACKEND_CPU,  // Default to CPU
+            .max_threads = 1,
+            .use_fma = true,
+            .use_avx = true,
+            .use_neon = true,
+            .cache_size = 32 * 1024 * 1024  // 32MB cache
+        };
+        
+        if (!initialize_numerical_backend(&config)) {
+            free(copy);
+            return NULL;
+        }
+    }
+    
+    // Create new tensor network
+    copy->network = create_tensor_network();
+    if (!copy->network) {
+        free(copy);
+        return NULL;
+    }
+    
+    // Copy circuit
+    copy->circuit = malloc(sizeof(quantum_circuit_t));
+    if (!copy->circuit) {
+        destroy_tensor_network(copy->network);
+        free(copy);
+        return NULL;
+    }
+    
+    copy->circuit->layers = malloc(qgtn->num_layers * sizeof(circuit_layer_t*));
+    if (!copy->circuit->layers) {
+        free(copy->circuit);
+        destroy_tensor_network(copy->network);
+        free(copy);
+        return NULL;
+    }
+    
+    copy->circuit->num_layers = qgtn->num_layers;
+    copy->circuit->num_qubits = qgtn->num_qubits;
+    copy->circuit->is_parameterized = qgtn->circuit->is_parameterized;
+    
+    // Initialize geometric processor for graph
+    geometric_processor_t* processor = create_geometric_processor(NULL);
+    if (!processor) {
+        free(copy->circuit->layers);
+        free(copy->circuit);
+        destroy_tensor_network(copy->network);
+        free(copy);
+        return NULL;
+    }
+    
+    // Initialize computational graph with processor
+    copy->circuit->graph = create_computational_graph(processor);
+    if (!copy->circuit->graph) {
+        destroy_geometric_processor(processor);
+        free(copy->circuit->layers);
+        free(copy->circuit);
+        destroy_tensor_network(copy->network);
+        free(copy);
+        return NULL;
+    }
+    
+    // Store processor in backend state
+    copy->backend_state = processor;
+    
+    // Initialize quantum geometric state
+    copy->circuit->state = malloc(sizeof(quantum_geometric_state_t));
+    if (!copy->circuit->state) {
+        destroy_computational_graph(copy->circuit->graph);
+        destroy_geometric_processor(processor);
+        free(copy->circuit->layers);
+        free(copy->circuit);
+        destroy_tensor_network(copy->network);
+        free(copy);
+        return NULL;
+    }
+    
+    // Copy state fields
+    if (qgtn->circuit->state) {
+        // Copy state structure
+        memcpy(copy->circuit->state, qgtn->circuit->state, sizeof(quantum_geometric_state_t));
+        
+        // Allocate and copy coordinates if they exist
+        if (qgtn->circuit->state->coordinates) {
+            copy->circuit->state->coordinates = malloc(qgtn->circuit->state->dimension * sizeof(ComplexFloat));
+            if (!copy->circuit->state->coordinates) {
+                free(copy->circuit->state);
+                destroy_computational_graph(copy->circuit->graph);
+                destroy_geometric_processor(processor);
+                free(copy->circuit->layers);
+                free(copy->circuit);
+                destroy_tensor_network(copy->network);
+                free(copy);
+                return NULL;
+            }
+            memcpy(copy->circuit->state->coordinates, qgtn->circuit->state->coordinates,
+                   qgtn->circuit->state->dimension * sizeof(ComplexFloat));
+        } else {
+            copy->circuit->state->coordinates = NULL;
+        }
+    } else {
+        memset(copy->circuit->state, 0, sizeof(quantum_geometric_state_t));
+        copy->circuit->state->coordinates = NULL;
+    }
+    
+    // Initialize nodes array
+    copy->circuit->nodes = malloc(qgtn->circuit->capacity * sizeof(quantum_compute_node_t*));
+    if (!copy->circuit->nodes) {
+        free(copy->circuit->state);
+        destroy_computational_graph(copy->circuit->graph);
+        free(copy->circuit->layers);
+        free(copy->circuit);
+        destroy_tensor_network(copy->network);
+        free(copy);
+        return NULL;
+    }
+    
+    copy->circuit->num_nodes = qgtn->circuit->num_nodes;
+    copy->circuit->capacity = qgtn->circuit->capacity;
+    
+    // Copy compute nodes
+    for (size_t i = 0; i < qgtn->circuit->num_nodes; i++) {
+        if (qgtn->circuit->nodes[i]) {
+            // Deep copy compute node
+            quantum_compute_node_t* node = malloc(sizeof(quantum_compute_node_t));
+            if (!node) {
+                for (size_t j = 0; j < i; j++) {
+                    if (copy->circuit->nodes[j]) {
+                        free(copy->circuit->nodes[j]->qubit_indices);
+                        free(copy->circuit->nodes[j]->parameters);
+                        free(copy->circuit->nodes[j]);
+                    }
+                }
+                free(copy->circuit->nodes);
+                free(copy->circuit->state);
+                destroy_computational_graph(copy->circuit->graph);
+                free(copy->circuit->layers);
+                free(copy->circuit);
+                destroy_tensor_network(copy->network);
+                free(copy);
+                return NULL;
+            }
+            
+            // Copy basic fields
+            node->type = qgtn->circuit->nodes[i]->type;
+            node->num_qubits = qgtn->circuit->nodes[i]->num_qubits;
+            node->num_parameters = qgtn->circuit->nodes[i]->num_parameters;
+            
+            // Copy qubit indices
+            node->qubit_indices = malloc(node->num_qubits * sizeof(size_t));
+            if (!node->qubit_indices) {
+                free(node);
+                for (size_t j = 0; j < i; j++) {
+                    if (copy->circuit->nodes[j]) {
+                        free(copy->circuit->nodes[j]->qubit_indices);
+                        free(copy->circuit->nodes[j]->parameters);
+                        free(copy->circuit->nodes[j]);
+                    }
+                }
+                free(copy->circuit->nodes);
+                free(copy->circuit->state);
+                destroy_computational_graph(copy->circuit->graph);
+                free(copy->circuit->layers);
+                free(copy->circuit);
+                destroy_tensor_network(copy->network);
+                free(copy);
+                return NULL;
+            }
+            memcpy(node->qubit_indices, qgtn->circuit->nodes[i]->qubit_indices, 
+                   node->num_qubits * sizeof(size_t));
+            
+            // Copy parameters
+            if (qgtn->circuit->nodes[i]->parameters) {
+                node->parameters = malloc(node->num_parameters * sizeof(ComplexFloat));
+                if (!node->parameters) {
+                    free(node->qubit_indices);
+                    free(node);
+                    for (size_t j = 0; j < i; j++) {
+                        if (copy->circuit->nodes[j]) {
+                            free(copy->circuit->nodes[j]->qubit_indices);
+                            free(copy->circuit->nodes[j]->parameters);
+                            free(copy->circuit->nodes[j]);
+                        }
+                    }
+                    free(copy->circuit->nodes);
+                    free(copy->circuit->state);
+                    destroy_computational_graph(copy->circuit->graph);
+                    free(copy->circuit->layers);
+                    free(copy->circuit);
+                    destroy_tensor_network(copy->network);
+                    free(copy);
+                    return NULL;
+                }
+                memcpy(node->parameters, qgtn->circuit->nodes[i]->parameters,
+                       node->num_parameters * sizeof(ComplexFloat));
+            } else {
+                node->parameters = NULL;
+            }
+            
+            // Set additional data to NULL (will be reconstructed during circuit application)
+            node->additional_data = NULL;
+            
+            copy->circuit->nodes[i] = node;
+        } else {
+            copy->circuit->nodes[i] = NULL;
+        }
+    }
+    
+    // Copy each layer
+    for (size_t l = 0; l < qgtn->num_layers; l++) {
+        if (qgtn->circuit->layers[l]) {
+            circuit_layer_t* layer = malloc(sizeof(circuit_layer_t));
+            if (!layer) {
+                // Clean up on failure
+                for (size_t j = 0; j < l; j++) {
+                    if (copy->circuit->layers[j]) {
+                        for (size_t g = 0; g < copy->circuit->layers[j]->num_gates; g++) {
+                            free(copy->circuit->layers[j]->gates[g]);
+                        }
+                        free(copy->circuit->layers[j]->gates);
+                        free(copy->circuit->layers[j]);
+                    }
+                }
+                free(copy->circuit->layers);
+                free(copy->circuit);
+                destroy_tensor_network(copy->network);
+                free(copy);
+                return NULL;
+            }
+            
+            layer->num_gates = qgtn->circuit->layers[l]->num_gates;
+            layer->is_parameterized = qgtn->circuit->layers[l]->is_parameterized;
+            
+            layer->gates = malloc(layer->num_gates * sizeof(quantum_gate_t*));
+            if (!layer->gates) {
+                free(layer);
+                for (size_t j = 0; j < l; j++) {
+                    if (copy->circuit->layers[j]) {
+                        for (size_t g = 0; g < copy->circuit->layers[j]->num_gates; g++) {
+                            free(copy->circuit->layers[j]->gates[g]);
+                        }
+                        free(copy->circuit->layers[j]->gates);
+                        free(copy->circuit->layers[j]);
+                    }
+                }
+                free(copy->circuit->layers);
+                free(copy->circuit);
+                destroy_tensor_network(copy->network);
+                free(copy);
+                return NULL;
+            }
+            
+            // Copy each gate
+            for (size_t g = 0; g < layer->num_gates; g++) {
+                layer->gates[g] = copy_quantum_gate(qgtn->circuit->layers[l]->gates[g]);
+                if (!layer->gates[g]) {
+                    // Clean up on failure
+                    for (size_t h = 0; h < g; h++) {
+                        free(layer->gates[h]);
+                    }
+                    free(layer->gates);
+                    free(layer);
+                    for (size_t j = 0; j < l; j++) {
+                        if (copy->circuit->layers[j]) {
+                            for (size_t h = 0; h < copy->circuit->layers[j]->num_gates; h++) {
+                                free(copy->circuit->layers[j]->gates[h]);
+                            }
+                            free(copy->circuit->layers[j]->gates);
+                            free(copy->circuit->layers[j]);
+                        }
+                    }
+                    free(copy->circuit->layers);
+                    free(copy->circuit);
+                    destroy_tensor_network(copy->network);
+                    free(copy);
+                    return NULL;
+                }
+            }
+            
+            copy->circuit->layers[l] = layer;
+        } else {
+            copy->circuit->layers[l] = NULL;
+        }
+    }
+    
+    return copy;
 }
 
 void destroy_quantum_geometric_tensor_network(quantum_geometric_tensor_network_t* qgtn) {
@@ -135,50 +464,6 @@ static circuit_layer_t* create_circuit_layer(void) {
     layer->num_gates = 0;
     layer->is_parameterized = false;
     return layer;
-}
-
-// Helper function to copy a quantum gate
-static quantum_gate_t* copy_quantum_gate(const quantum_gate_t* gate) {
-    quantum_gate_t* new_gate = malloc(sizeof(quantum_gate_t));
-    if (!new_gate) return NULL;
-    
-    // Copy basic fields
-    new_gate->num_qubits = gate->num_qubits;
-    new_gate->num_controls = gate->num_controls;
-    new_gate->is_controlled = gate->is_controlled;
-    new_gate->type = gate->type;
-    new_gate->num_parameters = gate->num_parameters;
-    new_gate->is_parameterized = gate->is_parameterized;
-    
-    // Allocate and copy arrays
-    size_t matrix_size = 1 << (2 * gate->num_qubits);  // 2^n x 2^n matrix
-    new_gate->matrix = malloc(matrix_size * sizeof(ComplexFloat));
-    new_gate->target_qubits = malloc(gate->num_qubits * sizeof(size_t));
-    new_gate->control_qubits = gate->num_controls ? malloc(gate->num_controls * sizeof(size_t)) : NULL;
-    new_gate->parameters = gate->num_parameters ? malloc(gate->num_parameters * sizeof(double)) : NULL;
-    
-    if (!new_gate->matrix || !new_gate->target_qubits || 
-        (gate->num_controls && !new_gate->control_qubits) ||
-        (gate->num_parameters && !new_gate->parameters)) {
-        free(new_gate->matrix);
-        free(new_gate->target_qubits);
-        free(new_gate->control_qubits);
-        free(new_gate->parameters);
-        free(new_gate);
-        return NULL;
-    }
-    
-    // Copy data
-    memcpy(new_gate->matrix, gate->matrix, matrix_size * sizeof(ComplexFloat));
-    memcpy(new_gate->target_qubits, gate->target_qubits, gate->num_qubits * sizeof(size_t));
-    if (gate->num_controls) {
-        memcpy(new_gate->control_qubits, gate->control_qubits, gate->num_controls * sizeof(size_t));
-    }
-    if (gate->num_parameters) {
-        memcpy(new_gate->parameters, gate->parameters, gate->num_parameters * sizeof(double));
-    }
-    
-    return new_gate;
 }
 
 bool apply_quantum_gate(
@@ -243,25 +528,87 @@ bool apply_quantum_circuit(
     quantum_geometric_tensor_network_t* qgtn,
     const quantum_circuit_t* circuit) {
     
+    printf("DEBUG: Starting apply_quantum_circuit\n");
     if (!qgtn || !circuit) {
         set_error("Invalid arguments to apply_quantum_circuit");
         return false;
     }
+
+    // Initialize circuit state if needed
+    if (!qgtn->circuit->state) {
+        printf("DEBUG: Creating new circuit state\n");
+        qgtn->circuit->state = malloc(sizeof(quantum_geometric_state_t));
+        if (!qgtn->circuit->state) {
+            set_error("Failed to allocate circuit state");
+            return false;
+        }
+        qgtn->circuit->state->coordinates = NULL;
+        qgtn->circuit->state->dimension = 0;
+    }
+
+    // Initialize nodes array if needed
+    if (!qgtn->circuit->nodes) {
+        printf("DEBUG: Initializing circuit nodes array\n");
+        qgtn->circuit->capacity = 16;  // Initial capacity
+        qgtn->circuit->nodes = malloc(qgtn->circuit->capacity * sizeof(quantum_compute_node_t*));
+        if (!qgtn->circuit->nodes) {
+            set_error("Failed to allocate nodes array");
+            return false;
+        }
+        qgtn->circuit->num_nodes = 0;
+        memset(qgtn->circuit->nodes, 0, qgtn->circuit->capacity * sizeof(quantum_compute_node_t*));
+        printf("DEBUG: Circuit nodes array initialized\n");
+    }
     
     // Apply each layer
+    printf("DEBUG: Applying circuit layers\n");
     for (size_t l = 0; l < circuit->num_layers; l++) {
         circuit_layer_t* layer = circuit->layers[l];
+        if (!layer) {
+            printf("DEBUG: Layer %zu is NULL\n", l);
+            continue;
+        }
         
+        printf("DEBUG: Applying layer %zu with %zu gates\n", l, layer->num_gates);
         // Apply gates in layer
         for (size_t g = 0; g < layer->num_gates; g++) {
             quantum_gate_t* gate = layer->gates[g];
+            if (!gate) {
+                printf("DEBUG: Gate %zu in layer %zu is NULL\n", g, l);
+                continue;
+            }
+            
+            printf("DEBUG: Applying gate %zu (type=%d, num_qubits=%zu)\n", 
+                   g, gate->type, gate->num_qubits);
             if (!apply_quantum_gate(qgtn, gate,
                                   gate->target_qubits,
                                   gate->num_qubits)) {
+                printf("DEBUG: Failed to apply gate %zu in layer %zu\n", g, l);
                 return false;
             }
         }
     }
+    printf("DEBUG: All layers applied\n");
+    
+    // Contract network to get final state
+    printf("DEBUG: Contracting network for final state\n");
+    ComplexFloat* state_vector;
+    size_t dims[1];
+    size_t num_dims;
+    
+    if (!contract_full_network(qgtn->network, &state_vector, dims, &num_dims)) {
+        printf("DEBUG: Failed to contract network for final state\n");
+        set_error("Failed to contract network for final state");
+        return false;
+    }
+    printf("DEBUG: Network contracted successfully\n");
+    
+    // Update circuit state
+    if (qgtn->circuit->state->coordinates) {
+        free(qgtn->circuit->state->coordinates);
+    }
+    qgtn->circuit->state->coordinates = state_vector;
+    qgtn->circuit->state->dimension = dims[0];
     
     return true;
 }

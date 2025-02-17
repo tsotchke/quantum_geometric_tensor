@@ -1,6 +1,7 @@
 #ifndef ADVANCED_MEMORY_SYSTEM_H
 #define ADVANCED_MEMORY_SYSTEM_H
 
+#include "quantum_geometric/core/quantum_geometric_types.h"
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -48,6 +49,7 @@ typedef struct {
     bool fixed_size;                    // Fixed size blocks
     bool thread_safe;                   // Thread safety
     bool enable_growth;                 // Enable pool growth
+    bool enable_stats;                  // Enable statistics tracking
 } pool_config_t;
 
 // Memory metrics
@@ -80,6 +82,38 @@ typedef struct {
     size_t batch_size;                  // Defrag batch size
 } defrag_config_t;
 
+// Memory layout structure
+typedef struct {
+    void* base_ptr;
+    size_t dimensions[QGT_MAX_DIMENSIONS];
+    size_t strides[QGT_MAX_DIMENSIONS];
+    size_t total_size;
+    bool is_geometric;
+    geometric_state_type_t geom_type;
+} MemoryLayout;
+
+// Memory buffer
+typedef struct {
+    void* gpu_ptr;
+    void* cpu_ptr;
+    void* quantum_ptr;
+    size_t size;
+    bool is_pinned;
+    bool is_unified;
+    HardwareType hardware;
+} MemoryBuffer;
+
+// Memory pool
+typedef struct {
+    MemoryLayout* layouts;
+    MemoryBuffer* buffers;
+    size_t num_layouts;
+    size_t num_buffers;
+    void* fast_path_cache;
+    pool_config_t config;
+    bool use_neon;  // For ARM NEON support
+} MemoryPool;
+
 // Opaque memory system handle
 typedef struct advanced_memory_system_t advanced_memory_system_t;
 
@@ -108,6 +142,31 @@ void* pool_allocate(advanced_memory_system_t* system,
 void pool_free(advanced_memory_system_t* system,
                void* pool,
                void* ptr);
+
+// Memory layout functions
+MemoryLayout* create_memory_layout(MemoryPool* pool,
+                                 const size_t* dimensions,
+                                 size_t num_dims,
+                                 geometric_state_type_t geom_type);
+
+// Memory buffer functions
+MemoryBuffer* create_memory_buffer(MemoryPool* pool,
+                                 size_t size,
+                                 bool gpu_accessible,
+                                 bool quantum_accessible,
+                                 HardwareType hardware);
+
+// Memory copy functions
+void memory_copy(MemoryLayout* dst,
+                const MemoryLayout* src,
+                size_t size);
+
+void memory_transfer(MemoryBuffer* buffer,
+                    geometric_state_type_t direction);
+
+// Memory pool management
+void cleanup_memory_pool(MemoryPool* pool);
+void update_memory_access(MemoryPool* pool);
 
 // Memory optimization functions
 bool optimize_memory_usage(advanced_memory_system_t* system,

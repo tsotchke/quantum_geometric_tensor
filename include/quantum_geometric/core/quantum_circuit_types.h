@@ -2,8 +2,14 @@
 #define QUANTUM_CIRCUIT_TYPES_H
 
 #include "quantum_geometric/core/quantum_types.h"
+#include "quantum_geometric/core/geometric_processor.h"
+#include "quantum_geometric/core/computational_graph.h"
 #include <stddef.h>
 #include <stdbool.h>
+
+// Forward declarations
+typedef struct geometric_processor_t geometric_processor_t;
+typedef struct computational_graph_t computational_graph_t;
 
 // Quantum circuit layer types
 typedef enum {
@@ -29,6 +35,8 @@ typedef struct quantum_circuit {
     size_t num_qubits;       // Total number of qubits
     bool* measured;          // Array tracking measured qubits
     void* optimization_data; // Data for circuit optimization
+    geometric_processor_t* processor; // Geometric processor for computations
+    computational_graph_t* graph;    // Computational graph
 } quantum_circuit;
 
 // Function declarations

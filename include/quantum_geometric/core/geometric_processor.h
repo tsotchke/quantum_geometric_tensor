@@ -60,7 +60,7 @@ typedef struct {
 // Transform parameters
 typedef struct {
     transform_type_t type;         // Transform type
-    complex double* matrix;        // Transform matrix
+    _Complex double* matrix;        // Transform matrix
     double* parameters;            // Transform parameters
     size_t param_count;           // Parameter count
     bool is_unitary;              // Unitary flag

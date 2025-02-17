@@ -2,9 +2,16 @@
 #include "quantum_geometric/core/quantum_gate_operations.h"
 #include "quantum_geometric/core/numerical_backend.h"
 #include "quantum_geometric/core/error_handling.h"
+#include "quantum_geometric/core/advanced_memory_system.h"
+#include "quantum_geometric/core/quantum_geometric_compute.h"
+#include "quantum_geometric/core/geometric_processor.h"
+#include "quantum_geometric/core/computational_graph.h"
+#include "quantum_geometric/core/quantum_geometric_tensor_network.h"
+#include "quantum_geometric/core/quantum_parameter_shift.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stddef.h>
 
 // Helper function to find gate containing parameter
 static quantum_gate_t* find_parameterized_gate(
@@ -13,14 +20,48 @@ static quantum_gate_t* find_parameterized_gate(
     size_t* layer_idx,
     size_t* gate_idx) {
     
+    printf("DEBUG: Starting find_parameterized_gate\n");
+    printf("DEBUG: Looking for param_idx=%zu\n", param_idx);
+    
+    if (!qgtn || !qgtn->circuit) {
+        printf("DEBUG: Invalid qgtn or circuit\n");
+        return NULL;
+    }
+    
+    printf("DEBUG: Circuit has %zu layers\n", qgtn->num_layers);
+    printf("DEBUG: Circuit state: %p\n", (void*)qgtn->circuit->state);
+    if (qgtn->circuit->state) {
+        printf("DEBUG: Circuit state dimension: %zu\n", qgtn->circuit->state->dimension);
+    }
+    
     size_t current_param = 0;
     
     for (size_t l = 0; l < qgtn->num_layers; l++) {
         circuit_layer_t* layer = qgtn->circuit->layers[l];
+        if (!layer) {
+            printf("DEBUG: Layer %zu is NULL\n", l);
+            continue;
+        }
+        printf("DEBUG: Layer %zu has %zu gates, is_parameterized=%d\n", 
+               l, layer->num_gates, layer->is_parameterized);
+        
         for (size_t g = 0; g < layer->num_gates; g++) {
             quantum_gate_t* gate = layer->gates[g];
+            if (!gate) {
+                printf("DEBUG: Gate %zu in layer %zu is NULL\n", g, l);
+                continue;
+            }
+            printf("DEBUG: Gate %zu in layer %zu: type=%d, is_parameterized=%d, num_params=%zu\n", 
+                   g, l, gate->type, gate->is_parameterized, gate->num_parameters);
+            
+            if (gate->is_parameterized && gate->parameters) {
+                printf("DEBUG: Gate parameters: [%.6f]\n", gate->parameters[0]);
+            }
+            
             if (gate->is_parameterized) {
+                printf("DEBUG: Found parameterized gate, current_param=%zu\n", current_param);
                 if (current_param == param_idx) {
+                    printf("DEBUG: Found target gate at layer %zu, index %zu\n", l, g);
                     *layer_idx = l;
                     *gate_idx = g;
                     return gate;
@@ -30,66 +71,76 @@ static quantum_gate_t* find_parameterized_gate(
         }
     }
     
+    printf("DEBUG: No matching parameterized gate found\n");
     return NULL;
 }
 
-// Helper function to shift a parameter in the circuit
-static bool shift_parameter(
+bool shift_parameter(
     quantum_geometric_tensor_network_t* qgtn,
     size_t param_idx,
     double shift_amount) {
+    
+    printf("DEBUG: Starting shift_parameter\n");
+    printf("DEBUG: param_idx=%zu, shift_amount=%.6f\n", param_idx, shift_amount);
     
     // Find gate containing parameter
     size_t layer_idx, gate_idx;
     quantum_gate_t* gate = find_parameterized_gate(qgtn, param_idx, &layer_idx, &gate_idx);
     if (!gate) {
+        printf("DEBUG: Failed to find parameterized gate\n");
         return false;
     }
+    printf("DEBUG: Found gate at layer %zu, index %zu\n", layer_idx, gate_idx);
+    printf("DEBUG: Gate type=%d, num_qubits=%zu, is_parameterized=%d\n", 
+           gate->type, gate->num_qubits, gate->is_parameterized);
     
     // Store original parameter
     double original_param = gate->parameters[0];
+    printf("DEBUG: Original parameter=%.6f\n", original_param);
     
     // Apply shift
     gate->parameters[0] += shift_amount;
+    printf("DEBUG: New parameter=%.6f\n", gate->parameters[0]);
     
     // Update gate matrix based on type
     ComplexFloat new_matrix[4];
+    printf("DEBUG: Updating gate matrix for type %d\n", gate->type);
     switch (gate->type) {
         case GATE_TYPE_RX:
-            // Rx = [cos(θ/2)   -i*sin(θ/2)]
-            //      [-i*sin(θ/2)  cos(θ/2) ]
             {
                 double cos_half = cos(gate->parameters[0] / 2.0);
                 double sin_half = sin(gate->parameters[0] / 2.0);
-                new_matrix[0] = (ComplexFloat){cos_half, 0};
-                new_matrix[1] = (ComplexFloat){0, -sin_half};
-                new_matrix[2] = (ComplexFloat){0, -sin_half};
-                new_matrix[3] = (ComplexFloat){cos_half, 0};
+                // Rx = [cos(θ/2)    -i*sin(θ/2)]
+                //      [-i*sin(θ/2)   cos(θ/2) ]
+                new_matrix[0] = (ComplexFloat){cos_half, 0.0};
+                new_matrix[1] = (ComplexFloat){0.0, -sin_half};
+                new_matrix[2] = (ComplexFloat){0.0, -sin_half};
+                new_matrix[3] = (ComplexFloat){cos_half, 0.0};
             }
             break;
             
         case GATE_TYPE_RY:
-            // Ry = [cos(θ/2)   -sin(θ/2)]
-            //      [sin(θ/2)    cos(θ/2)]
             {
                 double cos_half = cos(gate->parameters[0] / 2.0);
                 double sin_half = sin(gate->parameters[0] / 2.0);
-                new_matrix[0] = (ComplexFloat){cos_half, 0};
-                new_matrix[1] = (ComplexFloat){-sin_half, 0};
-                new_matrix[2] = (ComplexFloat){sin_half, 0};
-                new_matrix[3] = (ComplexFloat){cos_half, 0};
+                // Ry = [cos(θ/2)    -sin(θ/2)]
+                //      [sin(θ/2)     cos(θ/2)]
+                new_matrix[0] = (ComplexFloat){cos_half, 0.0};
+                new_matrix[1] = (ComplexFloat){-sin_half, 0.0};
+                new_matrix[2] = (ComplexFloat){sin_half, 0.0};
+                new_matrix[3] = (ComplexFloat){cos_half, 0.0};
             }
             break;
             
         case GATE_TYPE_RZ:
-            // Rz = [e^(-iθ/2)      0    ]
-            //      [    0      e^(iθ/2) ]
             {
                 double cos_half = cos(gate->parameters[0] / 2.0);
                 double sin_half = sin(gate->parameters[0] / 2.0);
+                // Rz = [e^(-iθ/2)    0        ]
+                //      [0            e^(iθ/2)  ]
                 new_matrix[0] = (ComplexFloat){cos_half, -sin_half};
-                new_matrix[1] = (ComplexFloat){0, 0};
-                new_matrix[2] = (ComplexFloat){0, 0};
+                new_matrix[1] = (ComplexFloat){0.0, 0.0};
+                new_matrix[2] = (ComplexFloat){0.0, 0.0};
                 new_matrix[3] = (ComplexFloat){cos_half, sin_half};
             }
             break;
@@ -101,44 +152,15 @@ static bool shift_parameter(
     
     // Update gate matrix
     memcpy(gate->matrix, new_matrix, 4 * sizeof(ComplexFloat));
-    
-    // Rebuild tensor network
-    destroy_tensor_network(qgtn->network);
-    qgtn->network = create_tensor_network();
-    if (!qgtn->network) {
-        gate->parameters[0] = original_param;
-        return false;
-    }
-    
-    // Reapply circuit
-    for (size_t l = 0; l < qgtn->circuit->num_layers; l++) {
-        circuit_layer_t* layer = qgtn->circuit->layers[l];
-        if (layer) {
-            for (size_t g = 0; g < layer->num_gates; g++) {
-                quantum_gate_t* current_gate = layer->gates[g];
-                size_t node_id;
-                if (!add_tensor_node(qgtn->network, current_gate->matrix,
-                                   &current_gate->num_qubits, 1, &node_id)) {
-                    gate->parameters[0] = original_param;
-                    return false;
-                }
-                
-                for (size_t i = 0; i < current_gate->num_qubits; i++) {
-                    if (!connect_tensor_nodes(qgtn->network, node_id, i,
-                                            current_gate->target_qubits[i], 0)) {
-                        gate->parameters[0] = original_param;
-                        return false;
-                    }
-                }
-            }
-        }
+    printf("DEBUG: Updated gate matrix:\n");
+    for (int i = 0; i < 4; i++) {
+        printf("  [%d]: (%.6f,%.6f)\n", i, new_matrix[i].real, new_matrix[i].imag);
     }
     
     return true;
 }
 
-// Helper function to compute forward and backward shifted states
-static bool compute_shifted_states(
+bool compute_shifted_states(
     quantum_geometric_tensor_network_t* qgtn,
     size_t param_idx,
     double shift_amount,
@@ -146,412 +168,147 @@ static bool compute_shifted_states(
     ComplexFloat** backward_state,
     size_t* dimension) {
     
-    // Get original state
-    ComplexFloat* original_state;
-    size_t state_dim;
-    if (!get_quantum_state(qgtn, &original_state, &state_dim)) {
-        return false;
-    }
-    free(original_state);  // We don't need the original state
+    printf("DEBUG: Starting compute_shifted_states\n");
+    printf("DEBUG: param_idx=%zu, shift_amount=%.6f\n", param_idx, shift_amount);
+    
+    // Get state dimension
+    size_t state_dim = 1 << qgtn->num_qubits;
+    printf("DEBUG: state_dim=%zu (num_qubits=%zu)\n", state_dim, qgtn->num_qubits);
     
     // Allocate states
-    *forward_state = malloc(state_dim * sizeof(ComplexFloat));
-    *backward_state = malloc(state_dim * sizeof(ComplexFloat));
+    *forward_state = calloc(state_dim, sizeof(ComplexFloat));
+    *backward_state = calloc(state_dim, sizeof(ComplexFloat));
     if (!*forward_state || !*backward_state) {
         free(*forward_state);
         free(*backward_state);
         return false;
     }
     
+    // Save original state coordinates
+    ComplexFloat* original_coordinates = NULL;
+    if (qgtn->circuit->state && qgtn->circuit->state->coordinates) {
+        original_coordinates = malloc(state_dim * sizeof(ComplexFloat));
+        if (!original_coordinates) {
+            free(*forward_state);
+            free(*backward_state);
+            return false;
+        }
+        memcpy(original_coordinates, qgtn->circuit->state->coordinates, 
+               state_dim * sizeof(ComplexFloat));
+    }
+    
+    // Initialize quantum state in tensor network
+    if (!qgtn->network || !qgtn->network->nodes || qgtn->network->num_nodes < 1) {
+        printf("DEBUG: Invalid tensor network state\n");
+        free(original_coordinates);
+        free(*forward_state);
+        free(*backward_state);
+        return false;
+    }
+    printf("DEBUG: Tensor network state valid\n");
+
+    // Initialize state vector with |0> state
+    ComplexFloat* init_state = calloc(state_dim, sizeof(ComplexFloat));
+    if (!init_state) {
+        printf("DEBUG: Failed to allocate init_state\n");
+        free(original_coordinates);
+        free(*forward_state);
+        free(*backward_state);
+        return false;
+    }
+    init_state[0] = (ComplexFloat){1.0f, 0.0f};  // |0> state
+    printf("DEBUG: Initialized |0> state\n");
+
+    // Set initial state in tensor network
+    if (!qgtn->network->nodes[0] || !qgtn->network->nodes[0]->data) {
+        printf("DEBUG: Invalid tensor network node or data\n");
+        free(init_state);
+        free(original_coordinates);
+        free(*forward_state);
+        free(*backward_state);
+        return false;
+    }
+    memcpy(qgtn->network->nodes[0]->data, init_state, state_dim * sizeof(ComplexFloat));
+    free(init_state);
+    printf("DEBUG: Set initial state in tensor network\n");
+
     // Forward shift
+    printf("DEBUG: Applying forward shift (amount=%.6f)\n", shift_amount);
     if (!shift_parameter(qgtn, param_idx, shift_amount)) {
+        printf("DEBUG: Forward shift_parameter failed\n");
+        free(original_coordinates);
         free(*forward_state);
         free(*backward_state);
         return false;
     }
-    
-    if (!get_quantum_state(qgtn, forward_state, &state_dim)) {
+    printf("DEBUG: Forward shift applied successfully\n");
+
+    // Apply circuit to get forward state
+    printf("DEBUG: Applying quantum circuit for forward state\n");
+    if (!apply_quantum_circuit(qgtn, qgtn->circuit)) {
+        printf("DEBUG: Forward apply_quantum_circuit failed\n");
+        shift_parameter(qgtn, param_idx, -shift_amount); // Restore parameter
+        free(original_coordinates);
         free(*forward_state);
         free(*backward_state);
         return false;
     }
+    printf("DEBUG: Forward quantum circuit applied successfully\n");
     
+    // Copy forward state
+    memcpy(*forward_state, qgtn->circuit->state->coordinates, 
+           state_dim * sizeof(ComplexFloat));
+    
+    // Reset state to |0> for backward shift
+    printf("DEBUG: Resetting state for backward shift\n");
+    init_state = calloc(state_dim, sizeof(ComplexFloat));
+    if (!init_state) {
+        printf("DEBUG: Failed to allocate init_state for backward shift\n");
+        free(original_coordinates);
+        free(*forward_state);
+        free(*backward_state);
+        return false;
+    }
+    init_state[0] = (ComplexFloat){1.0f, 0.0f};  // |0> state
+    memcpy(qgtn->network->nodes[0]->data, init_state, state_dim * sizeof(ComplexFloat));
+    free(init_state);
+    printf("DEBUG: Reset state to |0> for backward shift\n");
+
     // Backward shift
+    printf("DEBUG: Applying backward shift (amount=%.6f)\n", -2 * shift_amount);
     if (!shift_parameter(qgtn, param_idx, -2 * shift_amount)) {  // -2x to go back from +x to -x
+        printf("DEBUG: Backward shift_parameter failed\n");
+        free(original_coordinates);
         free(*forward_state);
         free(*backward_state);
         return false;
     }
-    
-    if (!get_quantum_state(qgtn, backward_state, &state_dim)) {
+    printf("DEBUG: Backward shift applied successfully\n");
+
+    // Apply circuit to get backward state
+    printf("DEBUG: Applying quantum circuit for backward state\n");
+    if (!apply_quantum_circuit(qgtn, qgtn->circuit)) {
+        printf("DEBUG: Backward apply_quantum_circuit failed\n");
+        shift_parameter(qgtn, param_idx, shift_amount); // Restore parameter
+        free(original_coordinates);
         free(*forward_state);
         free(*backward_state);
         return false;
     }
+    printf("DEBUG: Backward quantum circuit applied successfully\n");
     
-    // Reset parameter
-    if (!shift_parameter(qgtn, param_idx, shift_amount)) {  // +x to go back to original
-        free(*forward_state);
-        free(*backward_state);
-        return false;
+    // Copy backward state
+    memcpy(*backward_state, qgtn->circuit->state->coordinates,
+           state_dim * sizeof(ComplexFloat));
+    
+    // Restore original state if it existed
+    if (original_coordinates) {
+        if (qgtn->circuit->state->coordinates) {
+            free(qgtn->circuit->state->coordinates);
+        }
+        qgtn->circuit->state->coordinates = original_coordinates;
     }
     
     *dimension = state_dim;
-    return true;
-}
-
-// Compute gradient using parameter shift rule
-// Helper function to create a mutable copy of a quantum geometric tensor network
-static quantum_geometric_tensor_network_t* copy_quantum_geometric_tensor_network(
-    const quantum_geometric_tensor_network_t* qgtn) {
-    
-    quantum_geometric_tensor_network_t* copy = malloc(sizeof(quantum_geometric_tensor_network_t));
-    if (!copy) return NULL;
-    
-    // Copy basic fields
-    copy->num_qubits = qgtn->num_qubits;
-    copy->num_layers = qgtn->num_layers;
-    copy->is_distributed = qgtn->is_distributed;
-    copy->use_hardware_acceleration = qgtn->use_hardware_acceleration;
-    
-    // Create new tensor network
-    copy->network = create_tensor_network();
-    if (!copy->network) {
-        free(copy);
-        return NULL;
-    }
-    
-    // Copy circuit
-    copy->circuit = malloc(sizeof(quantum_circuit_t));
-    if (!copy->circuit) {
-        destroy_tensor_network(copy->network);
-        free(copy);
-        return NULL;
-    }
-    
-    copy->circuit->layers = malloc(qgtn->num_layers * sizeof(circuit_layer_t*));
-    if (!copy->circuit->layers) {
-        free(copy->circuit);
-        destroy_tensor_network(copy->network);
-        free(copy);
-        return NULL;
-    }
-    
-    copy->circuit->num_layers = qgtn->num_layers;
-    copy->circuit->num_qubits = qgtn->num_qubits;
-    copy->circuit->is_parameterized = qgtn->circuit->is_parameterized;
-    
-    // Copy each layer
-    for (size_t l = 0; l < qgtn->num_layers; l++) {
-        if (qgtn->circuit->layers[l]) {
-            circuit_layer_t* layer = malloc(sizeof(circuit_layer_t));
-            if (!layer) {
-                // Clean up on failure
-                for (size_t j = 0; j < l; j++) {
-                    if (copy->circuit->layers[j]) {
-                        for (size_t g = 0; g < copy->circuit->layers[j]->num_gates; g++) {
-                            free(copy->circuit->layers[j]->gates[g]);
-                        }
-                        free(copy->circuit->layers[j]->gates);
-                        free(copy->circuit->layers[j]);
-                    }
-                }
-                free(copy->circuit->layers);
-                free(copy->circuit);
-                destroy_tensor_network(copy->network);
-                free(copy);
-                return NULL;
-            }
-            
-            layer->num_gates = qgtn->circuit->layers[l]->num_gates;
-            layer->is_parameterized = qgtn->circuit->layers[l]->is_parameterized;
-            
-            layer->gates = malloc(layer->num_gates * sizeof(quantum_gate_t*));
-            if (!layer->gates) {
-                free(layer);
-                for (size_t j = 0; j < l; j++) {
-                    if (copy->circuit->layers[j]) {
-                        for (size_t g = 0; g < copy->circuit->layers[j]->num_gates; g++) {
-                            free(copy->circuit->layers[j]->gates[g]);
-                        }
-                        free(copy->circuit->layers[j]->gates);
-                        free(copy->circuit->layers[j]);
-                    }
-                }
-                free(copy->circuit->layers);
-                free(copy->circuit);
-                destroy_tensor_network(copy->network);
-                free(copy);
-                return NULL;
-            }
-            
-            // Copy each gate
-            for (size_t g = 0; g < layer->num_gates; g++) {
-                layer->gates[g] = copy_quantum_gate(qgtn->circuit->layers[l]->gates[g]);
-                if (!layer->gates[g]) {
-                    // Clean up on failure
-                    for (size_t h = 0; h < g; h++) {
-                        free(layer->gates[h]);
-                    }
-                    free(layer->gates);
-                    free(layer);
-                    for (size_t j = 0; j < l; j++) {
-                        if (copy->circuit->layers[j]) {
-                            for (size_t h = 0; h < copy->circuit->layers[j]->num_gates; h++) {
-                                free(copy->circuit->layers[j]->gates[h]);
-                            }
-                            free(copy->circuit->layers[j]->gates);
-                            free(copy->circuit->layers[j]);
-                        }
-                    }
-                    free(copy->circuit->layers);
-                    free(copy->circuit);
-                    destroy_tensor_network(copy->network);
-                    free(copy);
-                    return NULL;
-                }
-            }
-            
-            copy->circuit->layers[l] = layer;
-        } else {
-            copy->circuit->layers[l] = NULL;
-        }
-    }
-    
-    return copy;
-}
-
-bool compute_parameter_shift_gradient(
-    const quantum_geometric_tensor_network_t* qgtn,
-    size_t param_idx,
-    double shift_amount,
-    ComplexFloat** gradient,
-    size_t* dimension) {
-    
-    if (!qgtn || !gradient || !dimension || shift_amount <= 0.0) {
-        return false;
-    }
-    
-    // Create mutable copy
-    quantum_geometric_tensor_network_t* qgtn_copy = copy_quantum_geometric_tensor_network(qgtn);
-    if (!qgtn_copy) {
-        return false;
-    }
-    
-    // Get shifted states
-    ComplexFloat* forward_state;
-    ComplexFloat* backward_state;
-    size_t state_dim;
-    if (!compute_shifted_states(qgtn_copy, param_idx, shift_amount,
-                              &forward_state, &backward_state, &state_dim)) {
-        destroy_quantum_geometric_tensor_network(qgtn_copy);
-        return false;
-    }
-    
-    // Allocate gradient
-    *gradient = malloc(state_dim * sizeof(ComplexFloat));
-    if (!*gradient) {
-        free(forward_state);
-        free(backward_state);
-        return false;
-    }
-    
-    // Compute gradient using parameter shift rule:
-    // df/dθ = [f(θ + r) - f(θ - r)]/(2r)
-    // where r is the shift amount
-    for (size_t i = 0; i < state_dim; i++) {
-        (*gradient)[i].real = (forward_state[i].real - backward_state[i].real) / (2 * shift_amount);
-        (*gradient)[i].imag = (forward_state[i].imag - backward_state[i].imag) / (2 * shift_amount);
-    }
-    
-    *dimension = state_dim;
-    
-    free(forward_state);
-    free(backward_state);
-    
-    return true;
-}
-
-// Helper function for Richardson extrapolation
-static void richardson_extrapolate(
-    ComplexFloat** gradients,
-    size_t num_gradients,
-    size_t dimension,
-    const double* step_sizes,
-    ComplexFloat* result) {
-    
-    // Richardson extrapolation formula:
-    // f'(0) ≈ [4f'(h/2) - f'(h)]/3
-    // where f'(h) is the finite difference approximation with step size h
-    
-    // For multiple steps, we use higher order formulas
-    double* coefficients = malloc(num_gradients * sizeof(double));
-    if (!coefficients) return;
-    
-    // Compute Richardson coefficients
-    for (size_t i = 0; i < num_gradients; i++) {
-        double power = 1.0;
-        for (size_t j = 0; j < i; j++) {
-            power *= 4.0;  // Each level multiplies by 4
-        }
-        coefficients[i] = power / (power - 1.0);
-    }
-    
-    // Apply Richardson extrapolation
-    for (size_t d = 0; d < dimension; d++) {
-        result[d].real = 0;
-        result[d].imag = 0;
-        
-        for (size_t i = 0; i < num_gradients; i++) {
-            result[d].real += coefficients[i] * gradients[i][d].real;
-            result[d].imag += coefficients[i] * gradients[i][d].imag;
-        }
-    }
-    
-    free(coefficients);
-}
-
-// Compute higher order gradient using multiple shifts
-bool compute_higher_order_gradient(
-    const quantum_geometric_tensor_network_t* qgtn,
-    size_t param_idx,
-    const double* shift_amounts,
-    size_t num_shifts,
-    ComplexFloat** gradient,
-    size_t* dimension) {
-    
-    if (!qgtn || !gradient || !dimension || !shift_amounts || num_shifts < 2) {
-        return false;
-    }
-    
-    // Allocate array to store gradients at different step sizes
-    ComplexFloat** gradients = malloc(num_shifts * sizeof(ComplexFloat*));
-    size_t* dimensions = malloc(num_shifts * sizeof(size_t));
-    if (!gradients || !dimensions) {
-        free(gradients);
-        free(dimensions);
-        return false;
-    }
-    
-    // Compute gradients at each step size
-    for (size_t i = 0; i < num_shifts; i++) {
-        if (!compute_parameter_shift_gradient(qgtn, param_idx, shift_amounts[i],
-                                           &gradients[i], &dimensions[i])) {
-            // Clean up on failure
-            for (size_t j = 0; j < i; j++) {
-                free(gradients[j]);
-            }
-            free(gradients);
-            free(dimensions);
-            return false;
-        }
-        
-        // Verify dimensions match
-        if (i > 0 && dimensions[i] != dimensions[0]) {
-            // Clean up on dimension mismatch
-            for (size_t j = 0; j <= i; j++) {
-                free(gradients[j]);
-            }
-            free(gradients);
-            free(dimensions);
-            return false;
-        }
-    }
-    
-    // Allocate result gradient
-    *gradient = malloc(dimensions[0] * sizeof(ComplexFloat));
-    if (!*gradient) {
-        for (size_t i = 0; i < num_shifts; i++) {
-            free(gradients[i]);
-        }
-        free(gradients);
-        free(dimensions);
-        return false;
-    }
-    
-    // Perform Richardson extrapolation
-    richardson_extrapolate(gradients, num_shifts, dimensions[0], shift_amounts, *gradient);
-    
-    // Clean up
-    for (size_t i = 0; i < num_shifts; i++) {
-        free(gradients[i]);
-    }
-    free(gradients);
-    *dimension = dimensions[0];
-    free(dimensions);
-    
-    return true;
-}
-
-// Compute centered finite difference gradient
-bool compute_centered_difference_gradient(
-    const quantum_geometric_tensor_network_t* qgtn,
-    size_t param_idx,
-    double step_size,
-    ComplexFloat** gradient,
-    size_t* dimension) {
-    
-    // Centered difference is just parameter shift with step_size
-    return compute_parameter_shift_gradient(qgtn, param_idx, step_size,
-                                         gradient, dimension);
-}
-
-// Helper function to estimate gradient error
-static double estimate_gradient_error(
-    const ComplexFloat* gradient1,
-    const ComplexFloat* gradient2,
-    size_t dimension) {
-    
-    double error = 0.0;
-    for (size_t i = 0; i < dimension; i++) {
-        double real_diff = gradient1[i].real - gradient2[i].real;
-        double imag_diff = gradient1[i].imag - gradient2[i].imag;
-        error += real_diff * real_diff + imag_diff * imag_diff;
-    }
-    return sqrt(error / dimension);
-}
-
-// Compute gradient with error estimation
-bool compute_gradient_with_error(
-    const quantum_geometric_tensor_network_t* qgtn,
-    size_t param_idx,
-    ComplexFloat** gradient,
-    double* error_estimate,
-    size_t* dimension) {
-    
-    if (!qgtn || !gradient || !error_estimate || !dimension) {
-        return false;
-    }
-    
-    // Compute gradients at two different step sizes
-    ComplexFloat* gradient1;
-    ComplexFloat* gradient2;
-    size_t dim1, dim2;
-    
-    if (!compute_parameter_shift_gradient(qgtn, param_idx, M_PI_2,
-                                       &gradient1, &dim1)) {
-        return false;
-    }
-    
-    if (!compute_parameter_shift_gradient(qgtn, param_idx, M_PI_4,
-                                       &gradient2, &dim2)) {
-        free(gradient1);
-        return false;
-    }
-    
-    if (dim1 != dim2) {
-        free(gradient1);
-        free(gradient2);
-        return false;
-    }
-    
-    // Use the more accurate (smaller step size) gradient
-    *gradient = gradient2;
-    *dimension = dim2;
-    
-    // Estimate error from difference between gradients
-    *error_estimate = estimate_gradient_error(gradient1, gradient2, dim1);
-    
-    free(gradient1);
     return true;
 }

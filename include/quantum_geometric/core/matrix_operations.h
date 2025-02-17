@@ -25,13 +25,25 @@ extern "C" {
  * @param p Number of columns in B
  * @return true if successful, false otherwise
  */
-bool matrix_multiply(
+// Forward declaration of implementation
+bool matrix_multiply_impl(
     const ComplexFloat* a,
     const ComplexFloat* b,
     ComplexFloat* result,
     size_t m,
     size_t n,
     size_t p);
+
+// Public interface uses implementation
+static inline bool matrix_multiply(
+    const ComplexFloat* a,
+    const ComplexFloat* b,
+    ComplexFloat* result,
+    size_t m,
+    size_t n,
+    size_t p) {
+    return matrix_multiply_impl(a, b, result, m, n, p);
+}
 
 /**
  * @brief Solve linear system Ax = b

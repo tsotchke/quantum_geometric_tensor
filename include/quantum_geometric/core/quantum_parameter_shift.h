@@ -94,6 +94,44 @@ bool compute_gradient_with_error(
     double* error_estimate,
     size_t* dimension);
 
+/**
+ * @brief Compute forward and backward shifted states
+ * 
+ * Helper function to compute states shifted by +/- shift_amount
+ * Used internally by gradient computation functions
+ * 
+ * @param qgtn The quantum geometric tensor network
+ * @param param_idx Index of the parameter to shift
+ * @param shift_amount Amount to shift the parameter
+ * @param forward_state Output pointer to forward shifted state (caller must free)
+ * @param backward_state Output pointer to backward shifted state (caller must free)
+ * @param dimension Output dimension of state arrays
+ * @return true if successful, false otherwise
+ */
+bool compute_shifted_states(
+    quantum_geometric_tensor_network_t* qgtn,
+    size_t param_idx,
+    double shift_amount,
+    ComplexFloat** forward_state,
+    ComplexFloat** backward_state,
+    size_t* dimension);
+
+/**
+ * @brief Shift a parameter in the quantum circuit
+ * 
+ * Helper function to shift a parameter by a given amount
+ * Used internally by gradient computation functions
+ * 
+ * @param qgtn The quantum geometric tensor network
+ * @param param_idx Index of the parameter to shift
+ * @param shift_amount Amount to shift the parameter
+ * @return true if successful, false otherwise
+ */
+bool shift_parameter(
+    quantum_geometric_tensor_network_t* qgtn,
+    size_t param_idx,
+    double shift_amount);
+
 #ifdef __cplusplus
 }
 #endif

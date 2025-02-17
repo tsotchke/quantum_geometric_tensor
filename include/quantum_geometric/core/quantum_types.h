@@ -41,6 +41,36 @@ struct quantum_circuit_t;
 struct quantum_register_t;
 struct quantum_system_t;
 struct quantum_gate_t;
+struct computational_graph_t;
+struct quantum_geometric_state_t;
+struct geometric_processor_t;
+
+// Node types for quantum operations
+typedef enum {
+    NODE_UNITARY,
+    NODE_MEASUREMENT,
+    NODE_TENSOR_PRODUCT,
+    NODE_PARTIAL_TRACE,
+    NODE_QUANTUM_FOURIER,
+    NODE_QUANTUM_PHASE
+} quantum_node_type_t;
+
+// Node structure for quantum operations
+struct quantum_compute_node_t {
+    quantum_node_type_t type;
+    size_t num_qubits;
+    size_t* qubit_indices;
+    ComplexFloat* parameters;
+    size_t num_parameters;
+    void* additional_data;
+};
+
+// Forward declarations for geometric operations
+typedef struct computational_graph_t computational_graph_t;
+typedef struct quantum_compute_node_t quantum_compute_node_t;
+typedef struct quantum_geometric_state_t quantum_geometric_state_t;
+typedef struct geometric_processor_t geometric_processor_t;
+
 
 // Type definitions
 typedef struct quantum_state_t quantum_state_t;
@@ -89,6 +119,13 @@ struct quantum_circuit_t {
     size_t num_layers;
     size_t num_qubits;
     bool is_parameterized;
+    
+    // Additional fields for quantum geometric operations
+    computational_graph_t* graph;
+    quantum_geometric_state_t* state;
+    quantum_compute_node_t** nodes;
+    size_t num_nodes;
+    size_t capacity;
 };
 
 struct quantum_register_t {

@@ -2,6 +2,7 @@
 #include "quantum_geometric/core/numerical_backend.h"
 #include "quantum_geometric/core/error_handling.h"
 #include "quantum_geometric/core/numeric_utils.h"
+#include "quantum_geometric/core/matrix_operations.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>

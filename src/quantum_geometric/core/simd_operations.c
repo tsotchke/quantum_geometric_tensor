@@ -1,5 +1,5 @@
 #include "quantum_geometric/core/simd_operations.h"
-#include "quantum_geometric/core/quantum_geometric_logging.h"
+#include "quantum_geometric/core/error_handling.h"
 #include "quantum_geometric/core/numeric_utils.h"
 #include <math.h>
 #include <string.h>
@@ -18,7 +18,7 @@ void simd_complex_copy(ComplexFloat* dest,
                       const ComplexFloat* src,
                       size_t count) {
     if (!dest || !src) {
-        geometric_log_error("Invalid parameters passed to simd_complex_copy");
+        report_error(NULL, ERROR_SOFTWARE, SEVERITY_HIGH, "Invalid parameters passed to simd_complex_copy");
         return;
     }
 
@@ -57,7 +57,7 @@ void simd_complex_multiply_accumulate(ComplexFloat* result,
                                     const ComplexFloat* b,
                                     size_t count) {
     if (!result || !a || !b) {
-        geometric_log_error("Invalid parameters passed to simd_complex_multiply_accumulate");
+        report_error(NULL, ERROR_SOFTWARE, SEVERITY_HIGH, "Invalid parameters passed to simd_complex_multiply_accumulate");
         return;
     }
 
@@ -132,7 +132,7 @@ void simd_complex_scale(ComplexFloat* result,
                        ComplexFloat scalar,
                        size_t count) {
     if (!result || !input) {
-        geometric_log_error("Invalid parameters passed to simd_complex_scale");
+        report_error(NULL, ERROR_SOFTWARE, SEVERITY_HIGH, "Invalid parameters passed to simd_complex_scale");
         return;
     }
 
@@ -204,7 +204,7 @@ void simd_complex_scale(ComplexFloat* result,
 double simd_complex_norm(const ComplexFloat* input,
                         size_t count) {
     if (!input) {
-        geometric_log_error("Invalid parameters passed to simd_complex_norm");
+        report_error(NULL, ERROR_SOFTWARE, SEVERITY_HIGH, "Invalid parameters passed to simd_complex_norm");
         return 0.0;
     }
 
@@ -266,7 +266,7 @@ void simd_complex_add(ComplexFloat* result,
                      const ComplexFloat* b,
                      size_t count) {
     if (!result || !a || !b) {
-        geometric_log_error("Invalid parameters passed to simd_complex_add");
+        report_error(NULL, ERROR_SOFTWARE, SEVERITY_HIGH, "Invalid parameters passed to simd_complex_add");
         return;
     }
 
@@ -316,7 +316,7 @@ void simd_complex_subtract(ComplexFloat* result,
                          const ComplexFloat* b,
                          size_t count) {
     if (!result || !a || !b) {
-        geometric_log_error("Invalid parameters passed to simd_complex_subtract");
+        report_error(NULL, ERROR_SOFTWARE, SEVERITY_HIGH, "Invalid parameters passed to simd_complex_subtract");
         return;
     }
 
@@ -366,7 +366,7 @@ void simd_complex_multiply(ComplexFloat* result,
                          const ComplexFloat* b,
                          size_t count) {
     if (!result || !a || !b) {
-        geometric_log_error("Invalid parameters passed to simd_complex_multiply");
+        report_error(NULL, ERROR_SOFTWARE, SEVERITY_HIGH, "Invalid parameters passed to simd_complex_multiply");
         return;
     }
 
@@ -433,7 +433,7 @@ void simd_complex_divide(ComplexFloat* result,
                         const ComplexFloat* b,
                         size_t count) {
     if (!result || !a || !b) {
-        geometric_log_error("Invalid parameters passed to simd_complex_divide");
+        report_error(NULL, ERROR_SOFTWARE, SEVERITY_HIGH, "Invalid parameters passed to simd_complex_divide");
         return;
     }
 
@@ -530,7 +530,7 @@ void simd_tensor_multiply(ComplexFloat* result,
                          const size_t* dimensions,
                          size_t rank) {
     if (!result || !a || !b || !dimensions || rank == 0) {
-        geometric_log_error("Invalid parameters passed to simd_tensor_multiply");
+        report_error(NULL, ERROR_SOFTWARE, SEVERITY_HIGH, "Invalid parameters passed to simd_tensor_multiply");
         return;
     }
 
@@ -558,7 +558,7 @@ void simd_tensor_conjugate(ComplexFloat* result,
                           const ComplexFloat* input,
                           size_t total_elements) {
     if (!result || !input) {
-        geometric_log_error("Invalid parameters passed to simd_tensor_conjugate");
+        report_error(NULL, ERROR_SOFTWARE, SEVERITY_HIGH, "Invalid parameters passed to simd_tensor_conjugate");
         return;
     }
 
@@ -622,7 +622,7 @@ void simd_tensor_contract(ComplexFloat* result,
                          size_t rank_b) {
     if (!result || !a || !b || !dimensions_a || !dimensions_b || !contract_indices || 
         num_indices == 0 || rank_a == 0 || rank_b == 0) {
-        geometric_log_error("Invalid parameters passed to simd_tensor_contract");
+        report_error(NULL, ERROR_SOFTWARE, SEVERITY_HIGH, "Invalid parameters passed to simd_tensor_contract");
         return;
     }
 
@@ -657,7 +657,7 @@ void simd_tensor_contract_block(ComplexFloat* result,
                               size_t free_dims_a,
                               size_t free_dims_b) {
     if (!result || !a || !b || block_size == 0) {
-        geometric_log_error("Invalid parameters passed to simd_tensor_contract_block");
+        report_error(NULL, ERROR_SOFTWARE, SEVERITY_HIGH, "Invalid parameters passed to simd_tensor_contract_block");
         return;
     }
 
@@ -762,7 +762,7 @@ void simd_tensor_transpose(ComplexFloat* result,
                           const size_t* permutation,
                           size_t rank) {
     if (!result || !input || !dimensions || !permutation || rank == 0) {
-        geometric_log_error("Invalid parameters passed to simd_tensor_transpose");
+        report_error(NULL, ERROR_SOFTWARE, SEVERITY_HIGH, "Invalid parameters passed to simd_tensor_transpose");
         return;
     }
 
@@ -772,7 +772,7 @@ void simd_tensor_transpose(ComplexFloat* result,
     size_t* new_strides = (size_t*)malloc(rank * sizeof(size_t));
     
     if (!old_strides || !new_strides) {
-        geometric_log_error("Memory allocation failed in simd_tensor_transpose");
+        report_error(NULL, ERROR_SOFTWARE, SEVERITY_HIGH, "Memory allocation failed in simd_tensor_transpose");
         free(old_strides);
         free(new_strides);
         return;
@@ -797,7 +797,7 @@ void simd_tensor_transpose(ComplexFloat* result,
     // Perform transpose with SIMD where possible
     size_t* coords = (size_t*)calloc(rank, sizeof(size_t));
     if (!coords) {
-        geometric_log_error("Memory allocation failed in simd_tensor_transpose");
+        report_error(NULL, ERROR_SOFTWARE, SEVERITY_HIGH, "Memory allocation failed in simd_tensor_transpose");
         free(old_strides);
         free(new_strides);
         return;

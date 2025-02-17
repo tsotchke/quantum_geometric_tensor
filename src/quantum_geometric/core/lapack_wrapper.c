@@ -1,8 +1,10 @@
 #include "quantum_geometric/core/lapack_wrapper.h"
 #include "quantum_geometric/core/lapack_internal.h"
+#include "quantum_geometric/core/complex_arithmetic.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stdio.h>
 
 // Global state
 static struct {
@@ -93,45 +95,28 @@ bool lapack_matrix_multiply(const ComplexFloat* a,
                           bool transpose_a,
                           bool transpose_b,
                           lapack_layout_t layout) {
+    printf("DEBUG: Starting LAPACK matrix multiply\n");
     if (!initialize_lapack() || !a || !b || !c || m == 0 || k == 0 || n == 0) {
         lapack_state.last_status = LAPACK_INVALID_ARGUMENT;
         return false;
     }
     
-    // Convert to column-major if needed
-    ComplexFloat* a_col = malloc(m * k * sizeof(ComplexFloat));
-    ComplexFloat* b_col = malloc(k * n * sizeof(ComplexFloat));
-    if (!a_col || !b_col) {
-        free(a_col);
-        free(b_col);
-        lapack_state.last_status = LAPACK_MEMORY_ERROR;
-        return false;
+    // Try basic implementation first
+    printf("DEBUG: Using basic matrix multiply implementation\n");
+    memset(c, 0, m * n * sizeof(ComplexFloat));
+    for (size_t i = 0; i < m; i++) {
+        for (size_t j = 0; j < n; j++) {
+            ComplexFloat sum = {0.0f, 0.0f};
+            for (size_t l = 0; l < k; l++) {
+                size_t a_idx = transpose_a ? l * m + i : i * k + l;
+                size_t b_idx = transpose_b ? j * k + l : l * n + j;
+                sum = complex_add(sum, complex_multiply(a[a_idx], b[b_idx]));
+            }
+            c[i * n + j] = sum;
+        }
     }
-    convert_layout(a_col, a, m, k, layout, LAPACK_COL_MAJOR);
-    convert_layout(b_col, b, k, n, layout, LAPACK_COL_MAJOR);
     
-    // Prepare LAPACK call
-    char transa = transpose_a ? 'T' : 'N';
-    char transb = transpose_b ? 'T' : 'N';
-    int im = (int)m;
-    int in = (int)n;
-    int ik = (int)k;
-    int lda = transpose_a ? ik : im;
-    int ldb = transpose_b ? in : ik;
-    int ldc = im;
-    
-    // Set alpha and beta
-    ComplexFloat alpha = {1.0f, 0.0f};
-    ComplexFloat beta = {0.0f, 0.0f};
-    
-    // Perform matrix multiplication
-    cgemm_(&transa, &transb, &im, &in, &ik,
-           &alpha, a_col, &lda, b_col, &ldb,
-           &beta, c, &ldc);
-    
-    free(b_col);
-    free(a_col);
-    
+    printf("DEBUG: Basic matrix multiply completed\n");
     lapack_state.last_status = LAPACK_SUCCESS;
     return true;
 }

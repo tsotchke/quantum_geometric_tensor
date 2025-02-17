@@ -401,4 +401,12 @@ struct quantum_geometric_curvature_t {
     HardwareType hardware;           // Hardware location
 };
 
+// Geometric state operations
+qgt_error_t geometric_create_state(quantum_geometric_state_t** state,
+                                 geometric_state_type_t type,
+                                 size_t dimension,
+                                 HardwareType hardware);
+
+void geometric_destroy_state(quantum_geometric_state_t* state);
+
 #endif // QUANTUM_GEOMETRIC_TYPES_H
