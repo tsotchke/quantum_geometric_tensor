@@ -13,6 +13,217 @@
 #include <math.h>
 #include <stddef.h>
 
+bool compute_gradient_with_error(
+    const quantum_geometric_tensor_network_t* qgtn,
+    size_t param_idx,
+    ComplexFloat** gradient,
+    double* error_estimate,
+    size_t* dimension) {
+    
+    printf("DEBUG: Starting compute_gradient_with_error\n");
+    printf("DEBUG: param_idx=%zu\n", param_idx);
+    
+    // Use two different step sizes to estimate error
+    const double step_size1 = M_PI_4;  // π/4
+    const double step_size2 = M_PI_2;  // π/2
+    
+    // Compute gradients with both step sizes
+    ComplexFloat* gradient1 = NULL;
+    ComplexFloat* gradient2 = NULL;
+    size_t dim1, dim2;
+    
+    printf("DEBUG: Computing gradient with step size %.6f\n", step_size1);
+    if (!compute_centered_difference_gradient(qgtn, param_idx, step_size1, &gradient1, &dim1)) {
+        printf("DEBUG: Failed to compute first gradient\n");
+        return false;
+    }
+    
+    printf("DEBUG: Computing gradient with step size %.6f\n", step_size2);
+    if (!compute_centered_difference_gradient(qgtn, param_idx, step_size2, &gradient2, &dim2)) {
+        printf("DEBUG: Failed to compute second gradient\n");
+        free(gradient1);
+        return false;
+    }
+    
+    if (dim1 != dim2) {
+        printf("DEBUG: Dimension mismatch between gradients\n");
+        free(gradient1);
+        free(gradient2);
+        return false;
+    }
+    
+    // Allocate output gradient array
+    *gradient = malloc(dim1 * sizeof(ComplexFloat));
+    if (!*gradient) {
+        printf("DEBUG: Failed to allocate gradient array\n");
+        free(gradient1);
+        free(gradient2);
+        return false;
+    }
+    
+    // Compute error estimate and average gradient
+    double total_error = 0.0;
+    printf("DEBUG: Computing error estimate and average gradient\n");
+    
+    for (size_t i = 0; i < dim1; i++) {
+        // Compute difference between gradients
+        double real_diff = gradient1[i].real - gradient2[i].real;
+        double imag_diff = gradient1[i].imag - gradient2[i].imag;
+        
+        // Add to total error (using L2 norm of differences)
+        total_error += real_diff * real_diff + imag_diff * imag_diff;
+        
+        // Store average of gradients
+        (*gradient)[i].real = (gradient1[i].real + gradient2[i].real) / 2.0;
+        (*gradient)[i].imag = (gradient1[i].imag + gradient2[i].imag) / 2.0;
+        
+        if (i < 4) {
+            printf("DEBUG: Gradient[%zu]: (%.6f,%.6f)\n", 
+                   i, (*gradient)[i].real, (*gradient)[i].imag);
+            printf("DEBUG: Difference[%zu]: (%.6f,%.6f)\n",
+                   i, real_diff, imag_diff);
+        }
+    }
+    
+    // Compute RMS error
+    *error_estimate = sqrt(total_error / dim1);
+    printf("DEBUG: Error estimate: %.6f\n", *error_estimate);
+    
+    *dimension = dim1;
+    
+    // Clean up
+    free(gradient1);
+    free(gradient2);
+    
+    return true;
+}
+
+bool compute_centered_difference_gradient(
+    const quantum_geometric_tensor_network_t* qgtn,
+    size_t param_idx,
+    double step_size,
+    ComplexFloat** gradient,
+    size_t* dimension) {
+    
+    printf("DEBUG: Starting compute_centered_difference_gradient\n");
+    printf("DEBUG: param_idx=%zu, step_size=%.6f\n", param_idx, step_size);
+    
+    // Create a copy of qgtn since we need to modify it
+    quantum_geometric_tensor_network_t* qgtn_copy = copy_quantum_geometric_tensor_network(qgtn);
+    if (!qgtn_copy) {
+        printf("DEBUG: Failed to create copy of quantum geometric tensor network\n");
+        return false;
+    }
+    
+    // Get forward and backward shifted states
+    ComplexFloat* forward_state = NULL;
+    ComplexFloat* backward_state = NULL;
+    size_t state_dim;
+    
+    printf("DEBUG: Computing shifted states\n");
+    if (!compute_shifted_states(qgtn_copy, param_idx, step_size,
+                              &forward_state, &backward_state, &state_dim)) {
+        printf("DEBUG: compute_shifted_states failed\n");
+        destroy_quantum_geometric_tensor_network(qgtn_copy);
+        return false;
+    }
+    printf("DEBUG: Shifted states computed successfully\n");
+    
+    // Allocate gradient array
+    *gradient = malloc(state_dim * sizeof(ComplexFloat));
+    if (!*gradient) {
+        printf("DEBUG: Failed to allocate gradient array\n");
+        free(forward_state);
+        free(backward_state);
+        destroy_quantum_geometric_tensor_network(qgtn_copy);
+        return false;
+    }
+    
+    // Compute gradient using centered difference formula
+    printf("DEBUG: Computing gradient using centered difference formula\n");
+    for (size_t i = 0; i < state_dim; i++) {
+        (*gradient)[i].real = (forward_state[i].real - backward_state[i].real) / (2.0 * step_size);
+        (*gradient)[i].imag = (forward_state[i].imag - backward_state[i].imag) / (2.0 * step_size);
+        
+        if (i < 4) {
+            printf("DEBUG: Gradient[%zu]: (%.6f,%.6f)\n", 
+                   i, (*gradient)[i].real, (*gradient)[i].imag);
+        }
+    }
+    
+    *dimension = state_dim;
+    
+    // Clean up
+    free(forward_state);
+    free(backward_state);
+    destroy_quantum_geometric_tensor_network(qgtn_copy);
+    
+    return true;
+}
+
+bool compute_parameter_shift_gradient(
+    const quantum_geometric_tensor_network_t* qgtn,
+    size_t param_idx,
+    double shift_amount,
+    ComplexFloat** gradient,
+    size_t* dimension) {
+    
+    printf("DEBUG: Starting compute_parameter_shift_gradient\n");
+    printf("DEBUG: param_idx=%zu, shift_amount=%.6f\n", param_idx, shift_amount);
+    
+    // Create a copy of qgtn since we need to modify it
+    quantum_geometric_tensor_network_t* qgtn_copy = copy_quantum_geometric_tensor_network(qgtn);
+    if (!qgtn_copy) {
+        printf("DEBUG: Failed to create copy of quantum geometric tensor network\n");
+        return false;
+    }
+    
+    // Get forward and backward shifted states
+    ComplexFloat* forward_state = NULL;
+    ComplexFloat* backward_state = NULL;
+    size_t state_dim;
+    
+    printf("DEBUG: Computing shifted states\n");
+    if (!compute_shifted_states(qgtn_copy, param_idx, shift_amount,
+                              &forward_state, &backward_state, &state_dim)) {
+        printf("DEBUG: compute_shifted_states failed\n");
+        destroy_quantum_geometric_tensor_network(qgtn_copy);
+        return false;
+    }
+    printf("DEBUG: Shifted states computed successfully\n");
+    
+    // Allocate gradient array
+    *gradient = malloc(state_dim * sizeof(ComplexFloat));
+    if (!*gradient) {
+        printf("DEBUG: Failed to allocate gradient array\n");
+        free(forward_state);
+        free(backward_state);
+        destroy_quantum_geometric_tensor_network(qgtn_copy);
+        return false;
+    }
+    
+    // Compute gradient using parameter shift rule
+    printf("DEBUG: Computing gradient using parameter shift rule\n");
+    for (size_t i = 0; i < state_dim; i++) {
+        (*gradient)[i].real = (forward_state[i].real - backward_state[i].real) / (2.0 * shift_amount);
+        (*gradient)[i].imag = (forward_state[i].imag - backward_state[i].imag) / (2.0 * shift_amount);
+        
+        if (i < 4) {
+            printf("DEBUG: Gradient[%zu]: (%.6f,%.6f)\n", 
+                   i, (*gradient)[i].real, (*gradient)[i].imag);
+        }
+    }
+    
+    *dimension = state_dim;
+    
+    // Clean up
+    free(forward_state);
+    free(backward_state);
+    destroy_quantum_geometric_tensor_network(qgtn_copy);
+    
+    return true;
+}
+
 // Helper function to find gate containing parameter
 static quantum_gate_t* find_parameterized_gate(
     quantum_geometric_tensor_network_t* qgtn,
@@ -275,8 +486,8 @@ bool compute_shifted_states(
     printf("DEBUG: Reset state to |0> for backward shift\n");
 
     // Backward shift
-    printf("DEBUG: Applying backward shift (amount=%.6f)\n", -2 * shift_amount);
-    if (!shift_parameter(qgtn, param_idx, -2 * shift_amount)) {  // -2x to go back from +x to -x
+    printf("DEBUG: Applying backward shift (amount=%.6f)\n", -shift_amount);
+    if (!shift_parameter(qgtn, param_idx, -shift_amount)) {  // Apply negative shift
         printf("DEBUG: Backward shift_parameter failed\n");
         free(original_coordinates);
         free(*forward_state);
@@ -300,6 +511,16 @@ bool compute_shifted_states(
     // Copy backward state
     memcpy(*backward_state, qgtn->circuit->state->coordinates,
            state_dim * sizeof(ComplexFloat));
+    
+    // Restore parameter to original value
+    if (!shift_parameter(qgtn, param_idx, shift_amount)) {  // Shift back to original
+        printf("DEBUG: Failed to restore parameter to original value\n");
+        free(original_coordinates);
+        free(*forward_state);
+        free(*backward_state);
+        return false;
+    }
+    printf("DEBUG: Parameter restored to original value\n");
     
     // Restore original state if it existed
     if (original_coordinates) {

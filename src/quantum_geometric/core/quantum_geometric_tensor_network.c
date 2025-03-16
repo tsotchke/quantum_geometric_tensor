@@ -41,6 +41,30 @@ quantum_geometric_tensor_network_t* create_quantum_geometric_tensor_network(
         set_error("Failed to create tensor network");
         return NULL;
     }
+    
+    // Initialize network nodes array
+    qgtn->network->capacity = 16;  // Initial capacity
+    qgtn->network->nodes = malloc(qgtn->network->capacity * sizeof(tensor_node_t*));
+    if (!qgtn->network->nodes) {
+        destroy_tensor_network(qgtn->network);
+        free(qgtn);
+        set_error("Failed to allocate network nodes array");
+        return NULL;
+    }
+    qgtn->network->num_nodes = 0;
+    qgtn->network->next_id = 0;
+    memset(qgtn->network->nodes, 0, qgtn->network->capacity * sizeof(tensor_node_t*));
+    
+    // Initialize metrics
+    qgtn->network->metrics.num_contractions = 0;
+    qgtn->network->metrics.peak_memory_usage = 0;
+    qgtn->network->metrics.total_time = 0.0;
+    qgtn->network->metrics.optimization_time = 0.0;
+    qgtn->network->metrics.contraction_time = 0.0;
+    
+    // Initialize optimization state
+    qgtn->network->optimized = false;
+    qgtn->network->last_error = TENSOR_NETWORK_SUCCESS;
 
     // Initialize hardware configuration
     qgtn->hardware_config.type = QGTN_BACKEND_SIMULATOR;  // Default to simulator
@@ -49,7 +73,7 @@ quantum_geometric_tensor_network_t* create_quantum_geometric_tensor_network(
     qgtn->hardware_config.supports_hybrid = true;     // Simulator supports hybrid computation
     qgtn->backend_state = NULL;
 
-    // Initialize with |0> state for the entire system
+    // Initialize with normalized initial state for gradient computation
     size_t state_dim = 1 << num_qubits;  // 2^n dimensional state space
     ComplexFloat* state_vector = calloc(state_dim, sizeof(ComplexFloat));
     if (!state_vector) {
@@ -59,12 +83,14 @@ quantum_geometric_tensor_network_t* create_quantum_geometric_tensor_network(
         return NULL;
     }
     
-    // Set initial state to |0...0>
+    // Set initial state to |0> for gradient computation
+    memset(state_vector, 0, state_dim * sizeof(ComplexFloat));
     state_vector[0] = (ComplexFloat){1.0f, 0.0f};
     
     // Add state vector as a single tensor node
     size_t node_id;
-    if (!add_tensor_node(qgtn->network, state_vector, &state_dim, 1, &node_id)) {
+    size_t dims[1] = {state_dim};
+    if (!add_tensor_node(qgtn->network, state_vector, dims, 1, &node_id)) {
         free(state_vector);
         destroy_tensor_network(qgtn->network);
         free(qgtn);
@@ -72,7 +98,37 @@ quantum_geometric_tensor_network_t* create_quantum_geometric_tensor_network(
         return NULL;
     }
     
-    free(state_vector);
+    // Initialize first tensor node
+    tensor_node_t* node = malloc(sizeof(tensor_node_t));
+    if (!node) {
+        free(state_vector);
+        destroy_tensor_network(qgtn->network);
+        free(qgtn);
+        set_error("Failed to allocate tensor node");
+        return NULL;
+    }
+    
+    node->data = state_vector;  // Transfer ownership
+    node->num_dimensions = 1;
+    node->dimensions = malloc(sizeof(size_t));
+    if (!node->dimensions) {
+        free(node);
+        free(state_vector);
+        destroy_tensor_network(qgtn->network);
+        free(qgtn);
+        set_error("Failed to allocate dimensions array");
+        return NULL;
+    }
+    node->dimensions[0] = state_dim;
+    node->num_connections = 0;
+    node->connected_nodes = NULL;
+    node->connected_dims = NULL;
+    node->id = node_id;
+    node->is_valid = true;
+    
+    // Initialize network state
+    qgtn->network->num_nodes = 1;
+    qgtn->network->nodes[0] = node;
 
     // Initialize empty quantum circuit
     qgtn->circuit = malloc(sizeof(quantum_circuit_t));
@@ -96,9 +152,52 @@ quantum_geometric_tensor_network_t* create_quantum_geometric_tensor_network(
         qgtn->circuit->layers[i] = NULL;
     }
 
+    // Initialize geometric processor for graph
+    geometric_processor_t* processor = create_geometric_processor(NULL);
+    if (!processor) {
+        free(qgtn->circuit->layers);
+        free(qgtn->circuit);
+        destroy_tensor_network(qgtn->network);
+        free(qgtn);
+        set_error("Failed to create geometric processor");
+        return NULL;
+    }
+    
+    // Initialize computational graph with processor
+    qgtn->circuit->graph = create_computational_graph(processor);
+    if (!qgtn->circuit->graph) {
+        destroy_geometric_processor(processor);
+        free(qgtn->circuit->layers);
+        free(qgtn->circuit);
+        destroy_tensor_network(qgtn->network);
+        free(qgtn);
+        set_error("Failed to create computational graph");
+        return NULL;
+    }
+    
+    // Store processor in backend state
+    qgtn->backend_state = processor;
+    
+    // Initialize nodes array
+    qgtn->circuit->capacity = 16;
+    qgtn->circuit->nodes = malloc(qgtn->circuit->capacity * sizeof(quantum_compute_node_t*));
+    if (!qgtn->circuit->nodes) {
+        destroy_computational_graph(qgtn->circuit->graph);
+        destroy_geometric_processor(processor);
+        free(qgtn->circuit->layers);
+        free(qgtn->circuit);
+        destroy_tensor_network(qgtn->network);
+        free(qgtn);
+        set_error("Failed to allocate nodes array");
+        return NULL;
+    }
+    qgtn->circuit->num_nodes = 0;
+    memset(qgtn->circuit->nodes, 0, qgtn->circuit->capacity * sizeof(quantum_compute_node_t*));
+    
     qgtn->circuit->num_layers = num_layers;
     qgtn->circuit->num_qubits = num_qubits;
     qgtn->circuit->is_parameterized = false;
+    qgtn->circuit->state = NULL;  // Initialize state to NULL, will be created when needed
     
     qgtn->num_qubits = num_qubits;
     qgtn->num_layers = num_layers;
@@ -423,6 +522,26 @@ void destroy_quantum_geometric_tensor_network(quantum_geometric_tensor_network_t
     }
 
     if (qgtn->circuit) {
+        // Free circuit nodes
+        if (qgtn->circuit->nodes) {
+            for (size_t i = 0; i < qgtn->circuit->num_nodes; i++) {
+                if (qgtn->circuit->nodes[i]) {
+                    free(qgtn->circuit->nodes[i]->qubit_indices);
+                    free(qgtn->circuit->nodes[i]->parameters);
+                    free(qgtn->circuit->nodes[i]);
+                }
+            }
+            free(qgtn->circuit->nodes);
+        }
+
+        // Free circuit state
+        if (qgtn->circuit->state) {
+            if (qgtn->circuit->state->coordinates) {
+                free(qgtn->circuit->state->coordinates);
+            }
+            free(qgtn->circuit->state);
+        }
+        
         // Free each layer
         for (size_t l = 0; l < qgtn->circuit->num_layers; l++) {
             circuit_layer_t* layer = qgtn->circuit->layers[l];
@@ -476,6 +595,48 @@ bool apply_quantum_gate(
         set_error("Invalid arguments to apply_quantum_gate");
         return false;
     }
+
+    // Initialize circuit state if needed
+    if (!qgtn->circuit->state) {
+        qgtn->circuit->state = malloc(sizeof(quantum_geometric_state_t));
+        if (!qgtn->circuit->state) {
+            set_error("Failed to allocate circuit state");
+            return false;
+        }
+        
+        // Initialize quantum state fields
+        qgtn->circuit->state->type = GEOMETRIC_STATE_EUCLIDEAN;
+        qgtn->circuit->state->dimension = 1 << qgtn->num_qubits;  // 2^n qubits
+        qgtn->circuit->state->manifold_dim = qgtn->circuit->state->dimension;
+        qgtn->circuit->state->coordinates = malloc(qgtn->circuit->state->dimension * sizeof(ComplexFloat));
+        if (!qgtn->circuit->state->coordinates) {
+            free(qgtn->circuit->state);
+            set_error("Failed to allocate state coordinates");
+            return false;
+        }
+        
+        // Initialize to |0> state
+        memset(qgtn->circuit->state->coordinates, 0, qgtn->circuit->state->dimension * sizeof(ComplexFloat));
+        qgtn->circuit->state->coordinates[0] = (ComplexFloat){1.0f, 0.0f};
+        
+        qgtn->circuit->state->metric = NULL;
+        qgtn->circuit->state->connection = NULL;
+        qgtn->circuit->state->auxiliary_data = NULL;
+        qgtn->circuit->state->is_normalized = true;
+        qgtn->circuit->state->hardware = HARDWARE_TYPE_CPU;
+    }
+
+    // Initialize nodes array if needed
+    if (!qgtn->circuit->nodes) {
+        qgtn->circuit->capacity = 16;  // Initial capacity
+        qgtn->circuit->nodes = malloc(qgtn->circuit->capacity * sizeof(quantum_compute_node_t*));
+        if (!qgtn->circuit->nodes) {
+            set_error("Failed to allocate nodes array");
+            return false;
+        }
+        qgtn->circuit->num_nodes = 0;
+        memset(qgtn->circuit->nodes, 0, qgtn->circuit->capacity * sizeof(quantum_compute_node_t*));
+    }
     
     // Find or create layer for this gate
     size_t layer_idx = qgtn->num_layers - 1;  // Add to last layer
@@ -506,10 +667,102 @@ bool apply_quantum_gate(
     
     // Create tensor node for gate
     size_t node_id;
-    if (!add_tensor_node(qgtn->network, gate->matrix,
-                        &gate->num_qubits, 1, &node_id)) {
-        set_error("Failed to add gate tensor node");
-        return false;
+    
+    // For rotation gates, ensure matrix is properly initialized
+    if (gate->type == GATE_TYPE_RX || gate->type == GATE_TYPE_RY || gate->type == GATE_TYPE_RZ) {
+        if (!gate->is_parameterized || !gate->parameters) {
+            set_error("Invalid rotation gate parameters");
+            return false;
+        }
+        
+        // Create 2x2 rotation matrix
+        ComplexFloat rotation[4];
+        double angle = gate->parameters[0];
+        double cos_half = cos(angle / 2.0);
+        double sin_half = sin(angle / 2.0);
+        
+        switch (gate->type) {
+            case GATE_TYPE_RX:
+                rotation[0] = (ComplexFloat){cos_half, 0};
+                rotation[1] = (ComplexFloat){0, -sin_half};
+                rotation[2] = (ComplexFloat){0, -sin_half};
+                rotation[3] = (ComplexFloat){cos_half, 0};
+                break;
+            case GATE_TYPE_RY:
+                rotation[0] = (ComplexFloat){cos_half, 0};
+                rotation[1] = (ComplexFloat){-sin_half, 0};
+                rotation[2] = (ComplexFloat){sin_half, 0};
+                rotation[3] = (ComplexFloat){cos_half, 0};
+                break;
+            case GATE_TYPE_RZ:
+                rotation[0] = (ComplexFloat){cos_half, -sin_half};
+                rotation[1] = (ComplexFloat){0, 0};
+                rotation[2] = (ComplexFloat){0, 0};
+                rotation[3] = (ComplexFloat){cos_half, sin_half};
+                break;
+            default:
+                set_error("Invalid rotation gate type");
+                return false;
+        }
+        
+        // For rotation gates, we need a 2-dimensional tensor
+        size_t dims[2] = {2, 2};  // 2x2 matrix
+        if (!add_tensor_node(qgtn->network, rotation, dims, 2, &node_id)) {
+            set_error("Failed to add rotation gate tensor node");
+            return false;
+        }
+
+        // Add node to circuit for parameter tracking
+        quantum_compute_node_t* compute_node = malloc(sizeof(quantum_compute_node_t));
+        if (!compute_node) {
+            set_error("Failed to allocate compute node");
+            return false;
+        }
+
+        compute_node->type = NODE_ROTATION;
+        compute_node->num_qubits = 1;
+        compute_node->qubit_indices = malloc(sizeof(size_t));
+        if (!compute_node->qubit_indices) {
+            free(compute_node);
+            set_error("Failed to allocate qubit indices");
+            return false;
+        }
+        compute_node->qubit_indices[0] = qubits[0];
+        
+        compute_node->num_parameters = 1;
+        compute_node->parameters = malloc(sizeof(ComplexFloat));
+        if (!compute_node->parameters) {
+            free(compute_node->qubit_indices);
+            free(compute_node);
+            set_error("Failed to allocate parameters");
+            return false;
+        }
+        compute_node->parameters[0] = (ComplexFloat){gate->parameters[0], 0.0};
+        
+        // Add node to circuit
+        if (qgtn->circuit->num_nodes >= qgtn->circuit->capacity) {
+            size_t new_capacity = qgtn->circuit->capacity * 2;
+            quantum_compute_node_t** new_nodes = realloc(qgtn->circuit->nodes, 
+                new_capacity * sizeof(quantum_compute_node_t*));
+            if (!new_nodes) {
+                free(compute_node->parameters);
+                free(compute_node->qubit_indices);
+                free(compute_node);
+                set_error("Failed to resize nodes array");
+                return false;
+            }
+            qgtn->circuit->nodes = new_nodes;
+            qgtn->circuit->capacity = new_capacity;
+        }
+        
+        qgtn->circuit->nodes[qgtn->circuit->num_nodes++] = compute_node;
+    } else {
+        // For non-rotation gates, use the gate matrix directly
+        if (!add_tensor_node(qgtn->network, gate->matrix,
+                            &gate->num_qubits, 1, &node_id)) {
+            set_error("Failed to add gate tensor node");
+            return false;
+        }
     }
     
     // Connect gate tensor to qubit tensors
@@ -542,8 +795,30 @@ bool apply_quantum_circuit(
             set_error("Failed to allocate circuit state");
             return false;
         }
-        qgtn->circuit->state->coordinates = NULL;
-        qgtn->circuit->state->dimension = 0;
+        
+        // Initialize quantum state fields
+        printf("DEBUG: Initializing quantum state fields\n");
+        qgtn->circuit->state->type = GEOMETRIC_STATE_EUCLIDEAN;
+        qgtn->circuit->state->dimension = 1 << qgtn->num_qubits;  // 2^n qubits
+        qgtn->circuit->state->manifold_dim = qgtn->circuit->state->dimension;
+        qgtn->circuit->state->coordinates = malloc(qgtn->circuit->state->dimension * sizeof(ComplexFloat));
+        if (!qgtn->circuit->state->coordinates) {
+            free(qgtn->circuit->state);
+            set_error("Failed to allocate state coordinates");
+            return false;
+        }
+        
+        // Initialize to |0> state
+        printf("DEBUG: Initializing to |0> state\n");
+        memset(qgtn->circuit->state->coordinates, 0, qgtn->circuit->state->dimension * sizeof(ComplexFloat));
+        qgtn->circuit->state->coordinates[0] = (ComplexFloat){1.0f, 0.0f};
+        
+        qgtn->circuit->state->metric = NULL;
+        qgtn->circuit->state->connection = NULL;
+        qgtn->circuit->state->auxiliary_data = NULL;
+        qgtn->circuit->state->is_normalized = true;
+        qgtn->circuit->state->hardware = HARDWARE_TYPE_CPU;
+        printf("DEBUG: Circuit state initialized\n");
     }
 
     // Initialize nodes array if needed

@@ -182,6 +182,62 @@ bool quantum_circuit_execute(quantum_circuit_t* circuit) {
                 free(temp);
                 break;
             }
+
+            case NODE_ROTATION: {
+                // Handle rotation gates (RX, RY, RZ)
+                size_t target = node->qubit_indices[0];
+                float angle = node->parameters[0].real;
+                size_t dim = 1 << circuit->num_qubits;
+                
+                // Create 2x2 rotation matrix
+                ComplexFloat rotation[4];
+                switch (node->additional_data ? *(gate_type_t*)node->additional_data : GATE_TYPE_RY) {
+                    case GATE_TYPE_RX:
+                        rotation[0] = (ComplexFloat){cosf(angle/2), 0};
+                        rotation[1] = (ComplexFloat){0, -sinf(angle/2)};
+                        rotation[2] = (ComplexFloat){0, -sinf(angle/2)};
+                        rotation[3] = (ComplexFloat){cosf(angle/2), 0};
+                        break;
+                    case GATE_TYPE_RY:
+                        rotation[0] = (ComplexFloat){cosf(angle/2), 0};
+                        rotation[1] = (ComplexFloat){-sinf(angle/2), 0};
+                        rotation[2] = (ComplexFloat){sinf(angle/2), 0};
+                        rotation[3] = (ComplexFloat){cosf(angle/2), 0};
+                        break;
+                    case GATE_TYPE_RZ:
+                        rotation[0] = (ComplexFloat){cosf(angle/2), -sinf(angle/2)};
+                        rotation[1] = (ComplexFloat){0, 0};
+                        rotation[2] = (ComplexFloat){0, 0};
+                        rotation[3] = (ComplexFloat){cosf(angle/2), sinf(angle/2)};
+                        break;
+                    default:
+                        return false;
+                }
+                
+                // Apply rotation to target qubit
+                ComplexFloat* temp = malloc(dim * sizeof(ComplexFloat));
+                if (!temp) return false;
+                memcpy(temp, circuit->state->coordinates, dim * sizeof(ComplexFloat));
+                
+                for (size_t i = 0; i < dim; i++) {
+                    size_t i0 = i & ~(1ULL << target);  // i with target bit = 0
+                    size_t i1 = i | (1ULL << target);   // i with target bit = 1
+                    
+                    if (i == i0) {  // Only process when target bit is 0
+                        circuit->state->coordinates[i0] = complex_float_add(
+                            complex_float_multiply(rotation[0], temp[i0]),
+                            complex_float_multiply(rotation[1], temp[i1])
+                        );
+                        circuit->state->coordinates[i1] = complex_float_add(
+                            complex_float_multiply(rotation[2], temp[i0]),
+                            complex_float_multiply(rotation[3], temp[i1])
+                        );
+                    }
+                }
+                
+                free(temp);
+                break;
+            }
             
             case NODE_MEASUREMENT: {
                 // Perform measurement and collapse state
@@ -369,4 +425,82 @@ bool quantum_circuit_add_measurement(quantum_circuit_t* circuit,
     
     return quantum_circuit_add_operation(circuit, NODE_MEASUREMENT,
                                        &qubit, 1, NULL, 0);
+}
+
+bool quantum_circuit_add_rotation(quantum_circuit_t* circuit,
+                                size_t qubit,
+                                gate_type_t rotation_type,
+                                float angle) {
+    if (!circuit || (rotation_type != GATE_TYPE_RX && 
+                    rotation_type != GATE_TYPE_RY && 
+                    rotation_type != GATE_TYPE_RZ)) {
+        return false;
+    }
+    
+    // Create parameter
+    ComplexFloat param = {angle, 0.0f};
+    
+    // Create node
+    quantum_compute_node_t* node = malloc(sizeof(quantum_compute_node_t));
+    if (!node) return false;
+    
+    node->type = NODE_ROTATION;
+    node->num_qubits = 1;
+    node->qubit_indices = malloc(sizeof(size_t));
+    if (!node->qubit_indices) {
+        free(node);
+        return false;
+    }
+    node->qubit_indices[0] = qubit;
+    
+    node->parameters = malloc(sizeof(ComplexFloat));
+    if (!node->parameters) {
+        free(node->qubit_indices);
+        free(node);
+        return false;
+    }
+    node->parameters[0] = param;
+    node->num_parameters = 1;
+    
+    // Store rotation type in additional_data
+    gate_type_t* type_ptr = malloc(sizeof(gate_type_t));
+    if (!type_ptr) {
+        free(node->parameters);
+        free(node->qubit_indices);
+        free(node);
+        return false;
+    }
+    *type_ptr = rotation_type;
+    node->additional_data = type_ptr;
+    
+    // Add node to circuit
+    if (circuit->num_nodes >= circuit->capacity) {
+        size_t new_capacity = circuit->capacity * 2;
+        quantum_compute_node_t** new_nodes = realloc(circuit->nodes,
+            new_capacity * sizeof(quantum_compute_node_t*));
+        if (!new_nodes) {
+            free(type_ptr);
+            free(node->parameters);
+            free(node->qubit_indices);
+            free(node);
+            return false;
+        }
+        circuit->nodes = new_nodes;
+        circuit->capacity = new_capacity;
+    }
+    
+    circuit->nodes[circuit->num_nodes++] = node;
+    
+    // Add to computational graph
+    computation_node_t* comp_node = add_node(circuit->graph, NODE_OPERATION, OP_QUANTUM, node);
+    if (!comp_node) {
+        free(type_ptr);
+        free(node->parameters);
+        free(node->qubit_indices);
+        free(node);
+        circuit->num_nodes--;
+        return false;
+    }
+    
+    return true;
 }

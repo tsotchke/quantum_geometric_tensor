@@ -72,6 +72,32 @@ typedef enum {
     MITIGATION_CUSTOM
 } MitigationType;
 
+// IBM backend configuration
+typedef struct IBMBackendConfig {
+    char* backend_name;
+    char* hub;
+    char* group;
+    char* project;
+    char* token;
+    int optimization_level;
+    bool error_mitigation;
+    bool dynamic_decoupling;
+    bool readout_error_mitigation;
+    bool measurement_error_mitigation;
+} IBMBackendConfig;
+
+// IBM backend state
+typedef struct IBMBackendState {
+    bool initialized;
+    bool connected;
+    IBMBackendConfig config;
+    double* error_rates;
+    double* readout_errors;
+    size_t num_qubits;
+    void* api_handle;
+    struct IBMResultData* last_result_data;  // Last execution result data
+} IBMBackendState;
+
 // Quantum hardware capabilities
 typedef struct QuantumHardwareCapabilities {
     bool supports_gpu;                // GPU acceleration support
@@ -194,7 +220,7 @@ typedef struct {
 typedef struct {
     BackendType type;
     union {
-        struct IBMConfig ibm;
+        IBMBackendConfig ibm;
         struct RigettiConfig rigetti;
         struct DWaveConfig dwave;
         struct SimulatorConfig simulator;
@@ -204,7 +230,7 @@ typedef struct {
 typedef struct {
     BackendType type;
     union {
-        struct IBMState ibm;
+        IBMBackendState ibm;
         struct RigettiState rigetti;
         struct DWaveState dwave;
         struct SimulatorState simulator;

@@ -709,7 +709,7 @@ bool quantum_calculate_gradients(
             return false;
         }
 
-        // Initialize quantum state with proper normalization
+        // Initialize quantum state with |0> state for gradient computation
         quantum_geometric_state_t* quantum_state;
         qgt_error_t err = geometric_create_state(&quantum_state, 
                                                GEOMETRIC_STATE_EUCLIDEAN,
@@ -722,15 +722,9 @@ bool quantum_calculate_gradients(
             return false;
         }
 
-        // Initialize state with proper quantum superposition
-        float norm_factor = 1.0f / sqrtf((float)quantum_state->dimension);
-        for (size_t i = 0; i < quantum_state->dimension; i++) {
-            float phase = 2.0f * M_PI * (float)i / (float)quantum_state->dimension;
-            quantum_state->coordinates[i] = (ComplexFloat){
-                norm_factor * cosf(phase),
-                norm_factor * sinf(phase)
-            };
-        }
+        // Initialize state to |0>
+        memset(quantum_state->coordinates, 0, quantum_state->dimension * sizeof(ComplexFloat));
+        quantum_state->coordinates[0] = (ComplexFloat){1.0f, 0.0f};
 
         // Print initial state
         printf("DEBUG: Initial quantum state:\n");

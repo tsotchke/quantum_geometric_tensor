@@ -39,8 +39,17 @@ typedef struct computation_node_t {
     void (*gradient)(struct computation_node_t*);  // Gradient computation
 } computation_node_t;
 
-// Forward declaration
-struct computational_graph_t;
+// Graph structure
+typedef struct computational_graph_t {
+    computation_node_t** nodes;          // Array of nodes
+    size_t num_nodes;                    // Number of nodes
+    size_t capacity;                     // Node array capacity
+    computation_node_t** inputs;         // Input nodes
+    computation_node_t** outputs;        // Output nodes
+    size_t num_inputs;                   // Number of input nodes
+    size_t num_outputs;                  // Number of output nodes
+    geometric_processor_t* processor;     // Associated geometric processor
+} computational_graph_t;
 
 // Graph creation and destruction
 struct computational_graph_t* create_computational_graph(struct geometric_processor_t* processor);

@@ -52,7 +52,8 @@ typedef enum {
     NODE_TENSOR_PRODUCT,
     NODE_PARTIAL_TRACE,
     NODE_QUANTUM_FOURIER,
-    NODE_QUANTUM_PHASE
+    NODE_QUANTUM_PHASE,
+    NODE_ROTATION      // For parameterized rotation gates (RX, RY, RZ)
 } quantum_node_type_t;
 
 // Node structure for quantum operations

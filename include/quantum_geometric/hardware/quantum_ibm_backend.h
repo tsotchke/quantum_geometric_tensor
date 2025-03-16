@@ -6,6 +6,34 @@
 #ifndef QUANTUM_IBM_BACKEND_H
 #define QUANTUM_IBM_BACKEND_H
 
+#include "quantum_geometric/hardware/quantum_ibm_api.h"
+#include "quantum_geometric/core/error_codes.h"
+
+// Forward declarations
+struct quantum_circuit;
+struct quantum_result;
+struct StabilizerState;
+
+// Error correction graph structures
+typedef struct {
+    size_t id;
+    double weight;
+    size_t* neighbors;
+    size_t num_neighbors;
+} MatchingVertex;
+
+typedef struct {
+    MatchingVertex* vertices;
+    size_t num_vertices;
+} MatchingGraph;
+
+// Syndrome configuration
+typedef struct {
+    size_t num_qubits;
+    size_t num_stabilizers;
+    double threshold;
+} SyndromeConfig;
+
 #include "quantum_geometric/core/system_dependencies.h"
 #include "quantum_geometric/core/numeric_utils.h"
 #include "quantum_geometric/hardware/quantum_hardware_types.h"
@@ -26,16 +54,6 @@ typedef enum {
     IBM_BACKEND_SIMULATOR // Semi-classical emulation
 } IBMBackendType;
 
-// IBM backend status
-typedef enum {
-    IBM_STATUS_IDLE,
-    IBM_STATUS_QUEUED,
-    IBM_STATUS_RUNNING,
-    IBM_STATUS_COMPLETED,
-    IBM_STATUS_ERROR,
-    IBM_STATUS_CANCELLED
-} IBMJobStatus;
-
 // IBM backend capabilities
 typedef struct {
     uint32_t max_qubits;
@@ -53,6 +71,13 @@ typedef struct {
 // Forward declarations from quantum_hardware_types.h
 struct IBMBackendConfig;
 struct IBMBackendState;
+
+// IBM result data
+typedef struct IBMResultData {
+    double fidelity;            // Measurement fidelity
+    double error_rate;          // Error rate
+    void* raw_data;            // Raw backend data
+} IBMResultData;
 
 // IBM job configuration
 typedef struct IBMJobConfig {
@@ -98,19 +123,8 @@ struct IBMBackendStateExt {
     size_t result_size;
 };
 
-// IBM job result
-typedef struct {
-    uint64_t* counts;
-    double* probabilities;
-    double fidelity;
-    double error_rate;
-    IBMJobStatus status;
-    char* error_message;
-    void* raw_data;
-} IBMJobResult;
-
 // Initialize IBM backend
-struct IBMBackendConfig* init_ibm_backend(const struct IBMBackendConfig* config);
+qgt_error_t init_ibm_backend(IBMBackendState* state, const IBMBackendConfig* config);
 
 // Create quantum circuit
 struct QuantumCircuit* create_ibm_circuit(uint32_t num_qubits, uint32_t num_classical_bits);

@@ -3,6 +3,7 @@
 
 #include "quantum_geometric/core/quantum_geometric_types.h"
 #include "quantum_geometric/core/quantum_complex.h"
+#include "quantum_geometric/core/quantum_types.h"
 #include <stddef.h>
 #include <stdbool.h>
 
@@ -28,6 +29,12 @@ bool quantum_circuit_add_hadamard(quantum_circuit_t* circuit, size_t qubit);
 bool quantum_circuit_add_cnot(quantum_circuit_t* circuit, size_t control, size_t target);
 bool quantum_circuit_add_phase(quantum_circuit_t* circuit, size_t qubit, float phase);
 bool quantum_circuit_add_measurement(quantum_circuit_t* circuit, size_t qubit);
+
+// Rotation gates
+bool quantum_circuit_add_rotation(quantum_circuit_t* circuit,
+                                size_t qubit,
+                                gate_type_t rotation_type,
+                                float angle);
 
 // Advanced operations
 bool quantum_circuit_add_tensor_product(quantum_circuit_t* circuit,
