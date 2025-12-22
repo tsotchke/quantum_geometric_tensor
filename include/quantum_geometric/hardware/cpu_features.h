@@ -1,7 +1,11 @@
 #ifndef QUANTUM_GEOMETRIC_CPU_FEATURES_H
 #define QUANTUM_GEOMETRIC_CPU_FEATURES_H
 
-// CPUID feature bits
+#include <stdbool.h>
+
+// ============================================================================
+// x86 CPUID feature bits
+// ============================================================================
 #define bit_SSE3       (1 << 0)
 #define bit_PCLMUL     (1 << 1)
 #define bit_DTES64     (1 << 2)
@@ -45,6 +49,15 @@
 #define bit_AMX_BF16      (1 << 22)  // AMX BFloat16 Support
 #define bit_AMX_TILE      (1 << 24)  // AMX Tile Architecture
 #define bit_AMX_INT8      (1 << 25)  // AMX Int8 Support
+
+// ============================================================================
+// ARM feature identifiers (for cpu_has_feature on ARM platforms)
+// ============================================================================
+#define CPU_FEATURE_NEON      0x1000
+#define CPU_FEATURE_FP16      0x1001
+#define CPU_FEATURE_DOTPROD   0x1002
+#define CPU_FEATURE_SVE       0x1003
+#define CPU_FEATURE_SVE2      0x1004
 
 // Function declarations for CPU feature detection
 #ifdef __cplusplus

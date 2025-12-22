@@ -53,13 +53,13 @@ typedef struct {
     bool compress;
 } memory_config_t;
 
-// Performance configuration
+// Data loader performance configuration
 typedef struct {
     size_t cache_size;
     size_t prefetch_size;
     size_t num_workers;
     bool profile;
-} performance_config_t;
+} data_performance_config_t;
 
 // Dataset structure
 typedef struct {
@@ -86,7 +86,7 @@ dataset_split_t quantum_split_dataset(dataset_t* dataset, float train_ratio, flo
 bool quantum_normalize_data(dataset_t* dataset, normalization_t method);
 void quantum_dataset_destroy(dataset_t* dataset);
 void quantum_dataset_split_destroy(dataset_split_t* split);
-bool quantum_configure_performance(performance_config_t config);
+bool quantum_configure_performance(data_performance_config_t config);
 bool quantum_configure_memory(memory_config_t config);
 bool quantum_get_performance_metrics(performance_metrics_t* metrics);
 bool quantum_reset_performance_metrics(void);

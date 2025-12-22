@@ -1,5 +1,4 @@
 #include <unistd.h>
-#include <sys/sysinfo.h>
 #include <string.h>
 #include "quantum_geometric/hardware/quantum_hardware_types.h"
 #include "quantum_geometric/hardware/hardware_capabilities.h"
@@ -7,6 +6,10 @@
 
 #ifdef __APPLE__
 #include <sys/sysctl.h>
+#include <mach/mach.h>
+#else
+// Linux-specific header for sysinfo
+#include <sys/sysinfo.h>
 #endif
 
 // Platform-specific memory size detection

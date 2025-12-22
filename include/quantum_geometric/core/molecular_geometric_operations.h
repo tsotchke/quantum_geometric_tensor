@@ -149,4 +149,78 @@ bool import_structure(molecular_operations_t* operations,
                      const char* filename);
 void free_molecular_structure(molecular_structure_t* structure);
 
+// =============================================================================
+// Graph Neural Network Types for Geometric Deep Learning
+// =============================================================================
+
+// Molecular graph representation for GNN
+typedef struct {
+    size_t num_atoms;              // Number of atoms (nodes)
+    size_t num_bonds;              // Number of bonds (edges)
+    double* positions;             // 3D positions (num_atoms x 3)
+    int* edge_index;               // Edge indices (2 x num_bonds)
+    double* edge_attr;             // Edge attributes
+    int* atomic_numbers;           // Atomic numbers
+    double* charges;               // Atomic charges
+    int* bond_indices;             // Bond connectivity (2 x num_bonds)
+    int* bond_types;               // Bond types
+    void* graph_data;              // Additional graph data
+} MolecularGraph;
+
+// Geometric feature representation
+typedef struct {
+    size_t num_node_features;      // Number of node features
+    size_t num_edge_features;      // Number of edge features
+    size_t num_global_features;    // Number of global features
+    double* node_features;         // Node feature matrix
+    double* edge_features;         // Edge feature matrix
+    double* global_features;       // Global feature vector
+    double* invariants;            // Geometric invariants
+    void* feature_data;            // Additional feature data
+} GeometricFeatures;
+
+// SE(3) equivariant transformation
+typedef struct {
+    size_t num_layers;             // Number of transform layers
+    double* rotation_matrices;     // Rotation matrices (3x3 per layer)
+    double* translations;          // Translation vectors (3 per layer)
+    double* weights;               // Layer weights
+    bool use_fiber_bundle;         // Use fiber bundle formulation
+    void* transform_data;          // Additional transform data
+} SE3Transform;
+
+// Graph neural network message passing
+void geometric_message_passing(
+    const MolecularGraph* graph,
+    GeometricFeatures* features,
+    const SE3Transform* transform
+);
+
+// SE(3)-equivariant convolution
+void equivariant_convolution(
+    const double* input_features,
+    double* output_features,
+    const SE3Transform* transform,
+    size_t num_features,
+    size_t num_points
+);
+
+// Graph initialization and cleanup
+void init_molecular_graph(
+    MolecularGraph* graph,
+    size_t num_atoms,
+    size_t num_bonds
+);
+
+void free_molecular_graph(MolecularGraph* graph);
+
+// Feature initialization and cleanup
+void init_geometric_features(
+    GeometricFeatures* features,
+    size_t num_nodes,
+    size_t num_node_features
+);
+
+void free_geometric_features(GeometricFeatures* features);
+
 #endif // MOLECULAR_GEOMETRIC_OPERATIONS_H

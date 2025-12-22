@@ -113,17 +113,53 @@ qgt_error_t init_ibm_backend(IBMBackendState* state, const IBMBackendConfig* con
 // Clean up backend resources
 void cleanup_ibm_backend(IBMBackendState* state) {
     if (state) {
+        // Free error rate arrays
         free(state->error_rates);
+        state->error_rates = NULL;
+
         free(state->readout_errors);
+        state->readout_errors = NULL;
+
+        // Clean up API connection properly
         if (state->api_handle) {
-            // TODO: Clean up API connection
+            // Cancel any pending jobs gracefully
+            if (state->connected) {
+                // Attempt to cancel pending jobs before disconnecting
+                ibm_api_cancel_pending_jobs(state->api_handle);
+            }
+
+            // Close the session and free resources
+            ibm_api_close_session(state->api_handle);
+
+            // Securely clear any cached credentials
+            ibm_api_clear_credentials(state->api_handle);
+
+            // Free the API handle memory
+            ibm_api_destroy(state->api_handle);
+            state->api_handle = NULL;
         }
+
+        // Clean up result data
         if (state->last_result_data) {
             if (state->last_result_data->raw_data) {
+                // Securely zero sensitive data before freeing
+                memset(state->last_result_data->raw_data, 0,
+                       state->last_result_data->raw_data_size);
                 free(state->last_result_data->raw_data);
             }
             free(state->last_result_data);
+            state->last_result_data = NULL;
         }
+
+        // Clear state flags
+        state->initialized = false;
+        state->connected = false;
+
+        // Clear global reference if this is the global state
+        if (g_backend_state == state) {
+            g_backend_state = NULL;
+        }
+
         memset(state, 0, sizeof(IBMBackendState));
     }
 }

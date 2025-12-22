@@ -233,20 +233,37 @@ int optimize_parameters(OptimizationContext* ctx,
             case OPTIMIZER_ADAM:
                 update_adam(ctx, ext);
                 break;
-                
+
             case OPTIMIZER_LBFGS:
                 update_lbfgs(ctx, ext);
                 break;
-                
+
             case OPTIMIZER_SGD:
                 update_sgd(ctx, ext);
                 break;
-                
+
             case OPTIMIZER_NATURAL_GRADIENT:
                 update_natural_gradient(ctx, ext);
                 break;
-                
+
+            case OPTIMIZER_RMSPROP:
+                update_rmsprop(ctx, ext);
+                break;
+
+            case OPTIMIZER_ADAGRAD:
+                update_adagrad(ctx, ext);
+                break;
+
+            case OPTIMIZER_ADADELTA:
+                update_adadelta(ctx, ext);
+                break;
+
+            case OPTIMIZER_NADAM:
+                update_nadam(ctx, ext);
+                break;
+
             default:
+                update_adam(ctx, ext);  // Default to ADAM
                 break;
         }
         
@@ -416,7 +433,7 @@ static double dot_product(const double* a,
 
 static void update_fisher_matrix(OptimizationContext* ctx, OptimizationContextExt* ext) {
     size_t n = ctx->num_parameters;
-    
+
     #pragma omp parallel for collapse(2)
     for (size_t i = 0; i < n; i++) {
         for (size_t j = 0; j < n; j++) {
@@ -424,6 +441,171 @@ static void update_fisher_matrix(OptimizationContext* ctx, OptimizationContextEx
                 ctx->gradients[i] * ctx->gradients[j];
         }
     }
+}
+
+// Update parameters using RMSprop
+static void update_rmsprop(OptimizationContext* ctx, OptimizationContextExt* ext) {
+    double decay = 0.99;
+
+    #pragma omp parallel for if(ctx->num_parameters > 1000)
+    for (size_t i = 0; i < ctx->num_parameters; i++) {
+        // Update running average of squared gradients
+        ext->v[i] = decay * ext->v[i] +
+                   (1.0 - decay) * ctx->gradients[i] * ctx->gradients[i];
+
+        // Update parameters
+        ext->parameters[i] -= ctx->learning_rate * ctx->gradients[i] /
+                            (sqrt(ext->v[i]) + ctx->epsilon);
+    }
+}
+
+// Update parameters using AdaGrad
+static void update_adagrad(OptimizationContext* ctx, OptimizationContextExt* ext) {
+    #pragma omp parallel for if(ctx->num_parameters > 1000)
+    for (size_t i = 0; i < ctx->num_parameters; i++) {
+        // Accumulate squared gradients
+        ext->v[i] += ctx->gradients[i] * ctx->gradients[i];
+
+        // Update parameters with adaptive learning rate
+        ext->parameters[i] -= ctx->learning_rate * ctx->gradients[i] /
+                            (sqrt(ext->v[i]) + ctx->epsilon);
+    }
+}
+
+// Update parameters using AdaDelta
+static void update_adadelta(OptimizationContext* ctx, OptimizationContextExt* ext) {
+    double rho = 0.95;
+
+    #pragma omp parallel for if(ctx->num_parameters > 1000)
+    for (size_t i = 0; i < ctx->num_parameters; i++) {
+        // Accumulate gradient squared
+        ext->v[i] = rho * ext->v[i] +
+                   (1.0 - rho) * ctx->gradients[i] * ctx->gradients[i];
+
+        // Compute parameter update (using accumulated delta squared from m)
+        double delta = sqrt(ext->m[i] + ctx->epsilon) /
+                      sqrt(ext->v[i] + ctx->epsilon) * ctx->gradients[i];
+
+        // Accumulate updates squared
+        ext->m[i] = rho * ext->m[i] + (1.0 - rho) * delta * delta;
+
+        // Update parameters
+        ext->parameters[i] -= delta;
+    }
+}
+
+// Update parameters using NAdam (Nesterov-accelerated Adam)
+static void update_nadam(OptimizationContext* ctx, OptimizationContextExt* ext) {
+    double beta1_t = pow(ctx->beta1, ext->iteration + 1);
+    double beta2_t = pow(ctx->beta2, ext->iteration + 1);
+
+    #pragma omp parallel for if(ctx->num_parameters > 1000)
+    for (size_t i = 0; i < ctx->num_parameters; i++) {
+        // Update biased first moment estimate
+        ext->m[i] = ctx->beta1 * ext->m[i] +
+                   (1.0 - ctx->beta1) * ctx->gradients[i];
+
+        // Update biased second raw moment estimate
+        ext->v[i] = ctx->beta2 * ext->v[i] +
+                   (1.0 - ctx->beta2) * ctx->gradients[i] * ctx->gradients[i];
+
+        // Compute bias-corrected first moment estimate
+        double m_hat = ext->m[i] / (1.0 - beta1_t);
+
+        // Compute bias-corrected second raw moment estimate
+        double v_hat = ext->v[i] / (1.0 - beta2_t);
+
+        // Nesterov momentum term
+        double m_nesterov = ctx->beta1 * m_hat +
+                           (1.0 - ctx->beta1) * ctx->gradients[i] / (1.0 - beta1_t);
+
+        // Update parameters
+        ext->parameters[i] -= ctx->learning_rate * m_nesterov /
+                            (sqrt(v_hat) + ctx->epsilon);
+    }
+}
+
+// Compute natural gradient on CPU using conjugate gradient
+void compute_natural_gradient_cpu(const double* fisher_matrix,
+                               const double* gradients,
+                               double* natural_gradient,
+                               size_t num_parameters) {
+    // Solve F * ng = g using conjugate gradient method
+    // where F is Fisher matrix, ng is natural gradient, g is gradient
+
+    double* r = malloc(num_parameters * sizeof(double));
+    double* p = malloc(num_parameters * sizeof(double));
+    double* Ap = malloc(num_parameters * sizeof(double));
+
+    if (!r || !p || !Ap) {
+        free(r);
+        free(p);
+        free(Ap);
+        // Fallback to regular gradient
+        memcpy(natural_gradient, gradients, num_parameters * sizeof(double));
+        return;
+    }
+
+    // Initialize: x = 0, r = g - F*x = g, p = r
+    memset(natural_gradient, 0, num_parameters * sizeof(double));
+    memcpy(r, gradients, num_parameters * sizeof(double));
+    memcpy(p, gradients, num_parameters * sizeof(double));
+
+    double rsold = dot_product(r, r, num_parameters);
+    const int max_iter = 100;
+    const double tol = 1e-8;
+
+    for (int iter = 0; iter < max_iter; iter++) {
+        // Compute Ap = F * p
+        #pragma omp parallel for
+        for (size_t i = 0; i < num_parameters; i++) {
+            Ap[i] = 0.0;
+            for (size_t j = 0; j < num_parameters; j++) {
+                Ap[i] += fisher_matrix[i * num_parameters + j] * p[j];
+            }
+        }
+
+        double pAp = dot_product(p, Ap, num_parameters);
+        if (fabs(pAp) < 1e-15) break;
+
+        double alpha = rsold / pAp;
+
+        // Update solution and residual
+        #pragma omp parallel for
+        for (size_t i = 0; i < num_parameters; i++) {
+            natural_gradient[i] += alpha * p[i];
+            r[i] -= alpha * Ap[i];
+        }
+
+        double rsnew = dot_product(r, r, num_parameters);
+        if (sqrt(rsnew) < tol) break;
+
+        // Update search direction
+        double beta = rsnew / rsold;
+        #pragma omp parallel for
+        for (size_t i = 0; i < num_parameters; i++) {
+            p[i] = r[i] + beta * p[i];
+        }
+
+        rsold = rsnew;
+    }
+
+    free(r);
+    free(p);
+    free(Ap);
+}
+
+// Compute natural gradient on GPU (fallback to CPU when GPU not available)
+void compute_natural_gradient_gpu(const double* fisher_matrix,
+                               const double* gradients,
+                               double* natural_gradient,
+                               size_t num_parameters) {
+    // When CUDA is not available, fall back to CPU implementation
+#ifdef CUDA_AVAILABLE
+    // CUDA implementation would go here using cuBLAS/cuSOLVER
+    // For now, fall back to CPU
+#endif
+    compute_natural_gradient_cpu(fisher_matrix, gradients, natural_gradient, num_parameters);
 }
 
 // Clean up optimization engine

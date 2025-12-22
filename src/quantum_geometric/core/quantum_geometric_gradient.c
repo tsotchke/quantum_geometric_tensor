@@ -11,6 +11,9 @@
 #include "quantum_geometric/core/quantum_types.h"
 #include "quantum_geometric/core/computational_graph.h"
 #include "quantum_geometric/core/quantum_circuit_types.h"
+#include "quantum_geometric/core/geometric_processor.h"
+#include "quantum_geometric/core/quantum_base_types.h"
+#include "quantum_geometric/core/quantum_geometric_compute.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -41,6 +44,22 @@ static void compute_parameter_shift(
                i, state[i].real, state[i].imag);
     }
     
+    // Initialize memory system for safe allocation/deallocation
+    memory_system_config_t mem_config = {
+        .type = MEM_SYSTEM_QUANTUM,
+        .strategy = ALLOC_STRATEGY_BUDDY,
+        .optimization = MEM_OPT_ADVANCED,
+        .alignment = sizeof(ComplexFloat),
+        .enable_monitoring = true,
+        .enable_defragmentation = true
+    };
+    
+    advanced_memory_system_t* memory = create_memory_system(&mem_config);
+    if (!memory) {
+        printf("DEBUG: Failed to create memory system\n");
+        return;
+    }
+    
     // Parameter shift rule for quantum gradients:
     // df/dθ = [f(θ + π/2) - f(θ - π/2)]/2
     
@@ -50,55 +69,39 @@ static void compute_parameter_shift(
     
     printf("DEBUG: Allocating forward and backward states\n");
     
+    // Use standard malloc instead of memory_allocate for better compatibility
+    // with free operations in other parts of the code
     forward_state = malloc(dimension * sizeof(ComplexFloat));
     if (!forward_state) {
+        printf("DEBUG: Failed to allocate forward state\n");
+        destroy_memory_system(memory);
         return;
     }
     
     backward_state = malloc(dimension * sizeof(ComplexFloat));
     if (!backward_state) {
+        printf("DEBUG: Failed to allocate backward state\n");
         free(forward_state);
+        destroy_memory_system(memory);
         return;
     }
     
     printf("DEBUG: Computing forward shift\n");
-    // Create RY rotation gates for forward and backward shifts
-    quantum_gate_t ry_forward = {
-        .type = GATE_TYPE_RY,
-        .num_qubits = 1,
-        .target_qubits = malloc(sizeof(size_t)),
-        .control_qubits = NULL,
-        .num_controls = 0,
-        .is_controlled = false,
-        .parameters = malloc(sizeof(double)),
-        .num_parameters = 1,
-        .is_parameterized = true,
-        .matrix = malloc(4 * sizeof(ComplexFloat))
-    };
+    // Create RY rotation gates for forward and backward shifts using the helper functions
+    size_t qubit_idx = 0;  // Default qubit index
+    double forward_angle = M_PI_2;  // +π/2
+    double backward_angle = -M_PI_2; // -π/2
     
-    quantum_gate_t ry_backward = {
-        .type = GATE_TYPE_RY,
-        .num_qubits = 1,
-        .target_qubits = malloc(sizeof(size_t)),
-        .control_qubits = NULL,
-        .num_controls = 0,
-        .is_controlled = false,
-        .parameters = malloc(sizeof(double)),
-        .num_parameters = 1,
-        .is_parameterized = true,
-        .matrix = malloc(4 * sizeof(ComplexFloat))
-    };
+    // Create forward and backward gates
+    quantum_gate_t* ry_forward_ptr = create_ry_gate(qubit_idx, forward_angle);
+    quantum_gate_t* ry_backward_ptr = create_ry_gate(qubit_idx, backward_angle);
     
-    if (!ry_forward.target_qubits || !ry_forward.parameters || !ry_forward.matrix ||
-        !ry_backward.target_qubits || !ry_backward.parameters || !ry_backward.matrix) {
-        free(ry_forward.target_qubits);
-        free(ry_forward.parameters);
-        free(ry_forward.matrix);
-        free(ry_backward.target_qubits);
-        free(ry_backward.parameters);
-        free(ry_backward.matrix);
-        free(forward_state);
-        free(backward_state);
+    if (!ry_forward_ptr || !ry_backward_ptr) {
+        if (ry_forward_ptr) destroy_quantum_gate(ry_forward_ptr);
+        if (ry_backward_ptr) destroy_quantum_gate(ry_backward_ptr);
+        memory_free(memory, forward_state);
+        memory_free(memory, backward_state);
+        destroy_memory_system(memory);
         return;
     }
     
@@ -107,11 +110,14 @@ static void compute_parameter_shift(
     memcpy(backward_state, state, dimension * sizeof(ComplexFloat));
     
     // Create quantum circuit for forward and backward states
-    quantum_circuit_t* forward_circuit = malloc(sizeof(quantum_circuit_t));
-    quantum_circuit_t* backward_circuit = malloc(sizeof(quantum_circuit_t));
+    quantum_circuit_t* forward_circuit = memory_allocate(memory, sizeof(quantum_circuit_t), sizeof(quantum_circuit_t));
+    quantum_circuit_t* backward_circuit = memory_allocate(memory, sizeof(quantum_circuit_t), sizeof(quantum_circuit_t));
     if (!forward_circuit || !backward_circuit) {
-        free(forward_circuit);
-        free(backward_circuit);
+        memory_free(memory, forward_circuit);
+        memory_free(memory, backward_circuit);
+        memory_free(memory, forward_state);
+        memory_free(memory, backward_state);
+        destroy_memory_system(memory);
         return;
     }
 
@@ -123,18 +129,18 @@ static void compute_parameter_shift(
     forward_circuit->is_parameterized = true;
     backward_circuit->is_parameterized = true;
     
-    // Initialize computational graphs
+    // Initialize computational graphs using API functions
     geometric_processor_t* forward_processor = create_geometric_processor(NULL);
     if (!forward_processor) {
-        free(forward_circuit);
-        free(backward_circuit);
+        memory_free(memory, forward_circuit);
+        memory_free(memory, backward_circuit);
         return;
     }
     forward_circuit->graph = create_computational_graph(forward_processor);
     if (!forward_circuit->graph) {
         destroy_geometric_processor(forward_processor);
-        free(forward_circuit);
-        free(backward_circuit);
+        memory_free(memory, forward_circuit);
+        memory_free(memory, backward_circuit);
         return;
     }
     
@@ -142,8 +148,8 @@ static void compute_parameter_shift(
     if (!backward_processor) {
         destroy_computational_graph(forward_circuit->graph);
         destroy_geometric_processor(forward_processor);
-        free(forward_circuit);
-        free(backward_circuit);
+        memory_free(memory, forward_circuit);
+        memory_free(memory, backward_circuit);
         return;
     }
     backward_circuit->graph = create_computational_graph(backward_processor);
@@ -151,8 +157,8 @@ static void compute_parameter_shift(
         destroy_geometric_processor(backward_processor);
         destroy_computational_graph(forward_circuit->graph);
         destroy_geometric_processor(forward_processor);
-        free(forward_circuit);
-        free(backward_circuit);
+        memory_free(memory, forward_circuit);
+        memory_free(memory, backward_circuit);
         return;
     }
     
@@ -162,17 +168,20 @@ static void compute_parameter_shift(
     // Initialize nodes arrays
     forward_circuit->capacity = 16;
     backward_circuit->capacity = 16;
-    forward_circuit->nodes = malloc(forward_circuit->capacity * sizeof(quantum_compute_node_t*));
-    backward_circuit->nodes = malloc(backward_circuit->capacity * sizeof(quantum_compute_node_t*));
+    forward_circuit->nodes = memory_allocate(memory, forward_circuit->capacity * sizeof(quantum_compute_node_t*), sizeof(quantum_compute_node_t*));
+    backward_circuit->nodes = memory_allocate(memory, backward_circuit->capacity * sizeof(quantum_compute_node_t*), sizeof(quantum_compute_node_t*));
     if (!forward_circuit->nodes || !backward_circuit->nodes) {
-        free(forward_circuit->nodes);
-        free(backward_circuit->nodes);
+        memory_free(memory, forward_circuit->nodes);
+        memory_free(memory, backward_circuit->nodes);
         destroy_computational_graph(backward_circuit->graph);
         destroy_geometric_processor(backward_processor);
         destroy_computational_graph(forward_circuit->graph);
         destroy_geometric_processor(forward_processor);
-        free(forward_circuit);
-        free(backward_circuit);
+        memory_free(memory, forward_circuit);
+        memory_free(memory, backward_circuit);
+        memory_free(memory, forward_state);
+        memory_free(memory, backward_state);
+        destroy_memory_system(memory);
         return;
     }
     forward_circuit->num_nodes = 0;
@@ -184,13 +193,22 @@ static void compute_parameter_shift(
     backward_circuit->layers = NULL;
 
     // Create layers array
-    forward_circuit->layers = malloc(sizeof(circuit_layer_t*) * forward_circuit->num_layers);
-    backward_circuit->layers = malloc(sizeof(circuit_layer_t*) * backward_circuit->num_layers);
+    forward_circuit->layers = memory_allocate(memory, sizeof(circuit_layer_t*) * forward_circuit->num_layers, sizeof(circuit_layer_t*));
+    backward_circuit->layers = memory_allocate(memory, sizeof(circuit_layer_t*) * backward_circuit->num_layers, sizeof(circuit_layer_t*));
     if (!forward_circuit->layers || !backward_circuit->layers) {
-        free(forward_circuit->layers);
-        free(backward_circuit->layers);
-        free(forward_circuit);
-        free(backward_circuit);
+        memory_free(memory, forward_circuit->layers);
+        memory_free(memory, backward_circuit->layers);
+        memory_free(memory, forward_circuit->nodes);
+        memory_free(memory, backward_circuit->nodes);
+        destroy_computational_graph(backward_circuit->graph);
+        destroy_geometric_processor(backward_processor);
+        destroy_computational_graph(forward_circuit->graph);
+        destroy_geometric_processor(forward_processor);
+        memory_free(memory, forward_circuit);
+        memory_free(memory, backward_circuit);
+        memory_free(memory, forward_state);
+        memory_free(memory, backward_state);
+        destroy_memory_system(memory);
         return;
     }
     
@@ -202,15 +220,24 @@ static void compute_parameter_shift(
         backward_circuit->layers[i] = NULL;
     }
 
-    forward_circuit->layers[0] = malloc(sizeof(circuit_layer_t));
-    backward_circuit->layers[0] = malloc(sizeof(circuit_layer_t));
+    forward_circuit->layers[0] = memory_allocate(memory, sizeof(circuit_layer_t), sizeof(circuit_layer_t));
+    backward_circuit->layers[0] = memory_allocate(memory, sizeof(circuit_layer_t), sizeof(circuit_layer_t));
     if (!forward_circuit->layers[0] || !backward_circuit->layers[0]) {
-        free(forward_circuit->layers[0]);
-        free(backward_circuit->layers[0]);
-        free(forward_circuit->layers);
-        free(backward_circuit->layers);
-        free(forward_circuit);
-        free(backward_circuit);
+        memory_free(memory, forward_circuit->layers[0]);
+        memory_free(memory, backward_circuit->layers[0]);
+        memory_free(memory, forward_circuit->layers);
+        memory_free(memory, backward_circuit->layers);
+        memory_free(memory, forward_circuit->nodes);
+        memory_free(memory, backward_circuit->nodes);
+        destroy_computational_graph(backward_circuit->graph);
+        destroy_geometric_processor(backward_processor);
+        destroy_computational_graph(forward_circuit->graph);
+        destroy_geometric_processor(forward_processor);
+        memory_free(memory, forward_circuit);
+        memory_free(memory, backward_circuit);
+        memory_free(memory, forward_state);
+        memory_free(memory, backward_state);
+        destroy_memory_system(memory);
         return;
     }
 
@@ -221,17 +248,26 @@ static void compute_parameter_shift(
     backward_circuit->layers[0]->is_parameterized = true;
 
     // Create gates arrays
-    forward_circuit->layers[0]->gates = malloc(forward_circuit->num_qubits * sizeof(quantum_gate_t*));
-    backward_circuit->layers[0]->gates = malloc(backward_circuit->num_qubits * sizeof(quantum_gate_t*));
+    forward_circuit->layers[0]->gates = memory_allocate(memory, forward_circuit->num_qubits * sizeof(quantum_gate_t*), sizeof(quantum_gate_t*));
+    backward_circuit->layers[0]->gates = memory_allocate(memory, backward_circuit->num_qubits * sizeof(quantum_gate_t*), sizeof(quantum_gate_t*));
     if (!forward_circuit->layers[0]->gates || !backward_circuit->layers[0]->gates) {
-        free(forward_circuit->layers[0]->gates);
-        free(backward_circuit->layers[0]->gates);
-        free(forward_circuit->layers[0]);
-        free(backward_circuit->layers[0]);
-        free(forward_circuit->layers);
-        free(backward_circuit->layers);
-        free(forward_circuit);
-        free(backward_circuit);
+        memory_free(memory, forward_circuit->layers[0]->gates);
+        memory_free(memory, backward_circuit->layers[0]->gates);
+        memory_free(memory, forward_circuit->layers[0]);
+        memory_free(memory, backward_circuit->layers[0]);
+        memory_free(memory, forward_circuit->layers);
+        memory_free(memory, backward_circuit->layers);
+        memory_free(memory, forward_circuit->nodes);
+        memory_free(memory, backward_circuit->nodes);
+        destroy_computational_graph(backward_circuit->graph);
+        destroy_geometric_processor(backward_processor);
+        destroy_computational_graph(forward_circuit->graph);
+        destroy_geometric_processor(forward_processor);
+        memory_free(memory, forward_circuit);
+        memory_free(memory, backward_circuit);
+        memory_free(memory, forward_state);
+        memory_free(memory, backward_state);
+        destroy_memory_system(memory);
         return;
     }
 
@@ -245,36 +281,134 @@ static void compute_parameter_shift(
     printf("DEBUG: Creating RY gates for %zu qubits\n", forward_circuit->num_qubits);
     for (size_t qubit = 0; qubit < forward_circuit->num_qubits; qubit++) {
         // Forward gate
-        quantum_gate_t* forward_gate = malloc(sizeof(quantum_gate_t));
+        quantum_gate_t* forward_gate = memory_allocate(memory, sizeof(quantum_gate_t), sizeof(quantum_gate_t));
         if (!forward_gate) {
             // Clean up and return
             for (size_t i = 0; i < qubit; i++) {
-                free(forward_circuit->layers[0]->gates[i]);
-                free(backward_circuit->layers[0]->gates[i]);
+                if (forward_circuit->layers[0]->gates[i]) {
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]->target_qubits);
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]->parameters);
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]->matrix);
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]);
+                }
+                if (backward_circuit->layers[0]->gates[i]) {
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]->target_qubits);
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]->parameters);
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]->matrix);
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]);
+                }
             }
-            free(forward_circuit->layers[0]->gates);
-            free(backward_circuit->layers[0]->gates);
-            free(forward_circuit->layers[0]);
-            free(backward_circuit->layers[0]);
-            free(forward_circuit->layers);
-            free(backward_circuit->layers);
-            free(forward_circuit);
-            free(backward_circuit);
+            memory_free(memory, forward_circuit->layers[0]->gates);
+            memory_free(memory, backward_circuit->layers[0]->gates);
+            memory_free(memory, forward_circuit->layers[0]);
+            memory_free(memory, backward_circuit->layers[0]);
+            memory_free(memory, forward_circuit->layers);
+            memory_free(memory, backward_circuit->layers);
+            memory_free(memory, forward_circuit);
+            memory_free(memory, backward_circuit);
+            destroy_memory_system(memory);
             return;
         }
 
         forward_gate->type = GATE_TYPE_RY;
         forward_gate->num_qubits = 1;
-        forward_gate->target_qubits = malloc(sizeof(size_t));
+        forward_gate->target_qubits = memory_allocate(memory, sizeof(size_t), sizeof(size_t));
+        if (!forward_gate->target_qubits) {
+            memory_free(memory, forward_gate);
+            // Clean up and return
+            for (size_t i = 0; i < qubit; i++) {
+                if (forward_circuit->layers[0]->gates[i]) {
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]->target_qubits);
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]->parameters);
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]->matrix);
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]);
+                }
+                if (backward_circuit->layers[0]->gates[i]) {
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]->target_qubits);
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]->parameters);
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]->matrix);
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]);
+                }
+            }
+            memory_free(memory, forward_circuit->layers[0]->gates);
+            memory_free(memory, backward_circuit->layers[0]->gates);
+            memory_free(memory, forward_circuit->layers[0]);
+            memory_free(memory, backward_circuit->layers[0]);
+            memory_free(memory, forward_circuit->layers);
+            memory_free(memory, backward_circuit->layers);
+            memory_free(memory, forward_circuit);
+            memory_free(memory, backward_circuit);
+            destroy_memory_system(memory);
+            return;
+        }
         forward_gate->target_qubits[0] = qubit;
         forward_gate->control_qubits = NULL;
         forward_gate->num_controls = 0;
         forward_gate->is_controlled = false;
-        forward_gate->parameters = malloc(sizeof(double));
+        forward_gate->parameters = memory_allocate(memory, sizeof(double), sizeof(double));
+        if (!forward_gate->parameters) {
+            memory_free(memory, forward_gate->target_qubits);
+            memory_free(memory, forward_gate);
+            // Clean up and return
+            for (size_t i = 0; i < qubit; i++) {
+                if (forward_circuit->layers[0]->gates[i]) {
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]->target_qubits);
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]->parameters);
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]->matrix);
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]);
+                }
+                if (backward_circuit->layers[0]->gates[i]) {
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]->target_qubits);
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]->parameters);
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]->matrix);
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]);
+                }
+            }
+            memory_free(memory, forward_circuit->layers[0]->gates);
+            memory_free(memory, backward_circuit->layers[0]->gates);
+            memory_free(memory, forward_circuit->layers[0]);
+            memory_free(memory, backward_circuit->layers[0]);
+            memory_free(memory, forward_circuit->layers);
+            memory_free(memory, backward_circuit->layers);
+            memory_free(memory, forward_circuit);
+            memory_free(memory, backward_circuit);
+            destroy_memory_system(memory);
+            return;
+        }
         forward_gate->parameters[0] = M_PI_2;  // +π/2
         forward_gate->num_parameters = 1;
         forward_gate->is_parameterized = true;
-        forward_gate->matrix = malloc(4 * sizeof(ComplexFloat));
+        forward_gate->matrix = memory_allocate(memory, 4 * sizeof(ComplexFloat), sizeof(ComplexFloat));
+        if (!forward_gate->matrix) {
+            memory_free(memory, forward_gate->parameters);
+            memory_free(memory, forward_gate->target_qubits);
+            memory_free(memory, forward_gate);
+            // Clean up and return
+            for (size_t i = 0; i < qubit; i++) {
+                if (forward_circuit->layers[0]->gates[i]) {
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]->target_qubits);
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]->parameters);
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]->matrix);
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]);
+                }
+                if (backward_circuit->layers[0]->gates[i]) {
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]->target_qubits);
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]->parameters);
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]->matrix);
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]);
+                }
+            }
+            memory_free(memory, forward_circuit->layers[0]->gates);
+            memory_free(memory, backward_circuit->layers[0]->gates);
+            memory_free(memory, forward_circuit->layers[0]);
+            memory_free(memory, backward_circuit->layers[0]);
+            memory_free(memory, forward_circuit->layers);
+            memory_free(memory, backward_circuit->layers);
+            memory_free(memory, forward_circuit);
+            memory_free(memory, backward_circuit);
+            destroy_memory_system(memory);
+            return;
+        }
 
         // Compute forward gate matrix
         double cos_half = cos(forward_gate->parameters[0] / 2.0);
@@ -287,40 +421,147 @@ static void compute_parameter_shift(
         forward_circuit->layers[0]->gates[qubit] = forward_gate;
 
         // Backward gate
-        quantum_gate_t* backward_gate = malloc(sizeof(quantum_gate_t));
+        quantum_gate_t* backward_gate = memory_allocate(memory, sizeof(quantum_gate_t), sizeof(quantum_gate_t));
         if (!backward_gate) {
             // Clean up and return
-            free(forward_gate->target_qubits);
-            free(forward_gate->parameters);
-            free(forward_gate->matrix);
-            free(forward_gate);
+            memory_free(memory, forward_gate->target_qubits);
+            memory_free(memory, forward_gate->parameters);
+            memory_free(memory, forward_gate->matrix);
+            memory_free(memory, forward_gate);
             for (size_t i = 0; i < qubit; i++) {
-                free(forward_circuit->layers[0]->gates[i]);
-                free(backward_circuit->layers[0]->gates[i]);
+                if (forward_circuit->layers[0]->gates[i]) {
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]->target_qubits);
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]->parameters);
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]->matrix);
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]);
+                }
+                if (backward_circuit->layers[0]->gates[i]) {
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]->target_qubits);
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]->parameters);
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]->matrix);
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]);
+                }
             }
-            free(forward_circuit->layers[0]->gates);
-            free(backward_circuit->layers[0]->gates);
-            free(forward_circuit->layers[0]);
-            free(backward_circuit->layers[0]);
-            free(forward_circuit->layers);
-            free(backward_circuit->layers);
-            free(forward_circuit);
-            free(backward_circuit);
+            memory_free(memory, forward_circuit->layers[0]->gates);
+            memory_free(memory, backward_circuit->layers[0]->gates);
+            memory_free(memory, forward_circuit->layers[0]);
+            memory_free(memory, backward_circuit->layers[0]);
+            memory_free(memory, forward_circuit->layers);
+            memory_free(memory, backward_circuit->layers);
+            memory_free(memory, forward_circuit);
+            memory_free(memory, backward_circuit);
+            destroy_memory_system(memory);
             return;
         }
 
         backward_gate->type = GATE_TYPE_RY;
         backward_gate->num_qubits = 1;
-        backward_gate->target_qubits = malloc(sizeof(size_t));
+        backward_gate->target_qubits = memory_allocate(memory, sizeof(size_t), sizeof(size_t));
+        if (!backward_gate->target_qubits) {
+            memory_free(memory, backward_gate);
+            memory_free(memory, forward_gate->target_qubits);
+            memory_free(memory, forward_gate->parameters);
+            memory_free(memory, forward_gate->matrix);
+            memory_free(memory, forward_gate);
+            for (size_t i = 0; i < qubit; i++) {
+                if (forward_circuit->layers[0]->gates[i]) {
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]->target_qubits);
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]->parameters);
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]->matrix);
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]);
+                }
+                if (backward_circuit->layers[0]->gates[i]) {
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]->target_qubits);
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]->parameters);
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]->matrix);
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]);
+                }
+            }
+            memory_free(memory, forward_circuit->layers[0]->gates);
+            memory_free(memory, backward_circuit->layers[0]->gates);
+            memory_free(memory, forward_circuit->layers[0]);
+            memory_free(memory, backward_circuit->layers[0]);
+            memory_free(memory, forward_circuit->layers);
+            memory_free(memory, backward_circuit->layers);
+            memory_free(memory, forward_circuit);
+            memory_free(memory, backward_circuit);
+            destroy_memory_system(memory);
+            return;
+        }
         backward_gate->target_qubits[0] = qubit;
         backward_gate->control_qubits = NULL;
         backward_gate->num_controls = 0;
         backward_gate->is_controlled = false;
-        backward_gate->parameters = malloc(sizeof(double));
+        backward_gate->parameters = memory_allocate(memory, sizeof(double), sizeof(double));
+        if (!backward_gate->parameters) {
+            memory_free(memory, backward_gate->target_qubits);
+            memory_free(memory, backward_gate);
+            memory_free(memory, forward_gate->target_qubits);
+            memory_free(memory, forward_gate->parameters);
+            memory_free(memory, forward_gate->matrix);
+            memory_free(memory, forward_gate);
+            for (size_t i = 0; i < qubit; i++) {
+                if (forward_circuit->layers[0]->gates[i]) {
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]->target_qubits);
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]->parameters);
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]->matrix);
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]);
+                }
+                if (backward_circuit->layers[0]->gates[i]) {
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]->target_qubits);
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]->parameters);
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]->matrix);
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]);
+                }
+            }
+            memory_free(memory, forward_circuit->layers[0]->gates);
+            memory_free(memory, backward_circuit->layers[0]->gates);
+            memory_free(memory, forward_circuit->layers[0]);
+            memory_free(memory, backward_circuit->layers[0]);
+            memory_free(memory, forward_circuit->layers);
+            memory_free(memory, backward_circuit->layers);
+            memory_free(memory, forward_circuit);
+            memory_free(memory, backward_circuit);
+            destroy_memory_system(memory);
+            return;
+        }
         backward_gate->parameters[0] = -M_PI_2;  // -π/2
         backward_gate->num_parameters = 1;
         backward_gate->is_parameterized = true;
-        backward_gate->matrix = malloc(4 * sizeof(ComplexFloat));
+        backward_gate->matrix = memory_allocate(memory, 4 * sizeof(ComplexFloat), sizeof(ComplexFloat));
+        if (!backward_gate->matrix) {
+            memory_free(memory, backward_gate->parameters);
+            memory_free(memory, backward_gate->target_qubits);
+            memory_free(memory, backward_gate);
+            memory_free(memory, forward_gate->target_qubits);
+            memory_free(memory, forward_gate->parameters);
+            memory_free(memory, forward_gate->matrix);
+            memory_free(memory, forward_gate);
+            for (size_t i = 0; i < qubit; i++) {
+                if (forward_circuit->layers[0]->gates[i]) {
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]->target_qubits);
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]->parameters);
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]->matrix);
+                    memory_free(memory, forward_circuit->layers[0]->gates[i]);
+                }
+                if (backward_circuit->layers[0]->gates[i]) {
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]->target_qubits);
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]->parameters);
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]->matrix);
+                    memory_free(memory, backward_circuit->layers[0]->gates[i]);
+                }
+            }
+            memory_free(memory, forward_circuit->layers[0]->gates);
+            memory_free(memory, backward_circuit->layers[0]->gates);
+            memory_free(memory, forward_circuit->layers[0]);
+            memory_free(memory, backward_circuit->layers[0]);
+            memory_free(memory, forward_circuit->layers);
+            memory_free(memory, backward_circuit->layers);
+            memory_free(memory, forward_circuit);
+            memory_free(memory, backward_circuit);
+            destroy_memory_system(memory);
+            return;
+        }
 
         // Compute backward gate matrix
         cos_half = cos(backward_gate->parameters[0] / 2.0);
@@ -342,25 +583,32 @@ static void compute_parameter_shift(
     if (!forward_qgtn || !backward_qgtn) {
         // Clean up and return
         for (size_t i = 0; i < forward_circuit->num_qubits; i++) {
-            free(forward_circuit->layers[0]->gates[i]->target_qubits);
-            free(forward_circuit->layers[0]->gates[i]->parameters);
-            free(forward_circuit->layers[0]->gates[i]->matrix);
-            free(forward_circuit->layers[0]->gates[i]);
-            free(backward_circuit->layers[0]->gates[i]->target_qubits);
-            free(backward_circuit->layers[0]->gates[i]->parameters);
-            free(backward_circuit->layers[0]->gates[i]->matrix);
-            free(backward_circuit->layers[0]->gates[i]);
+            if (forward_circuit->layers[0]->gates[i]) {
+                memory_free(memory, forward_circuit->layers[0]->gates[i]->target_qubits);
+                memory_free(memory, forward_circuit->layers[0]->gates[i]->parameters);
+                memory_free(memory, forward_circuit->layers[0]->gates[i]->matrix);
+                memory_free(memory, forward_circuit->layers[0]->gates[i]);
+            }
+            if (backward_circuit->layers[0]->gates[i]) {
+                memory_free(memory, backward_circuit->layers[0]->gates[i]->target_qubits);
+                memory_free(memory, backward_circuit->layers[0]->gates[i]->parameters);
+                memory_free(memory, backward_circuit->layers[0]->gates[i]->matrix);
+                memory_free(memory, backward_circuit->layers[0]->gates[i]);
+            }
         }
-        free(forward_circuit->layers[0]->gates);
-        free(backward_circuit->layers[0]->gates);
-        free(forward_circuit->layers[0]);
-        free(backward_circuit->layers[0]);
-        free(forward_circuit->layers);
-        free(backward_circuit->layers);
-        free(forward_circuit);
-        free(backward_circuit);
+        memory_free(memory, forward_circuit->layers[0]->gates);
+        memory_free(memory, backward_circuit->layers[0]->gates);
+        memory_free(memory, forward_circuit->layers[0]);
+        memory_free(memory, backward_circuit->layers[0]);
+        memory_free(memory, forward_circuit->layers);
+        memory_free(memory, backward_circuit->layers);
+        memory_free(memory, forward_circuit);
+        memory_free(memory, backward_circuit);
+        memory_free(memory, forward_state);
+        memory_free(memory, backward_state);
         destroy_quantum_geometric_tensor_network(forward_qgtn);
         destroy_quantum_geometric_tensor_network(backward_qgtn);
+        destroy_memory_system(memory);
         return;
     }
 
@@ -374,19 +622,26 @@ static void compute_parameter_shift(
         forward_qgtn->circuit->num_qubits = forward_qgtn->num_qubits;
         forward_qgtn->circuit->num_layers = 1;
         forward_qgtn->circuit->is_parameterized = true;
+        forward_qgtn->circuit->graph = NULL;
         
-        // Initialize computational graph
+        // Initialize computational graph with proper error handling
         geometric_processor_t* processor = create_geometric_processor(NULL);
         if (!processor) {
+            printf("DEBUG: Failed to create geometric processor\n");
             free(forward_qgtn->circuit);
             return;
         }
-        forward_qgtn->circuit->graph = create_computational_graph(processor);
-        if (!forward_qgtn->circuit->graph) {
+        
+        computational_graph_t* graph = create_computational_graph(processor);
+        if (!graph) {
+            printf("DEBUG: Failed to create computational graph\n");
             destroy_geometric_processor(processor);
             free(forward_qgtn->circuit);
             return;
         }
+        
+        // Set the graph after successful creation
+        forward_qgtn->circuit->graph = graph;
         
         forward_qgtn->circuit->state = NULL;
         
@@ -443,19 +698,26 @@ static void compute_parameter_shift(
         backward_qgtn->circuit->num_qubits = backward_qgtn->num_qubits;
         backward_qgtn->circuit->num_layers = 1;
         backward_qgtn->circuit->is_parameterized = true;
+        backward_qgtn->circuit->graph = NULL;
         
-        // Initialize computational graph
+        // Initialize computational graph with proper error handling
         geometric_processor_t* processor = create_geometric_processor(NULL);
         if (!processor) {
+            printf("DEBUG: Failed to create geometric processor\n");
             free(backward_qgtn->circuit);
             return;
         }
-        backward_qgtn->circuit->graph = create_computational_graph(processor);
-        if (!backward_qgtn->circuit->graph) {
+        
+        computational_graph_t* graph = create_computational_graph(processor);
+        if (!graph) {
+            printf("DEBUG: Failed to create computational graph\n");
             destroy_geometric_processor(processor);
             free(backward_qgtn->circuit);
             return;
         }
+        
+        // Set the graph after successful creation
+        backward_qgtn->circuit->graph = graph;
         
         backward_qgtn->circuit->state = NULL;
         
@@ -503,13 +765,16 @@ static void compute_parameter_shift(
         }
     }
 
-    quantum_geometric_state_t* forward_geometric_state = malloc(sizeof(quantum_geometric_state_t));
-    quantum_geometric_state_t* backward_geometric_state = malloc(sizeof(quantum_geometric_state_t));
+    quantum_geometric_state_t* forward_geometric_state = memory_allocate(memory, sizeof(quantum_geometric_state_t), sizeof(quantum_geometric_state_t));
+    quantum_geometric_state_t* backward_geometric_state = memory_allocate(memory, sizeof(quantum_geometric_state_t), sizeof(quantum_geometric_state_t));
     
     if (!forward_geometric_state || !backward_geometric_state) {
         printf("DEBUG: Failed to allocate quantum states\n");
-        free(forward_geometric_state);
-        free(backward_geometric_state);
+        memory_free(memory, forward_geometric_state);
+        memory_free(memory, backward_geometric_state);
+        memory_free(memory, forward_state);
+        memory_free(memory, backward_state);
+        destroy_memory_system(memory);
         return;
     }
     
@@ -517,7 +782,7 @@ static void compute_parameter_shift(
     forward_geometric_state->type = GEOMETRIC_STATE_EUCLIDEAN;
     forward_geometric_state->dimension = dimension;
     forward_geometric_state->manifold_dim = dimension;
-    forward_geometric_state->coordinates = malloc(dimension * sizeof(ComplexFloat));
+    forward_geometric_state->coordinates = memory_allocate(memory, dimension * sizeof(ComplexFloat), sizeof(ComplexFloat));
     forward_geometric_state->metric = NULL;
     forward_geometric_state->connection = NULL;
     forward_geometric_state->auxiliary_data = NULL;
@@ -528,7 +793,7 @@ static void compute_parameter_shift(
     backward_geometric_state->type = GEOMETRIC_STATE_EUCLIDEAN;
     backward_geometric_state->dimension = dimension;
     backward_geometric_state->manifold_dim = dimension;
-    backward_geometric_state->coordinates = malloc(dimension * sizeof(ComplexFloat));
+    backward_geometric_state->coordinates = memory_allocate(memory, dimension * sizeof(ComplexFloat), sizeof(ComplexFloat));
     backward_geometric_state->metric = NULL;
     backward_geometric_state->connection = NULL;
     backward_geometric_state->auxiliary_data = NULL;
@@ -537,10 +802,13 @@ static void compute_parameter_shift(
     
     if (!forward_geometric_state->coordinates || !backward_geometric_state->coordinates) {
         printf("DEBUG: Failed to allocate state coordinates\n");
-        free(forward_geometric_state->coordinates);
-        free(backward_geometric_state->coordinates);
-        free(forward_geometric_state);
-        free(backward_geometric_state);
+        memory_free(memory, forward_geometric_state->coordinates);
+        memory_free(memory, backward_geometric_state->coordinates);
+        memory_free(memory, forward_geometric_state);
+        memory_free(memory, backward_geometric_state);
+        memory_free(memory, forward_state);
+        memory_free(memory, backward_state);
+        destroy_memory_system(memory);
         return;
     }
     
@@ -559,18 +827,21 @@ static void compute_parameter_shift(
         // Clean up and return
         if (forward_geometric_state) {
             if (forward_geometric_state->coordinates) {
-                free(forward_geometric_state->coordinates);
+                memory_free(memory, forward_geometric_state->coordinates);
             }
-            free(forward_geometric_state);
+            memory_free(memory, forward_geometric_state);
         }
         if (backward_geometric_state) {
             if (backward_geometric_state->coordinates) {
-                free(backward_geometric_state->coordinates);
+                memory_free(memory, backward_geometric_state->coordinates);
             }
-            free(backward_geometric_state);
+            memory_free(memory, backward_geometric_state);
         }
         destroy_quantum_geometric_tensor_network(forward_qgtn);
         destroy_quantum_geometric_tensor_network(backward_qgtn);
+        memory_free(memory, forward_state);
+        memory_free(memory, backward_state);
+        destroy_memory_system(memory);
         return;
     }
     
@@ -580,18 +851,21 @@ static void compute_parameter_shift(
         // Clean up and return
         if (forward_geometric_state) {
             if (forward_geometric_state->coordinates) {
-                free(forward_geometric_state->coordinates);
+                memory_free(memory, forward_geometric_state->coordinates);
             }
-            free(forward_geometric_state);
+            memory_free(memory, forward_geometric_state);
         }
         if (backward_geometric_state) {
             if (backward_geometric_state->coordinates) {
-                free(backward_geometric_state->coordinates);
+                memory_free(memory, backward_geometric_state->coordinates);
             }
-            free(backward_geometric_state);
+            memory_free(memory, backward_geometric_state);
         }
         destroy_quantum_geometric_tensor_network(forward_qgtn);
         destroy_quantum_geometric_tensor_network(backward_qgtn);
+        memory_free(memory, forward_state);
+        memory_free(memory, backward_state);
+        destroy_memory_system(memory);
         return;
     }
 
@@ -606,34 +880,34 @@ static void compute_parameter_shift(
     // Clean up geometric states
     if (forward_geometric_state) {
         if (forward_geometric_state->coordinates) {
-            free(forward_geometric_state->coordinates);
+            memory_free(memory, forward_geometric_state->coordinates);
         }
-        free(forward_geometric_state);
+        memory_free(memory, forward_geometric_state);
     }
     if (backward_geometric_state) {
         if (backward_geometric_state->coordinates) {
-            free(backward_geometric_state->coordinates);
+            memory_free(memory, backward_geometric_state->coordinates);
         }
-        free(backward_geometric_state);
+        memory_free(memory, backward_geometric_state);
     }
 
     // Clean up
     for (size_t i = 0; i < forward_circuit->num_qubits; i++) {
         if (forward_circuit->layers[0]->gates[i]) {
-            free(forward_circuit->layers[0]->gates[i]->target_qubits);
-            free(forward_circuit->layers[0]->gates[i]->parameters);
-            free(forward_circuit->layers[0]->gates[i]->matrix);
-            free(forward_circuit->layers[0]->gates[i]);
+            memory_free(memory, forward_circuit->layers[0]->gates[i]->target_qubits);
+            memory_free(memory, forward_circuit->layers[0]->gates[i]->parameters);
+            memory_free(memory, forward_circuit->layers[0]->gates[i]->matrix);
+            memory_free(memory, forward_circuit->layers[0]->gates[i]);
         }
         if (backward_circuit->layers[0]->gates[i]) {
-            free(backward_circuit->layers[0]->gates[i]->target_qubits);
-            free(backward_circuit->layers[0]->gates[i]->parameters);
-            free(backward_circuit->layers[0]->gates[i]->matrix);
-            free(backward_circuit->layers[0]->gates[i]);
+            memory_free(memory, backward_circuit->layers[0]->gates[i]->target_qubits);
+            memory_free(memory, backward_circuit->layers[0]->gates[i]->parameters);
+            memory_free(memory, backward_circuit->layers[0]->gates[i]->matrix);
+            memory_free(memory, backward_circuit->layers[0]->gates[i]);
         }
     }
 
-    // Clean up circuit graphs and processors
+    // Clean up circuit graphs and processors using proper API functions
     if (forward_circuit->graph) {
         geometric_processor_t* forward_processor = forward_circuit->graph->processor;
         destroy_computational_graph(forward_circuit->graph);
@@ -653,31 +927,31 @@ static void compute_parameter_shift(
     if (forward_circuit->nodes) {
         for (size_t i = 0; i < forward_circuit->num_nodes; i++) {
             if (forward_circuit->nodes[i]) {
-                free(forward_circuit->nodes[i]->qubit_indices);
-                free(forward_circuit->nodes[i]->parameters);
-                free(forward_circuit->nodes[i]);
+                memory_free(memory, forward_circuit->nodes[i]->qubit_indices);
+                memory_free(memory, forward_circuit->nodes[i]->parameters);
+                memory_free(memory, forward_circuit->nodes[i]);
             }
         }
-        free(forward_circuit->nodes);
+        memory_free(memory, forward_circuit->nodes);
     }
     if (backward_circuit->nodes) {
         for (size_t i = 0; i < backward_circuit->num_nodes; i++) {
             if (backward_circuit->nodes[i]) {
-                free(backward_circuit->nodes[i]->qubit_indices);
-                free(backward_circuit->nodes[i]->parameters);
-                free(backward_circuit->nodes[i]);
+                memory_free(memory, backward_circuit->nodes[i]->qubit_indices);
+                memory_free(memory, backward_circuit->nodes[i]->parameters);
+                memory_free(memory, backward_circuit->nodes[i]);
             }
         }
-        free(backward_circuit->nodes);
+        memory_free(memory, backward_circuit->nodes);
     }
-    free(forward_circuit->layers[0]->gates);
-    free(backward_circuit->layers[0]->gates);
-    free(forward_circuit->layers[0]);
-    free(backward_circuit->layers[0]);
-    free(forward_circuit->layers);
-    free(backward_circuit->layers);
-    free(forward_circuit);
-    free(backward_circuit);
+    memory_free(memory, forward_circuit->layers[0]->gates);
+    memory_free(memory, backward_circuit->layers[0]->gates);
+    memory_free(memory, forward_circuit->layers[0]);
+    memory_free(memory, backward_circuit->layers[0]);
+    memory_free(memory, forward_circuit->layers);
+    memory_free(memory, backward_circuit->layers);
+    memory_free(memory, forward_circuit);
+    memory_free(memory, backward_circuit);
     destroy_quantum_geometric_tensor_network(forward_qgtn);
     destroy_quantum_geometric_tensor_network(backward_qgtn);
     
@@ -692,13 +966,9 @@ static void compute_parameter_shift(
         printf("  |%zu>: (%.6f,%.6f)\n", i, backward_state[i].real, backward_state[i].imag);
     }
     
-    // Clean up gates
-    free(ry_forward.target_qubits);
-    free(ry_forward.parameters);
-    free(ry_forward.matrix);
-    free(ry_backward.target_qubits);
-    free(ry_backward.parameters);
-    free(ry_backward.matrix);
+    // Clean up gates using the proper destroy function
+    destroy_quantum_gate(ry_forward_ptr);
+    destroy_quantum_gate(ry_backward_ptr);
     
     printf("DEBUG: Computing raw gradients\n");
     // Compute gradient using parameter shift rule with complex L2 normalization
@@ -743,8 +1013,12 @@ static void compute_parameter_shift(
         }
     }
     
+    // Clean up states using standard free since we used malloc
     if (forward_state) free(forward_state);
     if (backward_state) free(backward_state);
+    
+    // Clean up memory system
+    destroy_memory_system(memory);
 }
 
 // Helper function to compute natural gradient
@@ -942,8 +1216,8 @@ bool compute_quantum_gradient(
             destroy_memory_system(memory);
             return false;
         }
-        ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->connected_nodes[0] = ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0];  // Self connection for current layer
-        ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->connected_nodes[1] = ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0];  // Connection for gradient backprop
+        ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->connected_nodes[0] = (size_t)0;  // Self connection for current layer
+        ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->connected_nodes[1] = (size_t)0;  // Connection for gradient backprop
         
         ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->connected_dims = malloc(2 * sizeof(size_t));
         if (!qgtn->network->nodes[0]->connected_dims) {
@@ -1058,7 +1332,7 @@ bool compute_quantum_gradient(
         layer_config.params[1] = NULL;  // Will be set during parameter shift
         
         // Add layers to circuit
-        add_quantum_dense_layer(((quantum_geometric_tensor_network_t*)qgtn)->circuit, &layer_config);
+        add_quantum_dense_layer((quantum_circuit*)((quantum_geometric_tensor_network_t*)qgtn)->circuit, &layer_config);
         
         free(layer_config.types);
         free(layer_config.params);
@@ -1909,15 +2183,23 @@ bool compute_higher_order_gradient(
                 }
             }
             
-            // Initialize computational graph
+            // Initialize computational graph with proper error handling
             if (!qgtn_shift->circuit->graph) {
                 geometric_processor_t* processor = create_geometric_processor(NULL);
-                if (processor) {
-                    qgtn_shift->circuit->graph = create_computational_graph(processor);
-                    if (!qgtn_shift->circuit->graph) {
-                        destroy_geometric_processor(processor);
-                    }
+                if (!processor) {
+                    printf("DEBUG: Failed to create geometric processor\n");
+                    return false;
                 }
+                
+                computational_graph_t* graph = create_computational_graph(processor);
+                if (!graph) {
+                    printf("DEBUG: Failed to create computational graph\n");
+                    destroy_geometric_processor(processor);
+                    return false;
+                }
+                
+                // Set the graph after successful creation
+                qgtn_shift->circuit->graph = graph;
             }
             
             // Initialize first layer
@@ -2123,6 +2405,305 @@ bool compute_higher_order_gradient(
     
     // Clean up qgtn_copy
     destroy_quantum_geometric_tensor_network(qgtn_copy);
-    
+
+    return true;
+}
+
+// ============================================================================
+// Loss-based gradient computation using parameter shift rule
+// These functions compute gradients of the LOSS function, not the state
+// ============================================================================
+
+size_t count_trainable_parameters(const quantum_geometric_tensor_network_t* qgtn) {
+    if (!qgtn || !qgtn->circuit) {
+        return 0;
+    }
+
+    size_t count = 0;
+
+    for (size_t l = 0; l < qgtn->num_layers; l++) {
+        if (!qgtn->circuit->layers || !qgtn->circuit->layers[l]) {
+            continue;
+        }
+
+        circuit_layer_t* layer = qgtn->circuit->layers[l];
+        for (size_t g = 0; g < layer->num_gates; g++) {
+            quantum_gate_t* gate = layer->gates[g];
+            if (gate && gate->is_parameterized && gate->parameters) {
+                count += gate->num_parameters;
+            }
+        }
+    }
+
+    return count;
+}
+
+bool compute_forward_loss(
+    quantum_geometric_tensor_network_t* qgtn,
+    const ComplexFloat* labels,
+    size_t num_samples,
+    size_t output_dim,
+    double* loss) {
+
+    if (!qgtn || !labels || !loss) {
+        return false;
+    }
+
+    // Get state dimension
+    size_t state_dim = 1 << qgtn->num_qubits;
+
+    // Apply the quantum circuit to get predictions
+    if (!apply_quantum_circuit(qgtn, qgtn->circuit)) {
+        printf("DEBUG: Failed to apply quantum circuit in compute_forward_loss\n");
+        return false;
+    }
+
+    // Get the output state
+    if (!qgtn->circuit->state || !qgtn->circuit->state->coordinates) {
+        printf("DEBUG: No output state available in compute_forward_loss\n");
+        return false;
+    }
+
+    // Compute MSE loss: L = (1/n) * Σ |prediction - label|²
+    double total_loss = 0.0;
+    size_t actual_outputs = (output_dim < state_dim) ? output_dim : state_dim;
+
+    for (size_t i = 0; i < actual_outputs; i++) {
+        // Get prediction from quantum state (take real part or magnitude)
+        ComplexFloat pred = qgtn->circuit->state->coordinates[i];
+        ComplexFloat label = labels[i];
+
+        // Compute squared error for complex numbers
+        double real_diff = pred.real - label.real;
+        double imag_diff = pred.imag - label.imag;
+        double squared_error = real_diff * real_diff + imag_diff * imag_diff;
+
+        total_loss += squared_error;
+    }
+
+    // Normalize by number of outputs
+    *loss = total_loss / (double)actual_outputs;
+
+    return true;
+}
+
+bool compute_loss_gradient_single_param(
+    quantum_geometric_tensor_network_t* qgtn,
+    size_t param_idx,
+    const ComplexFloat* labels,
+    size_t num_samples,
+    size_t output_dim,
+    double* gradient) {
+
+    if (!qgtn || !labels || !gradient) {
+        return false;
+    }
+
+    // Standard parameter shift amount for quantum gradient
+    const double shift_amount = M_PI_2;  // π/2
+
+    // Save original parameter value
+    size_t layer_idx, gate_idx;
+    quantum_gate_t* gate = NULL;
+    size_t current_param = 0;
+
+    // Find the gate containing this parameter
+    for (size_t l = 0; l < qgtn->num_layers && !gate; l++) {
+        if (!qgtn->circuit->layers || !qgtn->circuit->layers[l]) {
+            continue;
+        }
+
+        circuit_layer_t* layer = qgtn->circuit->layers[l];
+        for (size_t g = 0; g < layer->num_gates && !gate; g++) {
+            quantum_gate_t* current_gate = layer->gates[g];
+            if (current_gate && current_gate->is_parameterized && current_gate->parameters) {
+                if (current_param == param_idx) {
+                    gate = current_gate;
+                    layer_idx = l;
+                    gate_idx = g;
+                    break;
+                }
+                current_param += current_gate->num_parameters;
+            }
+        }
+    }
+
+    if (!gate) {
+        printf("DEBUG: Failed to find parameter %zu\n", param_idx);
+        return false;
+    }
+
+    double original_param = gate->parameters[0];
+
+    // Reset state to |0⟩ for forward pass
+    size_t state_dim = 1 << qgtn->num_qubits;
+    if (qgtn->network && qgtn->network->nodes && qgtn->network->nodes[0] &&
+        qgtn->network->nodes[0]->data) {
+        memset(qgtn->network->nodes[0]->data, 0, state_dim * sizeof(ComplexFloat));
+        ((ComplexFloat*)qgtn->network->nodes[0]->data)[0] = (ComplexFloat){1.0f, 0.0f};
+    }
+
+    // Compute loss at θ + π/2
+    gate->parameters[0] = original_param + shift_amount;
+
+    // Update gate matrix for new parameter
+    double cos_half = cos(gate->parameters[0] / 2.0);
+    double sin_half = sin(gate->parameters[0] / 2.0);
+
+    switch (gate->type) {
+        case GATE_TYPE_RX:
+            gate->matrix[0] = (ComplexFloat){cos_half, 0.0};
+            gate->matrix[1] = (ComplexFloat){0.0, -sin_half};
+            gate->matrix[2] = (ComplexFloat){0.0, -sin_half};
+            gate->matrix[3] = (ComplexFloat){cos_half, 0.0};
+            break;
+        case GATE_TYPE_RY:
+            gate->matrix[0] = (ComplexFloat){cos_half, 0.0};
+            gate->matrix[1] = (ComplexFloat){-sin_half, 0.0};
+            gate->matrix[2] = (ComplexFloat){sin_half, 0.0};
+            gate->matrix[3] = (ComplexFloat){cos_half, 0.0};
+            break;
+        case GATE_TYPE_RZ:
+            gate->matrix[0] = (ComplexFloat){cos_half, -sin_half};
+            gate->matrix[1] = (ComplexFloat){0.0, 0.0};
+            gate->matrix[2] = (ComplexFloat){0.0, 0.0};
+            gate->matrix[3] = (ComplexFloat){cos_half, sin_half};
+            break;
+        default:
+            break;
+    }
+
+    double loss_plus;
+    if (!compute_forward_loss(qgtn, labels, num_samples, output_dim, &loss_plus)) {
+        gate->parameters[0] = original_param;
+        return false;
+    }
+
+    // Reset state to |0⟩ again
+    if (qgtn->network && qgtn->network->nodes && qgtn->network->nodes[0] &&
+        qgtn->network->nodes[0]->data) {
+        memset(qgtn->network->nodes[0]->data, 0, state_dim * sizeof(ComplexFloat));
+        ((ComplexFloat*)qgtn->network->nodes[0]->data)[0] = (ComplexFloat){1.0f, 0.0f};
+    }
+
+    // Compute loss at θ - π/2
+    gate->parameters[0] = original_param - shift_amount;
+
+    // Update gate matrix for new parameter
+    cos_half = cos(gate->parameters[0] / 2.0);
+    sin_half = sin(gate->parameters[0] / 2.0);
+
+    switch (gate->type) {
+        case GATE_TYPE_RX:
+            gate->matrix[0] = (ComplexFloat){cos_half, 0.0};
+            gate->matrix[1] = (ComplexFloat){0.0, -sin_half};
+            gate->matrix[2] = (ComplexFloat){0.0, -sin_half};
+            gate->matrix[3] = (ComplexFloat){cos_half, 0.0};
+            break;
+        case GATE_TYPE_RY:
+            gate->matrix[0] = (ComplexFloat){cos_half, 0.0};
+            gate->matrix[1] = (ComplexFloat){-sin_half, 0.0};
+            gate->matrix[2] = (ComplexFloat){sin_half, 0.0};
+            gate->matrix[3] = (ComplexFloat){cos_half, 0.0};
+            break;
+        case GATE_TYPE_RZ:
+            gate->matrix[0] = (ComplexFloat){cos_half, -sin_half};
+            gate->matrix[1] = (ComplexFloat){0.0, 0.0};
+            gate->matrix[2] = (ComplexFloat){0.0, 0.0};
+            gate->matrix[3] = (ComplexFloat){cos_half, sin_half};
+            break;
+        default:
+            break;
+    }
+
+    double loss_minus;
+    if (!compute_forward_loss(qgtn, labels, num_samples, output_dim, &loss_minus)) {
+        gate->parameters[0] = original_param;
+        return false;
+    }
+
+    // Restore original parameter
+    gate->parameters[0] = original_param;
+    cos_half = cos(gate->parameters[0] / 2.0);
+    sin_half = sin(gate->parameters[0] / 2.0);
+
+    switch (gate->type) {
+        case GATE_TYPE_RX:
+            gate->matrix[0] = (ComplexFloat){cos_half, 0.0};
+            gate->matrix[1] = (ComplexFloat){0.0, -sin_half};
+            gate->matrix[2] = (ComplexFloat){0.0, -sin_half};
+            gate->matrix[3] = (ComplexFloat){cos_half, 0.0};
+            break;
+        case GATE_TYPE_RY:
+            gate->matrix[0] = (ComplexFloat){cos_half, 0.0};
+            gate->matrix[1] = (ComplexFloat){-sin_half, 0.0};
+            gate->matrix[2] = (ComplexFloat){sin_half, 0.0};
+            gate->matrix[3] = (ComplexFloat){cos_half, 0.0};
+            break;
+        case GATE_TYPE_RZ:
+            gate->matrix[0] = (ComplexFloat){cos_half, -sin_half};
+            gate->matrix[1] = (ComplexFloat){0.0, 0.0};
+            gate->matrix[2] = (ComplexFloat){0.0, 0.0};
+            gate->matrix[3] = (ComplexFloat){cos_half, sin_half};
+            break;
+        default:
+            break;
+    }
+
+    // Parameter shift rule: dL/dθ = (L(θ+π/2) - L(θ-π/2)) / 2
+    *gradient = (loss_plus - loss_minus) / 2.0;
+
+    return true;
+}
+
+bool compute_all_loss_gradients(
+    quantum_geometric_tensor_network_t* qgtn,
+    const ComplexFloat* labels,
+    size_t num_samples,
+    size_t output_dim,
+    double** gradients,
+    size_t* num_gradients) {
+
+    if (!qgtn || !labels || !gradients || !num_gradients) {
+        return false;
+    }
+
+    // Count trainable parameters
+    size_t num_params = count_trainable_parameters(qgtn);
+    if (num_params == 0) {
+        printf("DEBUG: No trainable parameters found in circuit\n");
+        *gradients = NULL;
+        *num_gradients = 0;
+        return true;  // Not an error, just no parameters to train
+    }
+
+    printf("DEBUG: Computing loss gradients for %zu trainable parameters\n", num_params);
+
+    // Allocate gradient array
+    *gradients = malloc(num_params * sizeof(double));
+    if (!*gradients) {
+        return false;
+    }
+
+    // Compute gradient for each parameter
+    for (size_t i = 0; i < num_params; i++) {
+        double grad;
+        if (!compute_loss_gradient_single_param(qgtn, i, labels, num_samples,
+                                                 output_dim, &grad)) {
+            printf("DEBUG: Failed to compute gradient for parameter %zu\n", i);
+            free(*gradients);
+            *gradients = NULL;
+            return false;
+        }
+        (*gradients)[i] = grad;
+
+        if (i < 5) {
+            printf("DEBUG: Gradient[%zu] = %.6f\n", i, grad);
+        }
+    }
+
+    *num_gradients = num_params;
+    printf("DEBUG: Successfully computed all %zu loss gradients\n", num_params);
+
     return true;
 }

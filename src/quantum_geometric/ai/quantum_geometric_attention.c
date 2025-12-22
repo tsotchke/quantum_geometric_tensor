@@ -3,10 +3,10 @@
 #include "quantum_geometric/core/quantum_operations.h"
 #include "quantum_geometric/core/quantum_geometric_constants.h"
 #include "quantum_geometric/core/differential_transformer.h"
+#include "quantum_geometric/core/platform_intrinsics.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <immintrin.h>
 
 // Initialize attention mechanism
 int qg_attention_init(attention_config_t* config) {

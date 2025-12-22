@@ -1,10 +1,319 @@
 #include "quantum_geometric/core/quantum_operations.h"
+#include "quantum_geometric/core/quantum_state_types.h"
 #include "quantum_geometric/core/performance_operations.h"
 #include "quantum_geometric/core/simd_operations.h"
+#include "quantum_geometric/core/error_codes.h"
+#include "quantum_geometric/core/lapack_internal.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <immintrin.h>
+#include <complex.h>
+
+// LAPACK double complex compatibility for macOS Accelerate framework
+#ifdef __APPLE__
+    // __CLPK_doublecomplex is provided by Accelerate/Accelerate.h via lapack_internal.h
+    #define LAPACK_COMPLEX_CAST(ptr) ((__CLPK_doublecomplex*)(ptr))
+#else
+    // On Linux/other platforms, complex double is used directly
+    #define LAPACK_COMPLEX_CAST(ptr) (ptr)
+#endif
+
+// Platform-specific SIMD includes and compatibility
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    #include <immintrin.h>
+    #define HAS_AVX 1
+    #define HAS_NATIVE_AVX 1
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    #if defined(__ARM_NEON) || defined(__ARM_NEON__)
+        #include <arm_neon.h>
+    #endif
+    #define HAS_AVX 0
+    #define HAS_NATIVE_AVX 0
+
+    // ============================================================================
+    // ARM64 NEON-based fallbacks for AVX intrinsics
+    // Provides cross-platform compatibility for x86/ARM64
+    // ============================================================================
+
+    // 256-bit double vector (4 doubles) - emulated as array on ARM
+    typedef union {
+        double v[4];
+        double values[4];
+    } __m256d;
+
+    // Basic vector creation
+    static inline __m256d _mm256_set_pd(double a, double b, double c, double d) {
+        __m256d result = {{d, c, b, a}};
+        return result;
+    }
+
+    static inline __m256d _mm256_setzero_pd(void) {
+        __m256d result = {{0.0, 0.0, 0.0, 0.0}};
+        return result;
+    }
+
+    static inline __m256d _mm256_set1_pd(double x) {
+        __m256d result = {{x, x, x, x}};
+        return result;
+    }
+
+    // Load/store operations
+    static inline __m256d _mm256_load_pd(const double* p) {
+        __m256d result = {{p[0], p[1], p[2], p[3]}};
+        return result;
+    }
+
+    static inline void _mm256_store_pd(double* p, __m256d v) {
+        p[0] = v.v[0]; p[1] = v.v[1]; p[2] = v.v[2]; p[3] = v.v[3];
+    }
+
+    // Basic arithmetic
+    static inline __m256d _mm256_add_pd(__m256d a, __m256d b) {
+        __m256d result = {{a.v[0]+b.v[0], a.v[1]+b.v[1], a.v[2]+b.v[2], a.v[3]+b.v[3]}};
+        return result;
+    }
+
+    static inline __m256d _mm256_sub_pd(__m256d a, __m256d b) {
+        __m256d result = {{a.v[0]-b.v[0], a.v[1]-b.v[1], a.v[2]-b.v[2], a.v[3]-b.v[3]}};
+        return result;
+    }
+
+    static inline __m256d _mm256_mul_pd(__m256d a, __m256d b) {
+        __m256d result = {{a.v[0]*b.v[0], a.v[1]*b.v[1], a.v[2]*b.v[2], a.v[3]*b.v[3]}};
+        return result;
+    }
+
+    static inline __m256d _mm256_div_pd(__m256d a, __m256d b) {
+        __m256d result = {{a.v[0]/b.v[0], a.v[1]/b.v[1], a.v[2]/b.v[2], a.v[3]/b.v[3]}};
+        return result;
+    }
+
+    // Alternating add/subtract: result[0]=a[0]+b[0], result[1]=a[1]-b[1], ...
+    static inline __m256d _mm256_addsub_pd(__m256d a, __m256d b) {
+        __m256d result = {{a.v[0]+b.v[0], a.v[1]-b.v[1], a.v[2]+b.v[2], a.v[3]-b.v[3]}};
+        return result;
+    }
+
+    // Permute 64-bit elements within 256-bit vector
+    // Control byte: each 2-bit field selects source element (0-3)
+    static inline __m256d _mm256_permute4x64_pd(__m256d a, int imm8) {
+        __m256d result;
+        result.v[0] = a.v[(imm8 >> 0) & 3];
+        result.v[1] = a.v[(imm8 >> 2) & 3];
+        result.v[2] = a.v[(imm8 >> 4) & 3];
+        result.v[3] = a.v[(imm8 >> 6) & 3];
+        return result;
+    }
+
+    // Bitwise XOR (for sign flipping in complex conjugate)
+    static inline __m256d _mm256_xor_pd(__m256d a, __m256d b) {
+        __m256d result;
+        union { double d; uint64_t u; } ua[4], ub[4], ur[4];
+        for (int i = 0; i < 4; i++) {
+            ua[i].d = a.v[i];
+            ub[i].d = b.v[i];
+            ur[i].u = ua[i].u ^ ub[i].u;
+            result.v[i] = ur[i].d;
+        }
+        return result;
+    }
+
+    // Bitwise AND NOT: (~a) & b
+    static inline __m256d _mm256_andnot_pd(__m256d a, __m256d b) {
+        __m256d result;
+        union { double d; uint64_t u; } ua[4], ub[4], ur[4];
+        for (int i = 0; i < 4; i++) {
+            ua[i].d = a.v[i];
+            ub[i].d = b.v[i];
+            ur[i].u = (~ua[i].u) & ub[i].u;
+            result.v[i] = ur[i].d;
+        }
+        return result;
+    }
+
+    // Broadcast single double to all lanes
+    static inline __m256d _mm256_broadcast_sd(const double* p) {
+        double val = *p;
+        __m256d result = {{val, val, val, val}};
+        return result;
+    }
+
+    // Compare and create mask
+    #define _CMP_GT_OQ 14
+    #define _CMP_LT_OQ 17
+    #define _CMP_EQ_OQ 0
+
+    static inline __m256d _mm256_cmp_pd(__m256d a, __m256d b, int imm8) {
+        __m256d result;
+        union { double d; uint64_t u; } ur[4];
+        for (int i = 0; i < 4; i++) {
+            bool cmp_result = false;
+            switch (imm8) {
+                case _CMP_GT_OQ: cmp_result = a.v[i] > b.v[i]; break;
+                case _CMP_LT_OQ: cmp_result = a.v[i] < b.v[i]; break;
+                case _CMP_EQ_OQ: cmp_result = a.v[i] == b.v[i]; break;
+                default: cmp_result = a.v[i] > b.v[i]; break;
+            }
+            ur[i].u = cmp_result ? 0xFFFFFFFFFFFFFFFFULL : 0ULL;
+            result.v[i] = ur[i].d;
+        }
+        return result;
+    }
+
+    // Extract sign bits as mask
+    static inline int _mm256_movemask_pd(__m256d a) {
+        int result = 0;
+        union { double d; uint64_t u; } u[4];
+        for (int i = 0; i < 4; i++) {
+            u[i].d = a.v[i];
+            if (u[i].u & 0x8000000000000000ULL) {
+                result |= (1 << i);
+            }
+        }
+        return result;
+    }
+
+#else
+    #define HAS_AVX 0
+    #define HAS_NATIVE_AVX 0
+#endif
+
+// Error code compatibility
+#ifndef QGT_ERROR_OUT_OF_MEMORY
+#define QGT_ERROR_OUT_OF_MEMORY QGT_ERROR_NO_MEMORY
+#endif
+#ifndef QGT_ERROR_NUMERICAL
+#define QGT_ERROR_NUMERICAL QGT_ERROR_NUMERICAL_INSTABILITY
+#endif
+
+// Gate type compatibility - use distinct values for switch statements
+#ifndef GATE_SINGLE
+#define GATE_SINGLE 100
+#endif
+#ifndef GATE_TWO
+#define GATE_TWO 101
+#endif
+#ifndef GATE_HADAMARD
+#define GATE_HADAMARD 102
+#endif
+#ifndef GATE_PAULI_X
+#define GATE_PAULI_X 103
+#endif
+#ifndef GATE_PAULI_Y
+#define GATE_PAULI_Y 104
+#endif
+#ifndef GATE_PAULI_Z
+#define GATE_PAULI_Z 105
+#endif
+
+// Hardware type compatibility
+#ifndef HARDWARE_GPU
+#define HARDWARE_GPU HARDWARE_NVIDIA
+#endif
+#ifndef HARDWARE_METAL
+#define HARDWARE_METAL HARDWARE_APPLE
+#endif
+#ifndef HARDWARE_CPU
+#define HARDWARE_CPU HARDWARE_SIMULATOR
+#endif
+
+// Error correction code types
+#ifndef ERROR_CODE_THREE_QUBIT
+#define ERROR_CODE_THREE_QUBIT 3
+#endif
+#ifndef ERROR_CODE_FIVE_QUBIT
+#define ERROR_CODE_FIVE_QUBIT 5
+#endif
+#ifndef ERROR_CODE_SEVEN_QUBIT
+#define ERROR_CODE_SEVEN_QUBIT 7
+#endif
+#ifndef ERROR_CODE_NINE_QUBIT
+#define ERROR_CODE_NINE_QUBIT 9
+#endif
+
+// ============================================================================
+// GPU Backend Integration
+// ============================================================================
+
+#ifdef ENABLE_CUDA
+    #include <cuda_runtime.h>
+    // CUDA implementations provided by cuda_runtime.h
+#else
+    // CPU fallback when CUDA is not available
+    // These provide memory management that mimics CUDA semantics for unified codepath
+    #ifndef cudaSuccess
+        #define cudaSuccess 0
+        #define cudaError_t int
+
+        static inline cudaError_t cuda_malloc_fallback(void** ptr, size_t size) {
+            *ptr = aligned_alloc(64, size);  // 64-byte aligned for cache efficiency
+            return (*ptr != NULL) ? 0 : 1;
+        }
+        #define cudaMalloc(p,s) cuda_malloc_fallback((void**)(p), (s))
+
+        static inline void cuda_free_fallback(void* ptr) {
+            if (ptr) free(ptr);
+        }
+        #define cudaFree(p) cuda_free_fallback(p)
+
+        static inline cudaError_t cuda_memcpy_fallback(void* dst, const void* src, size_t size, int kind) {
+            if (!dst || !src) return 1;
+            memcpy(dst, src, size);
+            return 0;
+        }
+        #define cudaMemcpy(d,s,n,k) cuda_memcpy_fallback((d),(s),(n),(k))
+        #define cudaMemcpyHostToDevice 1
+        #define cudaMemcpyDeviceToHost 2
+    #endif
+#endif
+
+#ifdef ENABLE_METAL
+    #include "quantum_geometric/hardware/metal_backend.h"
+    // Metal implementations provided by Metal backend
+#else
+    // CPU fallback when Metal is not available
+    // Provides memory operations that work on CPU for unified codepath
+
+    static inline void* metal_allocate_buffer(size_t size) {
+        // Use 64-byte alignment for cache-line efficiency and potential SIMD operations
+        void* ptr = NULL;
+        #if defined(__APPLE__)
+            // macOS uses posix_memalign
+            if (posix_memalign(&ptr, 64, size) != 0) {
+                return NULL;
+            }
+        #else
+            ptr = aligned_alloc(64, size);
+        #endif
+        if (ptr) {
+            memset(ptr, 0, size);  // Zero-initialize for safety
+        }
+        return ptr;
+    }
+
+    static inline void metal_free_buffer(void* ptr) {
+        if (ptr) {
+            free(ptr);
+        }
+    }
+
+    static inline bool metal_copy_to_device(void* dst, const void* src, size_t size) {
+        if (!dst || !src || size == 0) return false;
+        memcpy(dst, src, size);
+        return true;
+    }
+
+    static inline bool metal_copy_from_device(void* dst, const void* src, size_t size) {
+        if (!dst || !src || size == 0) return false;
+        memcpy(dst, src, size);
+        return true;
+    }
+
+    static inline bool metal_synchronize(void) {
+        // No-op for CPU - always synchronized
+        return true;
+    }
+#endif
 
 // Context structure
 struct qgt_context_t {
@@ -17,8 +326,12 @@ struct qgt_context_t {
 struct qgt_state_t {
     size_t num_qubits;
     size_t dim;
-    double complex* amplitudes;
+    ComplexFloat* amplitudes;
 };
+
+// Helper macro for complex double operations using ComplexFloat
+#define COMPLEX_DOUBLE_TO_FLOAT(cd) ((ComplexFloat){(float)creal(cd), (float)cimag(cd)})
+#define COMPLEX_FLOAT_TO_DOUBLE(cf) ((cf).real + I * (cf).imag)
 
 // Aligned memory allocation helper
 static inline void* aligned_alloc_wrapper(size_t alignment, size_t size) {
@@ -50,38 +363,55 @@ qgt_error_t quantum_operator_create(quantum_operator_t** operator,
     if (!op) {
         return QGT_ERROR_OUT_OF_MEMORY;
     }
-    
-    op->matrix = aligned_alloc_wrapper(32, dimension * dimension * sizeof(complex double));
+
+    op->matrix = aligned_alloc_wrapper(32, dimension * dimension * sizeof(ComplexFloat));
     if (!op->matrix) {
         aligned_free_wrapper(op);
         return QGT_ERROR_OUT_OF_MEMORY;
     }
-    
-    memset(op->matrix, 0, dimension * dimension * sizeof(complex double));
+
+    memset(op->matrix, 0, dimension * dimension * sizeof(ComplexFloat));
     op->dimension = dimension;
     op->type = type;
+    op->auxiliary_data = NULL;
+    op->is_hermitian = false;
     op->device_data = NULL;
-    
+    op->device_type = HARDWARE_TYPE_CPU;
+
     *operator = op;
     return QGT_SUCCESS;
 }
 
-qgt_error_t quantum_operator_destroy(quantum_operator_t* operator) {
+// Note: Header declares void return, but we use qgt_error_t internally
+void quantum_operator_destroy(quantum_operator_t* operator) {
     if (!operator) {
-        return QGT_ERROR_INVALID_ARGUMENT;
+        return;
     }
 
+    // Clean up device data if on GPU/Metal
     if (operator->device_data) {
-        // Ensure we clean up any device memory first
-        qgt_error_t err = quantum_operator_from_device(operator, operator->device_type);
-        if (err != QGT_SUCCESS) {
-            return err;
+        switch (operator->device_type) {
+            case HARDWARE_TYPE_GPU:
+            case HARDWARE_TYPE_CUDA:
+                cudaFree(operator->device_data);
+                break;
+            case HARDWARE_TYPE_METAL:
+                metal_free_buffer(operator->device_data);
+                break;
+            default:
+                free(operator->device_data);
+                break;
         }
+        operator->device_data = NULL;
+    }
+
+    // Clean up auxiliary data if present
+    if (operator->auxiliary_data) {
+        free(operator->auxiliary_data);
     }
 
     aligned_free_wrapper(operator->matrix);
     aligned_free_wrapper(operator);
-    return QGT_SUCCESS;
 }
 
 // Helper functions for applying gates to specific qubits
@@ -129,9 +459,9 @@ static qgt_error_t apply_single_qubit_gate(quantum_operator_t* operator,
     
     // Initialize current with first operator
     if (qubit == 0) {
-        memcpy(current->matrix, gate->matrix, 4 * sizeof(complex double));
+        memcpy(current->matrix, gate->matrix, 4 * sizeof(ComplexFloat));
     } else {
-        memcpy(current->matrix, id->matrix, 4 * sizeof(complex double));
+        memcpy(current->matrix, id->matrix, 4 * sizeof(ComplexFloat));
     }
     
     // Build up full operator
@@ -145,7 +475,7 @@ static qgt_error_t apply_single_qubit_gate(quantum_operator_t* operator,
             return err;
         }
         memcpy(current->matrix, result->matrix,
-               result->dimension * result->dimension * sizeof(complex double));
+               result->dimension * result->dimension * sizeof(ComplexFloat));
         current->dimension = result->dimension;
     }
     
@@ -209,7 +539,7 @@ static qgt_error_t apply_two_qubit_gate(quantum_operator_t* operator,
     }
     
     // Initialize with identity
-    memcpy(current->matrix, id->matrix, 4 * sizeof(complex double));
+    memcpy(current->matrix, id->matrix, 4 * sizeof(ComplexFloat));
     
     // Build up operator
     for (size_t i = 0; i < num_qubits - 1; i++) {
@@ -230,7 +560,7 @@ static qgt_error_t apply_two_qubit_gate(quantum_operator_t* operator,
         }
         
         memcpy(current->matrix, result->matrix,
-               result->dimension * result->dimension * sizeof(complex double));
+               result->dimension * result->dimension * sizeof(ComplexFloat));
         current->dimension = result->dimension;
     }
     
@@ -561,34 +891,28 @@ qgt_error_t quantum_operator_tensor_product(const quantum_operator_t* op1,
     size_t dim1 = op1->dimension;
     size_t dim2 = op2->dimension;
     size_t total_dim = dim1 * dim2;
-    
-    // Use SIMD for the inner loop when possible
+
+    // Tensor product using ComplexFloat operations
     #pragma omp parallel for collapse(2)
     for (size_t i1 = 0; i1 < dim1; i1++) {
         for (size_t j1 = 0; j1 < dim1; j1++) {
-            complex double val1 = op1->matrix[i1 * dim1 + j1];
-            __m256d val1_vec = _mm256_set1_pd(creal(val1));
-            
+            ComplexFloat val1 = op1->matrix[i1 * dim1 + j1];
+
             for (size_t i2 = 0; i2 < dim2; i2++) {
                 size_t i = i1 * dim2 + i2;
-                for (size_t j2 = 0; j2 < dim2; j2 += 4) {
+                for (size_t j2 = 0; j2 < dim2; j2++) {
                     size_t j = j1 * dim2 + j2;
-                    if (j2 + 4 <= dim2) {
-                        __m256d val2_vec = _mm256_load_pd((double*)&op2->matrix[i2 * dim2 + j2]);
-                        __m256d res = _mm256_mul_pd(val1_vec, val2_vec);
-                        _mm256_store_pd((double*)&result->matrix[i * total_dim + j], res);
-                    } else {
-                        // Handle remaining elements
-                        for (size_t r = 0; r < dim2 - j2; r++) {
-                            result->matrix[i * total_dim + j + r] = 
-                                val1 * op2->matrix[i2 * dim2 + j2 + r];
-                        }
-                    }
+                    ComplexFloat val2 = op2->matrix[i2 * dim2 + j2];
+                    // Complex multiplication: (a+bi)(c+di) = (ac-bd) + (ad+bc)i
+                    result->matrix[i * total_dim + j] = (ComplexFloat){
+                        val1.real * val2.real - val1.imag * val2.imag,
+                        val1.real * val2.imag + val1.imag * val2.real
+                    };
                 }
             }
         }
     }
-    
+
     return QGT_SUCCESS;
 }
 
@@ -832,16 +1156,16 @@ qgt_error_t quantum_operator_trace(const quantum_operator_t* operator, complex d
 }
 
 qgt_error_t quantum_operator_to_device(quantum_operator_t* operator,
-                                     quantum_hardware_t hardware) {
+                                     HardwareType hardware) {
     if (!operator) {
         return QGT_ERROR_INVALID_ARGUMENT;
     }
-    
+
     qgt_error_t err = quantum_operator_validate(operator);
     if (err != QGT_SUCCESS) {
         return err;
     }
-    
+
     // Check if already on device
     if (operator->device_data) {
         if (operator->device_type == hardware) {
@@ -854,24 +1178,25 @@ qgt_error_t quantum_operator_to_device(quantum_operator_t* operator,
             }
         }
     }
-    
+
     // Allocate device memory and copy data
     void* device_data = NULL;
-    size_t size = operator->dimension * operator->dimension * sizeof(complex double);
-    
+    size_t size = operator->dimension * operator->dimension * sizeof(ComplexFloat);
+
     switch (hardware) {
-        case HARDWARE_GPU:
+        case HARDWARE_TYPE_GPU:
+        case HARDWARE_TYPE_CUDA:
             if (cudaMalloc(&device_data, size) != cudaSuccess) {
                 return QGT_ERROR_OUT_OF_MEMORY;
             }
-            if (cudaMemcpy(device_data, operator->matrix, size, 
+            if (cudaMemcpy(device_data, operator->matrix, size,
                           cudaMemcpyHostToDevice) != cudaSuccess) {
                 cudaFree(device_data);
                 return QGT_ERROR_DEVICE;
             }
             break;
-            
-        case HARDWARE_METAL:
+
+        case HARDWARE_TYPE_METAL:
             device_data = metal_allocate_buffer(size);
             if (!device_data) {
                 return QGT_ERROR_OUT_OF_MEMORY;
@@ -881,71 +1206,72 @@ qgt_error_t quantum_operator_to_device(quantum_operator_t* operator,
                 return QGT_ERROR_DEVICE;
             }
             break;
-            
+
         default:
             return QGT_ERROR_INVALID_ARGUMENT;
     }
-    
+
     operator->device_data = device_data;
     operator->device_type = hardware;
     return QGT_SUCCESS;
 }
 
 qgt_error_t quantum_operator_from_device(quantum_operator_t* operator,
-                                       quantum_hardware_t hardware) {
+                                       HardwareType hardware) {
     if (!operator || !operator->device_data) {
         return QGT_ERROR_INVALID_ARGUMENT;
     }
-    
+
     qgt_error_t err = quantum_operator_validate(operator);
     if (err != QGT_SUCCESS) {
         return err;
     }
-    
+
     // Verify device type matches
     if (operator->device_type != hardware) {
         return QGT_ERROR_INVALID_STATE;
     }
-    
-    size_t size = operator->dimension * operator->dimension * sizeof(complex double);
-    
+
+    size_t size = operator->dimension * operator->dimension * sizeof(ComplexFloat);
+
     switch (hardware) {
-        case HARDWARE_GPU:
+        case HARDWARE_TYPE_GPU:
+        case HARDWARE_TYPE_CUDA:
             if (cudaMemcpy(operator->matrix, operator->device_data, size,
                           cudaMemcpyDeviceToHost) != cudaSuccess) {
                 return QGT_ERROR_DEVICE;
             }
             cudaFree(operator->device_data);
             break;
-            
-        case HARDWARE_METAL:
+
+        case HARDWARE_TYPE_METAL:
             if (!metal_copy_from_device(operator->matrix, operator->device_data, size)) {
                 return QGT_ERROR_DEVICE;
             }
             metal_free_buffer(operator->device_data);
             break;
-            
+
         default:
             return QGT_ERROR_INVALID_ARGUMENT;
     }
-    
+
     operator->device_data = NULL;
-    operator->device_type = HARDWARE_CPU;
+    operator->device_type = HARDWARE_TYPE_CPU;
     return QGT_SUCCESS;
 }
 
 qgt_error_t quantum_operator_is_on_device(const quantum_operator_t* operator,
-                                        quantum_hardware_t hardware,
+                                        HardwareType hardware,
                                         bool* result) {
     if (!operator || !result) {
         return QGT_ERROR_INVALID_ARGUMENT;
     }
-    
+
     qgt_error_t err = quantum_operator_validate(operator);
     if (err != QGT_SUCCESS) {
         return err;
     }
-    
+
     *result = (operator->device_data != NULL && operator->device_type == hardware);
     return QGT_SUCCESS;
 }
@@ -962,8 +1288,8 @@ qgt_error_t quantum_operator_initialize(quantum_operator_t* operator,
     }
     
     size_t size = operator->dimension * operator->dimension;
-    memcpy(operator->matrix, matrix, size * sizeof(complex double));
-    
+    memcpy(operator->matrix, matrix, size * sizeof(ComplexFloat));
+
     return QGT_SUCCESS;
 }
 
@@ -978,12 +1304,12 @@ qgt_error_t quantum_operator_initialize_identity(quantum_operator_t* operator) {
     }
     
     size_t dim = operator->dimension;
-    memset(operator->matrix, 0, dim * dim * sizeof(complex double));
-    
+    memset(operator->matrix, 0, dim * dim * sizeof(ComplexFloat));
+
     for (size_t i = 0; i < dim; i++) {
-        operator->matrix[i * dim + i] = 1.0;
+        operator->matrix[i * dim + i] = (ComplexFloat){1.0f, 0.0f};
     }
-    
+
     return QGT_SUCCESS;
 }
 
@@ -991,15 +1317,15 @@ qgt_error_t quantum_operator_initialize_zero(quantum_operator_t* operator) {
     if (!operator) {
         return QGT_ERROR_INVALID_ARGUMENT;
     }
-    
+
     qgt_error_t err = quantum_operator_validate(operator);
     if (err != QGT_SUCCESS) {
         return err;
     }
-    
-    memset(operator->matrix, 0, 
-           operator->dimension * operator->dimension * sizeof(complex double));
-    
+
+    memset(operator->matrix, 0,
+           operator->dimension * operator->dimension * sizeof(ComplexFloat));
+
     return QGT_SUCCESS;
 }
 
@@ -1015,11 +1341,11 @@ qgt_error_t quantum_operator_initialize_random(quantum_operator_t* operator) {
     
     size_t dim = operator->dimension;
     for (size_t i = 0; i < dim * dim; i++) {
-        double real = ((double)rand() / RAND_MAX) * 2.0 - 1.0;
-        double imag = ((double)rand() / RAND_MAX) * 2.0 - 1.0;
-        operator->matrix[i] = real + I * imag;
+        float real = ((float)rand() / (float)RAND_MAX) * 2.0f - 1.0f;
+        float imag = ((float)rand() / (float)RAND_MAX) * 2.0f - 1.0f;
+        operator->matrix[i] = (ComplexFloat){real, imag};
     }
-    
+
     return QGT_SUCCESS;
 }
 
@@ -1106,56 +1432,78 @@ qgt_error_t quantum_operator_exponential(quantum_operator_t* result,
     
     // For 2x2 matrices, use analytical solution
     if (operator->dimension == 2) {
-        complex double a = operator->matrix[0];
-        complex double b = operator->matrix[1];
-        complex double c = operator->matrix[2];
-        complex double d = operator->matrix[3];
-        
+        // Convert ComplexFloat to complex double for computation
+        complex double a = operator->matrix[0].real + I * operator->matrix[0].imag;
+        complex double b = operator->matrix[1].real + I * operator->matrix[1].imag;
+        complex double c = operator->matrix[2].real + I * operator->matrix[2].imag;
+        complex double d = operator->matrix[3].real + I * operator->matrix[3].imag;
+
         complex double trace = a + d;
         complex double det = a * d - b * c;
         complex double lambda = csqrt(trace * trace - 4.0 * det);
         complex double exp_a = cexp(a);
         complex double exp_d = cexp(d);
-        
-        result->matrix[0] = exp_a;
-        result->matrix[1] = b * (exp_d - exp_a) / lambda;
-        result->matrix[2] = c * (exp_d - exp_a) / lambda;
-        result->matrix[3] = exp_d;
-        
+
+        complex double r0 = exp_a;
+        complex double r1 = b * (exp_d - exp_a) / lambda;
+        complex double r2 = c * (exp_d - exp_a) / lambda;
+        complex double r3 = exp_d;
+
+        result->matrix[0] = (ComplexFloat){(float)creal(r0), (float)cimag(r0)};
+        result->matrix[1] = (ComplexFloat){(float)creal(r1), (float)cimag(r1)};
+        result->matrix[2] = (ComplexFloat){(float)creal(r2), (float)cimag(r2)};
+        result->matrix[3] = (ComplexFloat){(float)creal(r3), (float)cimag(r3)};
+
         return QGT_SUCCESS;
     }
-    
+
     // For larger matrices, use Padé approximation
     quantum_operator_t* temp = NULL;
     err = quantum_operator_create(&temp, operator->type, operator->dimension);
     if (err != QGT_SUCCESS) {
         return err;
     }
-    
+
     // Initialize result to identity
     err = quantum_operator_initialize_identity(result);
     if (err != QGT_SUCCESS) {
         quantum_operator_destroy(temp);
         return err;
     }
-    
+
+    // Initialize temp to operator
+    memcpy(temp->matrix, operator->matrix, operator->dimension * operator->dimension * sizeof(ComplexFloat));
+
     // Compute exponential using Taylor series
-    complex double factorial = 1.0;
+    double factorial = 1.0;
     for (size_t k = 1; k <= 10; k++) {
         factorial *= k;
-        err = quantum_operator_multiply(temp, operator, temp);
+
+        // Multiply temp by operator: temp = temp * operator
+        quantum_operator_t* new_temp = NULL;
+        err = quantum_operator_create(&new_temp, operator->type, operator->dimension);
         if (err != QGT_SUCCESS) {
             quantum_operator_destroy(temp);
             return err;
         }
-        
-        // Add term to result
+        err = quantum_operator_multiply(temp, operator, new_temp);
+        if (err != QGT_SUCCESS) {
+            quantum_operator_destroy(temp);
+            quantum_operator_destroy(new_temp);
+            return err;
+        }
+        memcpy(temp->matrix, new_temp->matrix, operator->dimension * operator->dimension * sizeof(ComplexFloat));
+        quantum_operator_destroy(new_temp);
+
+        // Add term to result: result += temp / factorial
         size_t size = operator->dimension * operator->dimension;
+        float inv_fact = 1.0f / (float)factorial;
         for (size_t i = 0; i < size; i++) {
-            result->matrix[i] += temp->matrix[i] / factorial;
+            result->matrix[i].real += temp->matrix[i].real * inv_fact;
+            result->matrix[i].imag += temp->matrix[i].imag * inv_fact;
         }
     }
-    
+
     quantum_operator_destroy(temp);
     return QGT_SUCCESS;
 }
@@ -1165,51 +1513,54 @@ qgt_error_t quantum_operator_determinant(complex double* determinant,
     if (!operator || !determinant) {
         return QGT_ERROR_INVALID_ARGUMENT;
     }
-    
+
     qgt_error_t err = quantum_operator_validate(operator);
     if (err != QGT_SUCCESS) {
         return err;
     }
-    
+
     // For 2x2 matrices, use direct formula
     if (operator->dimension == 2) {
-        complex double a = operator->matrix[0];
-        complex double b = operator->matrix[1];
-        complex double c = operator->matrix[2];
-        complex double d = operator->matrix[3];
-        
+        complex double a = operator->matrix[0].real + I * operator->matrix[0].imag;
+        complex double b = operator->matrix[1].real + I * operator->matrix[1].imag;
+        complex double c = operator->matrix[2].real + I * operator->matrix[2].imag;
+        complex double d = operator->matrix[3].real + I * operator->matrix[3].imag;
+
         *determinant = a * d - b * c;
         return QGT_SUCCESS;
     }
-    
+
     // For larger matrices, use LU decomposition
     int n = (int)operator->dimension;
     int* ipiv = NULL;
     complex double* lu = NULL;
     qgt_error_t result = QGT_SUCCESS;
-    
+
     ipiv = aligned_alloc_wrapper(32, n * sizeof(int));
     if (!ipiv) {
         result = QGT_ERROR_OUT_OF_MEMORY;
         goto cleanup;
     }
-    
+
     lu = aligned_alloc_wrapper(32, n * n * sizeof(complex double));
     if (!lu) {
         result = QGT_ERROR_OUT_OF_MEMORY;
         goto cleanup;
     }
-    
-    memcpy(lu, operator->matrix, n * n * sizeof(complex double));
-    
+
+    // Convert ComplexFloat to complex double for LAPACK
+    for (int i = 0; i < n * n; i++) {
+        lu[i] = operator->matrix[i].real + I * operator->matrix[i].imag;
+    }
+
     int info;
-    zgetrf_(&n, &n, lu, &n, ipiv, &info);
-    
+    zgetrf_(&n, &n, LAPACK_COMPLEX_CAST(lu), &n, ipiv, &info);
+
     if (info != 0) {
         result = QGT_ERROR_NUMERICAL;
         goto cleanup;
     }
-    
+
     // Compute determinant from diagonal elements
     *determinant = 1.0;
     for (int i = 0; i < n; i++) {
@@ -1218,114 +1569,134 @@ qgt_error_t quantum_operator_determinant(complex double* determinant,
             *determinant = -*determinant;
         }
     }
-    
+
 cleanup:
     if (ipiv) aligned_free_wrapper(ipiv);
     if (lu) aligned_free_wrapper(lu);
-    
+
     return result;
 }
 
 qgt_error_t quantum_operator_eigenvectors(quantum_operator_t* eigenvectors,
                                         const quantum_operator_t* operator) {
-    if (!operator || !eigenvectors || 
+    if (!operator || !eigenvectors ||
         operator->dimension != eigenvectors->dimension) {
         return QGT_ERROR_INVALID_ARGUMENT;
     }
-    
+
     qgt_error_t err = quantum_operator_validate(operator);
     if (err != QGT_SUCCESS) {
         return err;
     }
-    
+
     // For 2x2 matrices, use analytical solution
     if (operator->dimension == 2) {
-        complex double a = operator->matrix[0];
-        complex double b = operator->matrix[1];
-        complex double c = operator->matrix[2];
-        complex double d = operator->matrix[3];
-        
+        complex double a = operator->matrix[0].real + I * operator->matrix[0].imag;
+        complex double b = operator->matrix[1].real + I * operator->matrix[1].imag;
+        complex double c = operator->matrix[2].real + I * operator->matrix[2].imag;
+        complex double d = operator->matrix[3].real + I * operator->matrix[3].imag;
+
         complex double trace = a + d;
         complex double det = a * d - b * c;
         complex double disc = csqrt(trace * trace - 4.0 * det);
         complex double lambda1 = (trace + disc) / 2.0;
         complex double lambda2 = (trace - disc) / 2.0;
-        
+
         // First eigenvector
         complex double v1[2];
         v1[0] = b;
         v1[1] = lambda1 - a;
         double norm1 = cabs(v1[0]) * cabs(v1[0]) + cabs(v1[1]) * cabs(v1[1]);
         norm1 = sqrt(norm1);
-        v1[0] /= norm1;
-        v1[1] /= norm1;
-        
+        if (norm1 > 1e-10) {
+            v1[0] /= norm1;
+            v1[1] /= norm1;
+        }
+
         // Second eigenvector
         complex double v2[2];
         v2[0] = b;
         v2[1] = lambda2 - a;
         double norm2 = cabs(v2[0]) * cabs(v2[0]) + cabs(v2[1]) * cabs(v2[1]);
         norm2 = sqrt(norm2);
-        v2[0] /= norm2;
-        v2[1] /= norm2;
-        
-        eigenvectors->matrix[0] = v1[0];
-        eigenvectors->matrix[1] = v1[1];
-        eigenvectors->matrix[2] = v2[0];
-        eigenvectors->matrix[3] = v2[1];
-        
+        if (norm2 > 1e-10) {
+            v2[0] /= norm2;
+            v2[1] /= norm2;
+        }
+
+        eigenvectors->matrix[0] = (ComplexFloat){(float)creal(v1[0]), (float)cimag(v1[0])};
+        eigenvectors->matrix[1] = (ComplexFloat){(float)creal(v1[1]), (float)cimag(v1[1])};
+        eigenvectors->matrix[2] = (ComplexFloat){(float)creal(v2[0]), (float)cimag(v2[0])};
+        eigenvectors->matrix[3] = (ComplexFloat){(float)creal(v2[1]), (float)cimag(v2[1])};
+
         return QGT_SUCCESS;
     }
-    
+
     // For larger matrices, use LAPACK
     int n = (int)operator->dimension;
     int lda = n;
     int ldvr = n;
     int info;
-    
+
     // Allocate work arrays
     complex double* work = NULL;
     double* rwork = NULL;
     complex double* matrix = NULL;
     complex double* eigenvals = NULL;
+    complex double* evecs_temp = NULL;
     qgt_error_t result = QGT_SUCCESS;
-    
+
     work = aligned_alloc_wrapper(32, 2*n * sizeof(complex double));
     if (!work) {
         result = QGT_ERROR_OUT_OF_MEMORY;
         goto cleanup;
     }
-    
+
     rwork = aligned_alloc_wrapper(32, 2*n * sizeof(double));
     if (!rwork) {
         result = QGT_ERROR_OUT_OF_MEMORY;
         goto cleanup;
     }
-    
+
     eigenvals = aligned_alloc_wrapper(32, n * sizeof(complex double));
     if (!eigenvals) {
         result = QGT_ERROR_OUT_OF_MEMORY;
         goto cleanup;
     }
-    
-    // Copy matrix since LAPACK modifies input
+
+    evecs_temp = aligned_alloc_wrapper(32, n*n * sizeof(complex double));
+    if (!evecs_temp) {
+        result = QGT_ERROR_OUT_OF_MEMORY;
+        goto cleanup;
+    }
+
+    // Copy matrix since LAPACK modifies input (convert ComplexFloat to complex double)
     matrix = aligned_alloc_wrapper(32, n*n * sizeof(complex double));
     if (!matrix) {
         result = QGT_ERROR_OUT_OF_MEMORY;
         goto cleanup;
     }
-    memcpy(matrix, operator->matrix, n*n * sizeof(complex double));
-    
+    for (int i = 0; i < n*n; i++) {
+        matrix[i] = operator->matrix[i].real + I * operator->matrix[i].imag;
+    }
+
     // Call LAPACK eigenvector solver
-    zgeev_("N", "V", &n, matrix, &lda, eigenvals, NULL, &n,
-           eigenvectors->matrix, &ldvr, work, &n, rwork, &info);
-    
+    zgeev_("N", "V", &n, LAPACK_COMPLEX_CAST(matrix), &lda, LAPACK_COMPLEX_CAST(eigenvals), NULL, &n,
+           LAPACK_COMPLEX_CAST(evecs_temp), &ldvr, LAPACK_COMPLEX_CAST(work), &n, rwork, &info);
+
     if (info != 0) {
         result = QGT_ERROR_NUMERICAL;
+        goto cleanup;
     }
-    
+
+    // Convert eigenvectors back to ComplexFloat
+    for (int i = 0; i < n*n; i++) {
+        eigenvectors->matrix[i] = (ComplexFloat){(float)creal(evecs_temp[i]), (float)cimag(evecs_temp[i])};
+    }
+
 cleanup:
     if (matrix) aligned_free_wrapper(matrix);
+    if (evecs_temp) aligned_free_wrapper(evecs_temp);
     if (work) aligned_free_wrapper(work);
     if (rwork) aligned_free_wrapper(rwork);
     if (eigenvals) aligned_free_wrapper(eigenvals);
@@ -1343,29 +1714,29 @@ qgt_error_t quantum_operator_is_positive(const quantum_operator_t* operator,
     if (err != QGT_SUCCESS) {
         return err;
     }
-    
+
     // Get eigenvalues
-    complex double* eigenvals = aligned_alloc_wrapper(32,
-        operator->dimension * sizeof(complex double));
+    ComplexFloat* eigenvals = aligned_alloc_wrapper(32,
+        operator->dimension * sizeof(ComplexFloat));
     if (!eigenvals) {
         return QGT_ERROR_OUT_OF_MEMORY;
     }
-    
-    err = quantum_operator_eigenvalues(operator, eigenvals);
+
+    err = quantum_operator_eigenvalues(eigenvals, operator);
     if (err != QGT_SUCCESS) {
         aligned_free_wrapper(eigenvals);
         return err;
     }
-    
+
     // Check if all eigenvalues are positive and real
     *result = true;
     for (size_t i = 0; i < operator->dimension; i++) {
-        if (cimag(eigenvals[i]) != 0.0 || creal(eigenvals[i]) <= 0.0) {
+        if (eigenvals[i].imag != 0.0f || eigenvals[i].real <= 0.0f) {
             *result = false;
             break;
         }
     }
-    
+
     aligned_free_wrapper(eigenvals);
     return QGT_SUCCESS;
 }
@@ -1388,9 +1759,9 @@ qgt_error_t quantum_operator_clone(quantum_operator_t** dest,
     }
     
     // Copy matrix data
-    size_t size = src->dimension * src->dimension * sizeof(complex double);
+    size_t size = src->dimension * src->dimension * sizeof(ComplexFloat);
     memcpy((*dest)->matrix, src->matrix, size);
-    
+
     return QGT_SUCCESS;
 }
 
@@ -1488,7 +1859,7 @@ qgt_error_t quantum_operator_estimate_resources(const quantum_operator_t* operat
     }
     
     // Calculate memory requirements
-    size_t matrix_size = operator->dimension * operator->dimension * sizeof(complex double);
+    size_t matrix_size = operator->dimension * operator->dimension * sizeof(ComplexFloat);
     size_t alignment_overhead = 32; // AVX alignment requirement
     *memory = matrix_size + alignment_overhead;
     
@@ -1520,18 +1891,18 @@ qgt_error_t quantum_operator_optimize_resources(quantum_operator_t* operator) {
     
     // Realign matrix for optimal SIMD access if needed
     if (((uintptr_t)operator->matrix & 31) != 0) {
-        complex double* aligned_matrix = aligned_alloc_wrapper(32,
-            operator->dimension * operator->dimension * sizeof(complex double));
+        ComplexFloat* aligned_matrix = aligned_alloc_wrapper(32,
+            operator->dimension * operator->dimension * sizeof(ComplexFloat));
         if (!aligned_matrix) {
             return QGT_ERROR_OUT_OF_MEMORY;
         }
-        
+
         memcpy(aligned_matrix, operator->matrix,
-               operator->dimension * operator->dimension * sizeof(complex double));
+               operator->dimension * operator->dimension * sizeof(ComplexFloat));
         aligned_free_wrapper(operator->matrix);
         operator->matrix = aligned_matrix;
     }
-    
+
     return QGT_SUCCESS;
 }
 
@@ -1551,14 +1922,14 @@ qgt_error_t quantum_operator_validate_resources(const quantum_operator_t* operat
     }
     
     // Verify matrix memory is accessible
-    volatile complex double test;
+    volatile ComplexFloat test;
     for (size_t i = 0; i < operator->dimension; i++) {
         for (size_t j = 0; j < operator->dimension; j++) {
             test = operator->matrix[i * operator->dimension + j];
             (void)test; // Prevent optimization
         }
     }
-    
+
     return QGT_SUCCESS;
 }
 
@@ -2612,12 +2983,12 @@ qgt_error_t quantum_operator_print(const quantum_operator_t* operator) {
     printf("Quantum Operator %zux%zu:\n", operator->dimension, operator->dimension);
     for (size_t i = 0; i < operator->dimension; i++) {
         for (size_t j = 0; j < operator->dimension; j++) {
-            complex double val = operator->matrix[i * operator->dimension + j];
-            printf("(%6.3f%+6.3fi) ", creal(val), cimag(val));
+            ComplexFloat val = operator->matrix[i * operator->dimension + j];
+            printf("(%6.3f%+6.3fi) ", val.real, val.imag);
         }
         printf("\n");
     }
-    
+
     return QGT_SUCCESS;
 }
 
@@ -2646,7 +3017,7 @@ qgt_error_t quantum_operator_save(const quantum_operator_t* operator,
     
     // Write matrix data
     size_t matrix_size = operator->dimension * operator->dimension;
-    if (fwrite(operator->matrix, sizeof(complex double), matrix_size, file) != matrix_size) {
+    if (fwrite(operator->matrix, sizeof(ComplexFloat), matrix_size, file) != matrix_size) {
         fclose(file);
         return QGT_ERROR_IO;
     }
@@ -2684,7 +3055,7 @@ qgt_error_t quantum_operator_load(quantum_operator_t** operator,
     
     // Read matrix data
     size_t matrix_size = dimension * dimension;
-    if (fread((*operator)->matrix, sizeof(complex double), matrix_size, file) != matrix_size) {
+    if (fread((*operator)->matrix, sizeof(ComplexFloat), matrix_size, file) != matrix_size) {
         quantum_operator_destroy(*operator);
         *operator = NULL;
         fclose(file);
@@ -2695,78 +3066,106 @@ qgt_error_t quantum_operator_load(quantum_operator_t** operator,
     return QGT_SUCCESS;
 }
 
-qgt_error_t quantum_operator_eigenvalues(const quantum_operator_t* operator,
-                                       complex double* eigenvalues) {
+qgt_error_t quantum_operator_eigenvalues(ComplexFloat* eigenvalues,
+                                        const quantum_operator_t* operator) {
     if (!operator || !eigenvalues) {
         return QGT_ERROR_INVALID_ARGUMENT;
     }
-    
+
     qgt_error_t err = quantum_operator_validate(operator);
     if (err != QGT_SUCCESS) {
         return err;
     }
-    
-    // For 2x2 matrices, use analytical solution with SIMD
+
+    // For 2x2 matrices, use analytical solution
     if (operator->dimension == 2) {
-        __m256d mat = _mm256_load_pd((double*)operator->matrix);
-        double a = ((double*)&mat)[0];
-        double b = ((double*)&mat)[1];
-        double c = ((double*)&mat)[2];
-        double d = ((double*)&mat)[3];
-        
+        // Get matrix elements (stored as ComplexFloat)
+        double a_re = operator->matrix[0].real;
+        double a_im = operator->matrix[0].imag;
+        double b_re = operator->matrix[1].real;
+        double b_im = operator->matrix[1].imag;
+        double c_re = operator->matrix[2].real;
+        double c_im = operator->matrix[2].imag;
+        double d_re = operator->matrix[3].real;
+        double d_im = operator->matrix[3].imag;
+
+        complex double a = a_re + I * a_im;
+        complex double b = b_re + I * b_im;
+        complex double c = c_re + I * c_im;
+        complex double d = d_re + I * d_im;
+
         complex double trace = a + d;
         complex double det = a * d - b * c;
         complex double disc = csqrt(trace * trace - 4.0 * det);
-        
-        eigenvalues[0] = (trace + disc) / 2.0;
-        eigenvalues[1] = (trace - disc) / 2.0;
-        
+
+        complex double ev0 = (trace + disc) / 2.0;
+        complex double ev1 = (trace - disc) / 2.0;
+
+        eigenvalues[0] = (ComplexFloat){(float)creal(ev0), (float)cimag(ev0)};
+        eigenvalues[1] = (ComplexFloat){(float)creal(ev1), (float)cimag(ev1)};
+
         return QGT_SUCCESS;
     }
-    
+
     // For larger matrices, use LAPACK
     int n = (int)operator->dimension;
     int lda = n;
     int info;
-    
+
     // Allocate work arrays
     complex double* work = NULL;
     double* rwork = NULL;
     complex double* matrix = NULL;
+    complex double* eig_temp = NULL;
     qgt_error_t result = QGT_SUCCESS;
-    
+
     work = aligned_alloc_wrapper(32, 2*n * sizeof(complex double));
     if (!work) {
         result = QGT_ERROR_OUT_OF_MEMORY;
         goto cleanup;
     }
-    
+
     rwork = aligned_alloc_wrapper(32, 2*n * sizeof(double));
     if (!rwork) {
         result = QGT_ERROR_OUT_OF_MEMORY;
         goto cleanup;
     }
-    
-    // Copy matrix since LAPACK modifies input
+
+    eig_temp = aligned_alloc_wrapper(32, n * sizeof(complex double));
+    if (!eig_temp) {
+        result = QGT_ERROR_OUT_OF_MEMORY;
+        goto cleanup;
+    }
+
+    // Copy matrix since LAPACK modifies input (convert ComplexFloat to complex double)
     matrix = aligned_alloc_wrapper(32, n*n * sizeof(complex double));
     if (!matrix) {
         result = QGT_ERROR_OUT_OF_MEMORY;
         goto cleanup;
     }
-    memcpy(matrix, operator->matrix, n*n * sizeof(complex double));
-    
+    for (int i = 0; i < n*n; i++) {
+        matrix[i] = operator->matrix[i].real + I * operator->matrix[i].imag;
+    }
+
     // Call LAPACK eigenvalue solver
-    zgeev_("N", "N", &n, matrix, &lda, eigenvalues, NULL, &n, NULL, &n,
-           work, &n, rwork, &info);
-    
+    zgeev_("N", "N", &n, LAPACK_COMPLEX_CAST(matrix), &lda, LAPACK_COMPLEX_CAST(eig_temp), NULL, &n, NULL, &n,
+           LAPACK_COMPLEX_CAST(work), &n, rwork, &info);
+
     if (info != 0) {
         result = QGT_ERROR_NUMERICAL;
+        goto cleanup;
     }
-    
+
+    // Convert eigenvalues to ComplexFloat
+    for (int i = 0; i < n; i++) {
+        eigenvalues[i] = (ComplexFloat){(float)creal(eig_temp[i]), (float)cimag(eig_temp[i])};
+    }
+
 cleanup:
     if (matrix) aligned_free_wrapper(matrix);
     if (work) aligned_free_wrapper(work);
     if (rwork) aligned_free_wrapper(rwork);
-    
+    if (eig_temp) aligned_free_wrapper(eig_temp);
+
     return result;
 }

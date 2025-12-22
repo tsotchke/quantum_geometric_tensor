@@ -1,7 +1,6 @@
 #include "quantum_geometric/core/numerical_backend.h"
 #include "quantum_geometric/core/complex_arithmetic.h"
 #include "quantum_geometric/core/lapack_wrapper.h"
-#include "quantum_geometric/core/hierarchical_matrix.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -9,8 +8,49 @@
 
 // Global state
 #ifdef __APPLE__
-// DSPComplex alignment requirement - must be a power of 2 and multiple of sizeof(DSPComplex)
-#define DSP_ALIGNMENT (sizeof(DSPComplex) * 2)
+// Alignment for SIMD operations (cache line size)
+#define DSP_ALIGNMENT 64
+
+// =============================================================================
+// Split Complex Format Helpers for vDSP
+// vDSP complex functions require DSPSplitComplex (separate real/imag arrays)
+// =============================================================================
+
+// Allocate a split complex array with proper alignment
+static inline bool alloc_split_complex(DSPSplitComplex* sc, size_t n) {
+    sc->realp = NULL;
+    sc->imagp = NULL;
+    if (posix_memalign((void**)&sc->realp, DSP_ALIGNMENT, n * sizeof(float)) != 0) return false;
+    if (posix_memalign((void**)&sc->imagp, DSP_ALIGNMENT, n * sizeof(float)) != 0) {
+        free(sc->realp);
+        sc->realp = NULL;
+        return false;
+    }
+    return true;
+}
+
+static inline void free_split_complex(DSPSplitComplex* sc) {
+    if (sc->realp) free(sc->realp);
+    if (sc->imagp) free(sc->imagp);
+    sc->realp = NULL;
+    sc->imagp = NULL;
+}
+
+// Convert interleaved ComplexFloat to split format
+static inline void interleaved_to_split(const ComplexFloat* src, DSPSplitComplex* dst, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        dst->realp[i] = src[i].real;
+        dst->imagp[i] = src[i].imag;
+    }
+}
+
+// Convert split format back to interleaved ComplexFloat
+static inline void split_to_interleaved(const DSPSplitComplex* src, ComplexFloat* dst, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        dst[i].real = src->realp[i];
+        dst[i].imag = src->imagp[i];
+    }
+}
 
 static struct {
     numerical_config_t config;
@@ -20,7 +60,10 @@ static struct {
     bool has_lapack;
 } backend_state = {0};
 
-// Additional vector operations
+// =============================================================================
+// Vector Operations using vDSP with proper split complex format
+// =============================================================================
+
 numerical_error_t numerical_vector_scale(const ComplexFloat* a,
                                        ComplexFloat scale,
                                        ComplexFloat* c,
@@ -28,40 +71,47 @@ numerical_error_t numerical_vector_scale(const ComplexFloat* a,
     if (!backend_state.initialized) {
         return NUMERICAL_ERROR_INVALID_STATE;
     }
-    
+
     if (!a || !c) {
         return NUMERICAL_ERROR_INVALID_ARGUMENT;
     }
-    
-    DSPComplex dsp_scale = to_dsp_complex(scale);
-    DSPComplex* dsp_a = NULL;
-    if (posix_memalign((void**)&dsp_a, DSP_ALIGNMENT, length * sizeof(DSPComplex)) != 0) {
+
+    // Allocate split complex arrays
+    DSPSplitComplex sc_a, sc_c;
+    if (!alloc_split_complex(&sc_a, length) || !alloc_split_complex(&sc_c, length)) {
+        free_split_complex(&sc_a);
         return NUMERICAL_ERROR_MEMORY;
     }
-    
-    // Convert input using our conversion utilities
-    for (size_t i = 0; i < length; i++) {
-        dsp_a[i] = to_dsp_complex(a[i]);
+
+    // Convert to split format
+    interleaved_to_split(a, &sc_a, length);
+
+    // Scale real and imaginary parts separately using vDSP
+    // For complex scaling: (a + bi)(c + di) = (ac - bd) + (ad + bc)i
+    // For real-only scale: just multiply both parts by scale.real
+    vDSP_vsmul(sc_a.realp, 1, &scale.real, sc_c.realp, 1, length);
+    vDSP_vsmul(sc_a.imagp, 1, &scale.real, sc_c.imagp, 1, length);
+
+    // If scale has imaginary part, add cross terms
+    if (fabsf(scale.imag) > 1e-10f) {
+        float neg_imag = -scale.imag;
+        float* temp = malloc(length * sizeof(float));
+        if (temp) {
+            // Real part: ac - bd
+            vDSP_vsmul(sc_a.imagp, 1, &neg_imag, temp, 1, length);
+            vDSP_vadd(sc_c.realp, 1, temp, 1, sc_c.realp, 1, length);
+            // Imag part: ad + bc
+            vDSP_vsmul(sc_a.realp, 1, &scale.imag, temp, 1, length);
+            vDSP_vadd(sc_c.imagp, 1, temp, 1, sc_c.imagp, 1, length);
+            free(temp);
+        }
     }
-    
-    // Allocate aligned output buffer
-    DSPComplex* dsp_c = NULL;
-    if (posix_memalign((void**)&dsp_c, DSP_ALIGNMENT, length * sizeof(DSPComplex)) != 0) {
-        free(dsp_a);
-        return NUMERICAL_ERROR_MEMORY;
-    }
-    
-    // Scale using vDSP
-    float scale_real = dsp_scale.real;
-    vDSP_zrvmul(&scale_real, 1, dsp_a, 1, dsp_c, 1, length);
-    
-    // Copy result back
-    for (size_t i = 0; i < length; i++) {
-        c[i] = from_dsp_complex(dsp_c[i]);
-    }
-    
-    free(dsp_c);
-    free(dsp_a);
+
+    // Convert back to interleaved
+    split_to_interleaved(&sc_c, c, length);
+
+    free_split_complex(&sc_a);
+    free_split_complex(&sc_c);
     return NUMERICAL_SUCCESS;
 }
 
@@ -72,44 +122,34 @@ numerical_error_t numerical_vector_add(const ComplexFloat* a,
     if (!backend_state.initialized) {
         return NUMERICAL_ERROR_INVALID_STATE;
     }
-    
+
     if (!a || !b || !c) {
         return NUMERICAL_ERROR_INVALID_ARGUMENT;
     }
-    
-    DSPComplex *dsp_a = NULL, *dsp_b = NULL;
-    if (posix_memalign((void**)&dsp_a, DSP_ALIGNMENT, length * sizeof(DSPComplex)) != 0 ||
-        posix_memalign((void**)&dsp_b, DSP_ALIGNMENT, length * sizeof(DSPComplex)) != 0) {
-        free(dsp_a);
-        free(dsp_b);
+
+    // Allocate split complex arrays for vDSP
+    DSPSplitComplex sc_a, sc_b, sc_c;
+    if (!alloc_split_complex(&sc_a, length) ||
+        !alloc_split_complex(&sc_b, length) ||
+        !alloc_split_complex(&sc_c, length)) {
+        free_split_complex(&sc_a);
+        free_split_complex(&sc_b);
         return NUMERICAL_ERROR_MEMORY;
     }
-    
-    // Convert inputs using our conversion utilities
-    for (size_t i = 0; i < length; i++) {
-        dsp_a[i] = to_dsp_complex(a[i]);
-        dsp_b[i] = to_dsp_complex(b[i]);
-    }
-    
-    // Allocate aligned output buffer
-    DSPComplex* dsp_c = NULL;
-    if (posix_memalign((void**)&dsp_c, DSP_ALIGNMENT, length * sizeof(DSPComplex)) != 0) {
-        free(dsp_a);
-        free(dsp_b);
-        return NUMERICAL_ERROR_MEMORY;
-    }
-    
-    // Add using vDSP
-    vDSP_zvadd(dsp_a, 1, dsp_b, 1, dsp_c, 1, length);
-    
-    // Copy result back
-    for (size_t i = 0; i < length; i++) {
-        c[i] = from_dsp_complex(dsp_c[i]);
-    }
-    
-    free(dsp_c);
-    free(dsp_a);
-    free(dsp_b);
+
+    // Convert to split format
+    interleaved_to_split(a, &sc_a, length);
+    interleaved_to_split(b, &sc_b, length);
+
+    // Add using vDSP (operates on real and imag arrays separately)
+    vDSP_zvadd(&sc_a, 1, &sc_b, 1, &sc_c, 1, length);
+
+    // Convert back to interleaved
+    split_to_interleaved(&sc_c, c, length);
+
+    free_split_complex(&sc_a);
+    free_split_complex(&sc_b);
+    free_split_complex(&sc_c);
     return NUMERICAL_SUCCESS;
 }
 
@@ -121,116 +161,50 @@ numerical_error_t numerical_matrix_subtract(const ComplexFloat* a,
     if (!backend_state.initialized) {
         return NUMERICAL_ERROR_INVALID_STATE;
     }
-    
+
     if (!a || !b || !c) {
         return NUMERICAL_ERROR_INVALID_ARGUMENT;
     }
-    
-    printf("DEBUG: numerical_matrix_subtract: rows=%zu, cols=%zu\n", rows, cols);
-    
+
     size_t total = rows * cols;
-    
-    // Use posix_memalign for proper alignment
-    DSPComplex *dsp_a = NULL, *dsp_b = NULL;
-    if (posix_memalign((void**)&dsp_a, DSP_ALIGNMENT, total * sizeof(DSPComplex)) != 0 ||
-        posix_memalign((void**)&dsp_b, DSP_ALIGNMENT, total * sizeof(DSPComplex)) != 0) {
-        printf("DEBUG: Memory allocation failed\n");
-        free(dsp_a);
-        free(dsp_b);
+
+    // Allocate split complex arrays
+    DSPSplitComplex sc_a, sc_b, sc_c;
+    if (!alloc_split_complex(&sc_a, total) ||
+        !alloc_split_complex(&sc_b, total) ||
+        !alloc_split_complex(&sc_c, total)) {
+        free_split_complex(&sc_a);
+        free_split_complex(&sc_b);
         return NUMERICAL_ERROR_MEMORY;
     }
-    
-    printf("DEBUG: Converting input matrices to DSPComplex format\n");
-    // Convert inputs using our conversion utilities
-    for (size_t i = 0; i < total; i++) {
-        dsp_a[i] = to_dsp_complex(a[i]);
-        dsp_b[i] = to_dsp_complex(b[i]);
-    }
-    
-    printf("DEBUG: First few elements of matrices:\n");
-    printf("Matrix A: ");
-    for (size_t i = 0; i < (total < 3 ? total : 3); i++) {
-        printf("(%.3f,%.3f) ", dsp_a[i].real, dsp_a[i].imag);
-    }
-    printf("\nMatrix B: ");
-    for (size_t i = 0; i < (total < 3 ? total : 3); i++) {
-        printf("(%.3f,%.3f) ", dsp_b[i].real, dsp_b[i].imag);
-    }
-    printf("\n");
-    
-    // Allocate aligned output buffer
-    DSPComplex* dsp_c = NULL;
-    if (posix_memalign((void**)&dsp_c, DSP_ALIGNMENT, total * sizeof(DSPComplex)) != 0) {
-        printf("DEBUG: Failed to allocate aligned output buffer\n");
-        free(dsp_a);
-        free(dsp_b);
-        return NUMERICAL_ERROR_MEMORY;
-    }
-    
-    // Initialize output buffer to zero
-    memset(dsp_c, 0, total * sizeof(DSPComplex));
-    
-    // Normalize inputs to prevent numerical instability
-    float max_a = 0.0f, max_b = 0.0f;
-    for (size_t i = 0; i < total; i++) {
-        float mag_a = sqrtf(dsp_a[i].real * dsp_a[i].real + dsp_a[i].imag * dsp_a[i].imag);
-        float mag_b = sqrtf(dsp_b[i].real * dsp_b[i].real + dsp_b[i].imag * dsp_b[i].imag);
-        if (mag_a > max_a) max_a = mag_a;
-        if (mag_b > max_b) max_b = mag_b;
-    }
-    
-    // Normalize inputs in-place to prevent numerical instability
-    if (max_a > 1e-6f) {
-        float scale_a = 1.0f/max_a;
-        vDSP_zrvmul(&scale_a, 1, dsp_a, 1, dsp_a, 1, total);
-    }
-    if (max_b > 1e-6f) {
-        float scale_b = 1.0f/max_b;
-        vDSP_zrvmul(&scale_b, 1, dsp_b, 1, dsp_b, 1, total);
-    }
-    
-    // Subtract b from a
-    float scale = -1.0f;
-    vDSP_zrvmul(&scale, 1, dsp_b, 1, dsp_c, 1, total);
-    vDSP_zvadd(dsp_a, 1, dsp_c, 1, dsp_c, 1, total);
-    
-    // Scale result back
-    float scale_factor = (max_a > max_b ? max_a : max_b);
-    if (scale_factor > 1e-6f) {
-        vDSP_zrvmul(&scale_factor, 1, dsp_c, 1, dsp_c, 1, total);
-    }
-    
-    // Copy result back to output
-    for (size_t i = 0; i < total; i++) {
-        c[i] = from_dsp_complex(dsp_c[i]);
-    }
-    
-    printf("DEBUG: Result conversion completed\n");
-    free(dsp_c);
-    
-    printf("DEBUG: Result (first few elements): ");
-    for (size_t i = 0; i < (total < 3 ? total : 3); i++) {
-        printf("(%.3f,%.3f) ", c[i].real, c[i].imag);
-    }
-    printf("\n");
-    
-    // Check for invalid results
+
+    // Convert to split format
+    interleaved_to_split(a, &sc_a, total);
+    interleaved_to_split(b, &sc_b, total);
+
+    // Subtract: c = a - b using vDSP_vsub (note: vsub does D = B - A, so swap order)
+    vDSP_vsub(sc_b.realp, 1, sc_a.realp, 1, sc_c.realp, 1, total);
+    vDSP_vsub(sc_b.imagp, 1, sc_a.imagp, 1, sc_c.imagp, 1, total);
+
+    // Convert back to interleaved
+    split_to_interleaved(&sc_c, c, total);
+
+    free_split_complex(&sc_a);
+    free_split_complex(&sc_b);
+    free_split_complex(&sc_c);
+
+    // Check for invalid results and fall back to direct computation if needed
     for (size_t i = 0; i < total; i++) {
         if (isnan(c[i].real) || isnan(c[i].imag) ||
             isinf(c[i].real) || isinf(c[i].imag)) {
-            printf("DEBUG: Invalid result detected, using direct computation\n");
-            // Compute subtraction directly
+            // Compute subtraction directly as fallback
             for (size_t j = 0; j < total; j++) {
                 c[j] = complex_subtract(a[j], b[j]);
             }
-            free(dsp_a);
-            free(dsp_b);
-            return NUMERICAL_SUCCESS;
+            break;
         }
     }
-    
-    free(dsp_a);
-    free(dsp_b);
+
     return NUMERICAL_SUCCESS;
 }
 
@@ -707,48 +681,36 @@ numerical_error_t numerical_matrix_add_accelerate(const ComplexFloat* a,
     if (!backend_state.initialized) {
         return NUMERICAL_ERROR_INVALID_STATE;
     }
-    
+
     if (!a || !b || !c) {
         return NUMERICAL_ERROR_INVALID_ARGUMENT;
     }
-    
+
     size_t total = rows * cols;
-    DSPComplex *dsp_a = NULL, *dsp_b = NULL;
-    if (posix_memalign((void**)&dsp_a, DSP_ALIGNMENT, total * sizeof(DSPComplex)) != 0 ||
-        posix_memalign((void**)&dsp_b, DSP_ALIGNMENT, total * sizeof(DSPComplex)) != 0) {
-        free(dsp_a);
-        free(dsp_b);
+
+    // Allocate split complex arrays for vDSP
+    DSPSplitComplex sc_a, sc_b, sc_c;
+    if (!alloc_split_complex(&sc_a, total) ||
+        !alloc_split_complex(&sc_b, total) ||
+        !alloc_split_complex(&sc_c, total)) {
+        free_split_complex(&sc_a);
+        free_split_complex(&sc_b);
         return NUMERICAL_ERROR_MEMORY;
     }
-    
-    // Convert inputs using our conversion utilities
-    for (size_t i = 0; i < total; i++) {
-        dsp_a[i] = to_dsp_complex(a[i]);
-        dsp_b[i] = to_dsp_complex(b[i]);
-    }
-    
-    // Allocate aligned output buffer
-    DSPComplex* dsp_c = NULL;
-    if (posix_memalign((void**)&dsp_c, DSP_ALIGNMENT, total * sizeof(DSPComplex)) != 0) {
-        free(dsp_a);
-        free(dsp_b);
-        return NUMERICAL_ERROR_MEMORY;
-    }
-    
-    // Initialize output buffer to zero
-    memset(dsp_c, 0, total * sizeof(DSPComplex));
-    
-    // Perform addition using vDSP
-    vDSP_zvadd(dsp_a, 1, dsp_b, 1, dsp_c, 1, total);
-    
-    // Copy result back
-    for (size_t i = 0; i < total; i++) {
-        c[i] = from_dsp_complex(dsp_c[i]);
-    }
-    
-    free(dsp_c);
-    free(dsp_a);
-    free(dsp_b);
+
+    // Convert to split format
+    interleaved_to_split(a, &sc_a, total);
+    interleaved_to_split(b, &sc_b, total);
+
+    // Perform addition using vDSP with proper split complex format
+    vDSP_zvadd(&sc_a, 1, &sc_b, 1, &sc_c, 1, total);
+
+    // Convert back to interleaved
+    split_to_interleaved(&sc_c, c, total);
+
+    free_split_complex(&sc_a);
+    free_split_complex(&sc_b);
+    free_split_complex(&sc_c);
     return NUMERICAL_SUCCESS;
 }
 
@@ -759,45 +721,45 @@ numerical_error_t numerical_vector_dot_accelerate(const ComplexFloat* a,
     if (!backend_state.initialized) {
         return NUMERICAL_ERROR_INVALID_STATE;
     }
-    
+
     if (!a || !b || !result) {
         return NUMERICAL_ERROR_INVALID_ARGUMENT;
     }
-    
-    DSPComplex *dsp_a = NULL, *dsp_b = NULL;
-    if (posix_memalign((void**)&dsp_a, DSP_ALIGNMENT, length * sizeof(DSPComplex)) != 0 ||
-        posix_memalign((void**)&dsp_b, DSP_ALIGNMENT, length * sizeof(DSPComplex)) != 0) {
-        free(dsp_a);
-        free(dsp_b);
+
+    // Allocate split complex arrays for vDSP
+    DSPSplitComplex sc_a, sc_b, sc_result;
+    if (!alloc_split_complex(&sc_a, length) ||
+        !alloc_split_complex(&sc_b, length)) {
+        free_split_complex(&sc_a);
         return NUMERICAL_ERROR_MEMORY;
     }
-    
-    // Convert inputs using our conversion utilities
-    for (size_t i = 0; i < length; i++) {
-        dsp_a[i] = to_dsp_complex(a[i]);
-        dsp_b[i] = to_dsp_complex(b[i]);
-    }
-    
-    // Allocate aligned output buffer
-    DSPComplex* dot = NULL;
-    if (posix_memalign((void**)&dot, DSP_ALIGNMENT, sizeof(DSPComplex)) != 0) {
-        free(dsp_a);
-        free(dsp_b);
+
+    // Allocate result (single complex value)
+    sc_result.realp = malloc(sizeof(float));
+    sc_result.imagp = malloc(sizeof(float));
+    if (!sc_result.realp || !sc_result.imagp) {
+        free_split_complex(&sc_a);
+        free_split_complex(&sc_b);
+        free(sc_result.realp);
+        free(sc_result.imagp);
         return NUMERICAL_ERROR_MEMORY;
     }
-    
-    // Initialize output buffer to zero
-    memset(dot, 0, sizeof(DSPComplex));
-    
-    // Compute dot product using vDSP
-    vDSP_zdotpr(dsp_a, 1, dsp_b, 1, dot, length);
-    
+
+    // Convert to split format
+    interleaved_to_split(a, &sc_a, length);
+    interleaved_to_split(b, &sc_b, length);
+
+    // Compute dot product using vDSP with proper split complex format
+    vDSP_zdotpr(&sc_a, 1, &sc_b, 1, &sc_result, length);
+
     // Copy result back
-    *result = from_dsp_complex(*dot);
-    
-    free(dot);
-    free(dsp_a);
-    free(dsp_b);
+    result->real = *sc_result.realp;
+    result->imag = *sc_result.imagp;
+
+    free_split_complex(&sc_a);
+    free_split_complex(&sc_b);
+    free(sc_result.realp);
+    free(sc_result.imagp);
     return NUMERICAL_SUCCESS;
 }
 

@@ -30,6 +30,7 @@ typedef struct {
     size_t input_size;
     size_t output_size;
     size_t num_layers;
+    size_t* layer_sizes;  // Output size for each layer
     double** weights;
     double** biases;
     void* activation_functions;

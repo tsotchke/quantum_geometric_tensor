@@ -12,6 +12,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#ifdef __APPLE__
+#include <sys/sysctl.h>
+#endif
 
 // Constants
 #define BLOCK_MAGIC 0xDEADBEEF
@@ -1001,8 +1004,817 @@ qgt_error_t geometric_core_get_memory_stats(size_t* total, size_t* peak, size_t*
     QGT_CHECK_NULL(peak);
     QGT_CHECK_NULL(count);
     QGT_CHECK_STATE(is_initialized);
-    
+
     geometric_get_memory_stats(total, peak, count);
-    
+
+    return QGT_SUCCESS;
+}
+
+// ============================================================================
+// Device Management Implementation
+// ============================================================================
+
+// Current device state
+static size_t current_device = 0;
+static qgt_error_t last_error = QGT_SUCCESS;
+static bool debug_mode = false;
+static size_t log_level = 0;
+
+qgt_error_t geometric_core_get_device_count(size_t* count) {
+    QGT_CHECK_NULL(count);
+    QGT_CHECK_STATE(is_initialized);
+
+    // Currently only CPU device is supported (device 0)
+    // GPU support would enumerate CUDA/Metal devices here
+    *count = 1;
+
+    #ifdef CUDA_AVAILABLE
+    int cuda_count = 0;
+    if (cudaGetDeviceCount(&cuda_count) == cudaSuccess) {
+        *count += cuda_count;
+    }
+    #endif
+
+    #ifdef __APPLE__
+    // Metal device is always available on macOS
+    *count = 1;  // Metal GPU
+    #endif
+
+    return QGT_SUCCESS;
+}
+
+qgt_error_t geometric_core_set_device(size_t device) {
+    QGT_CHECK_STATE(is_initialized);
+
+    size_t device_count = 0;
+    qgt_error_t err = geometric_core_get_device_count(&device_count);
+    if (err != QGT_SUCCESS) {
+        return err;
+    }
+
+    if (device >= device_count) {
+        last_error = QGT_ERROR_INVALID_PARAMETER;
+        return QGT_ERROR_INVALID_PARAMETER;
+    }
+
+    current_device = device;
+
+    #ifdef CUDA_AVAILABLE
+    if (device > 0) {
+        cudaSetDevice(device - 1);  // device 0 is CPU
+    }
+    #endif
+
+    return QGT_SUCCESS;
+}
+
+qgt_error_t geometric_core_get_device_properties(size_t device, void* properties) {
+    QGT_CHECK_NULL(properties);
+    QGT_CHECK_STATE(is_initialized);
+
+    // Device properties structure
+    typedef struct {
+        char name[256];
+        size_t total_memory;
+        size_t available_memory;
+        size_t compute_units;
+        size_t max_threads;
+        bool supports_double;
+        bool supports_tensor_cores;
+    } DeviceProperties;
+
+    DeviceProperties* props = (DeviceProperties*)properties;
+
+    if (device == 0) {
+        // CPU device properties
+        strncpy(props->name, "CPU (Host)", sizeof(props->name) - 1);
+
+        #ifdef __linux__
+        struct sysinfo si;
+        if (sysinfo(&si) == 0) {
+            props->total_memory = si.totalram * si.mem_unit;
+            props->available_memory = si.freeram * si.mem_unit;
+        }
+        #elif defined(__APPLE__)
+        size_t size = sizeof(size_t);
+        sysctlbyname("hw.memsize", &props->total_memory, &size, NULL, 0);
+        props->available_memory = props->total_memory / 2;  // Estimate
+        #else
+        props->total_memory = 8ULL * 1024 * 1024 * 1024;  // Default 8GB
+        props->available_memory = props->total_memory / 2;
+        #endif
+
+        #ifdef _OPENMP
+        props->compute_units = omp_get_max_threads();
+        props->max_threads = omp_get_max_threads();
+        #else
+        props->compute_units = 1;
+        props->max_threads = 1;
+        #endif
+
+        props->supports_double = true;
+        props->supports_tensor_cores = false;
+    }
+    #ifdef CUDA_AVAILABLE
+    else {
+        cudaDeviceProp cuda_props;
+        cudaGetDeviceProperties(&cuda_props, device - 1);
+
+        strncpy(props->name, cuda_props.name, sizeof(props->name) - 1);
+        props->total_memory = cuda_props.totalGlobalMem;
+        props->compute_units = cuda_props.multiProcessorCount;
+        props->max_threads = cuda_props.maxThreadsPerBlock;
+        props->supports_double = (cuda_props.major >= 2);
+        props->supports_tensor_cores = (cuda_props.major >= 7);
+
+        size_t free_mem, total_mem;
+        cudaMemGetInfo(&free_mem, &total_mem);
+        props->available_memory = free_mem;
+    }
+    #endif
+
+    return QGT_SUCCESS;
+}
+
+qgt_error_t geometric_core_synchronize_device(void) {
+    QGT_CHECK_STATE(is_initialized);
+
+    // CPU is always synchronized
+    if (current_device == 0) {
+        return QGT_SUCCESS;
+    }
+
+    #ifdef CUDA_AVAILABLE
+    cudaError_t err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        last_error = QGT_ERROR_DEVICE;
+        return QGT_ERROR_DEVICE;
+    }
+    #endif
+
+    return QGT_SUCCESS;
+}
+
+// ============================================================================
+// Core Element-wise Operations
+// ============================================================================
+
+qgt_error_t geometric_core_add(void* result, const void* a, const void* b, size_t size) {
+    QGT_CHECK_NULL(result);
+    QGT_CHECK_NULL(a);
+    QGT_CHECK_NULL(b);
+    QGT_CHECK_ARGUMENT(size > 0);
+    QGT_CHECK_STATE(is_initialized);
+
+    float* out = (float*)result;
+    const float* in_a = (const float*)a;
+    const float* in_b = (const float*)b;
+
+    #ifdef __ARM_NEON
+    size_t simd_size = size & ~3;
+    for (size_t i = 0; i < simd_size; i += 4) {
+        float32x4_t va = vld1q_f32(in_a + i);
+        float32x4_t vb = vld1q_f32(in_b + i);
+        float32x4_t vr = vaddq_f32(va, vb);
+        vst1q_f32(out + i, vr);
+    }
+    for (size_t i = simd_size; i < size; i++) {
+        out[i] = in_a[i] + in_b[i];
+    }
+    #elif defined(__AVX512F__)
+    size_t simd_size = size & ~15;
+    for (size_t i = 0; i < simd_size; i += 16) {
+        __m512 va = _mm512_load_ps(in_a + i);
+        __m512 vb = _mm512_load_ps(in_b + i);
+        __m512 vr = _mm512_add_ps(va, vb);
+        _mm512_store_ps(out + i, vr);
+    }
+    for (size_t i = simd_size; i < size; i++) {
+        out[i] = in_a[i] + in_b[i];
+    }
+    #else
+    #pragma omp parallel for if(size > 1000)
+    for (size_t i = 0; i < size; i++) {
+        out[i] = in_a[i] + in_b[i];
+    }
+    #endif
+
+    if (profiling_enabled) {
+        operation_count++;
+        total_flops += size;
+    }
+
+    return QGT_SUCCESS;
+}
+
+qgt_error_t geometric_core_subtract(void* result, const void* a, const void* b, size_t size) {
+    QGT_CHECK_NULL(result);
+    QGT_CHECK_NULL(a);
+    QGT_CHECK_NULL(b);
+    QGT_CHECK_ARGUMENT(size > 0);
+    QGT_CHECK_STATE(is_initialized);
+
+    float* out = (float*)result;
+    const float* in_a = (const float*)a;
+    const float* in_b = (const float*)b;
+
+    #ifdef __ARM_NEON
+    size_t simd_size = size & ~3;
+    for (size_t i = 0; i < simd_size; i += 4) {
+        float32x4_t va = vld1q_f32(in_a + i);
+        float32x4_t vb = vld1q_f32(in_b + i);
+        float32x4_t vr = vsubq_f32(va, vb);
+        vst1q_f32(out + i, vr);
+    }
+    for (size_t i = simd_size; i < size; i++) {
+        out[i] = in_a[i] - in_b[i];
+    }
+    #elif defined(__AVX512F__)
+    size_t simd_size = size & ~15;
+    for (size_t i = 0; i < simd_size; i += 16) {
+        __m512 va = _mm512_load_ps(in_a + i);
+        __m512 vb = _mm512_load_ps(in_b + i);
+        __m512 vr = _mm512_sub_ps(va, vb);
+        _mm512_store_ps(out + i, vr);
+    }
+    for (size_t i = simd_size; i < size; i++) {
+        out[i] = in_a[i] - in_b[i];
+    }
+    #else
+    #pragma omp parallel for if(size > 1000)
+    for (size_t i = 0; i < size; i++) {
+        out[i] = in_a[i] - in_b[i];
+    }
+    #endif
+
+    if (profiling_enabled) {
+        operation_count++;
+        total_flops += size;
+    }
+
+    return QGT_SUCCESS;
+}
+
+qgt_error_t geometric_core_multiply(void* result, const void* a, const void* b, size_t size) {
+    QGT_CHECK_NULL(result);
+    QGT_CHECK_NULL(a);
+    QGT_CHECK_NULL(b);
+    QGT_CHECK_ARGUMENT(size > 0);
+    QGT_CHECK_STATE(is_initialized);
+
+    float* out = (float*)result;
+    const float* in_a = (const float*)a;
+    const float* in_b = (const float*)b;
+
+    #ifdef __ARM_NEON
+    size_t simd_size = size & ~3;
+    for (size_t i = 0; i < simd_size; i += 4) {
+        float32x4_t va = vld1q_f32(in_a + i);
+        float32x4_t vb = vld1q_f32(in_b + i);
+        float32x4_t vr = vmulq_f32(va, vb);
+        vst1q_f32(out + i, vr);
+    }
+    for (size_t i = simd_size; i < size; i++) {
+        out[i] = in_a[i] * in_b[i];
+    }
+    #elif defined(__AVX512F__)
+    size_t simd_size = size & ~15;
+    for (size_t i = 0; i < simd_size; i += 16) {
+        __m512 va = _mm512_load_ps(in_a + i);
+        __m512 vb = _mm512_load_ps(in_b + i);
+        __m512 vr = _mm512_mul_ps(va, vb);
+        _mm512_store_ps(out + i, vr);
+    }
+    for (size_t i = simd_size; i < size; i++) {
+        out[i] = in_a[i] * in_b[i];
+    }
+    #else
+    #pragma omp parallel for if(size > 1000)
+    for (size_t i = 0; i < size; i++) {
+        out[i] = in_a[i] * in_b[i];
+    }
+    #endif
+
+    if (profiling_enabled) {
+        operation_count++;
+        total_flops += size;
+    }
+
+    return QGT_SUCCESS;
+}
+
+qgt_error_t geometric_core_divide(void* result, const void* a, const void* b, size_t size) {
+    QGT_CHECK_NULL(result);
+    QGT_CHECK_NULL(a);
+    QGT_CHECK_NULL(b);
+    QGT_CHECK_ARGUMENT(size > 0);
+    QGT_CHECK_STATE(is_initialized);
+
+    float* out = (float*)result;
+    const float* in_a = (const float*)a;
+    const float* in_b = (const float*)b;
+
+    #ifdef __ARM_NEON
+    size_t simd_size = size & ~3;
+    for (size_t i = 0; i < simd_size; i += 4) {
+        float32x4_t va = vld1q_f32(in_a + i);
+        float32x4_t vb = vld1q_f32(in_b + i);
+        float32x4_t vr = vdivq_f32(va, vb);
+        vst1q_f32(out + i, vr);
+    }
+    for (size_t i = simd_size; i < size; i++) {
+        if (fabsf(in_b[i]) < 1e-10f) {
+            out[i] = (in_a[i] >= 0) ? INFINITY : -INFINITY;
+        } else {
+            out[i] = in_a[i] / in_b[i];
+        }
+    }
+    #elif defined(__AVX512F__)
+    size_t simd_size = size & ~15;
+    for (size_t i = 0; i < simd_size; i += 16) {
+        __m512 va = _mm512_load_ps(in_a + i);
+        __m512 vb = _mm512_load_ps(in_b + i);
+        __m512 vr = _mm512_div_ps(va, vb);
+        _mm512_store_ps(out + i, vr);
+    }
+    for (size_t i = simd_size; i < size; i++) {
+        if (fabsf(in_b[i]) < 1e-10f) {
+            out[i] = (in_a[i] >= 0) ? INFINITY : -INFINITY;
+        } else {
+            out[i] = in_a[i] / in_b[i];
+        }
+    }
+    #else
+    #pragma omp parallel for if(size > 1000)
+    for (size_t i = 0; i < size; i++) {
+        if (fabsf(in_b[i]) < 1e-10f) {
+            out[i] = (in_a[i] >= 0) ? INFINITY : -INFINITY;
+        } else {
+            out[i] = in_a[i] / in_b[i];
+        }
+    }
+    #endif
+
+    if (profiling_enabled) {
+        operation_count++;
+        total_flops += size;
+    }
+
+    return QGT_SUCCESS;
+}
+
+// ============================================================================
+// Core Tensor Operations
+// ============================================================================
+
+qgt_error_t geometric_core_tensor_contract(void* result,
+                                         const void* a,
+                                         const void* b,
+                                         const size_t* dims_a,
+                                         const size_t* dims_b,
+                                         size_t rank_a,
+                                         size_t rank_b,
+                                         const size_t* contract_a,
+                                         const size_t* contract_b,
+                                         size_t num_contractions) {
+    QGT_CHECK_NULL(result);
+    QGT_CHECK_NULL(a);
+    QGT_CHECK_NULL(b);
+    QGT_CHECK_NULL(dims_a);
+    QGT_CHECK_NULL(dims_b);
+    QGT_CHECK_ARGUMENT(rank_a > 0);
+    QGT_CHECK_ARGUMENT(rank_b > 0);
+    QGT_CHECK_STATE(is_initialized);
+
+    const float* A = (const float*)a;
+    const float* B = (const float*)b;
+    float* C = (float*)result;
+
+    // Calculate total sizes
+    size_t size_a = 1, size_b = 1;
+    for (size_t i = 0; i < rank_a; i++) size_a *= dims_a[i];
+    for (size_t i = 0; i < rank_b; i++) size_b *= dims_b[i];
+
+    // Calculate contraction dimension size
+    size_t contract_size = 1;
+    for (size_t i = 0; i < num_contractions; i++) {
+        contract_size *= dims_a[contract_a[i]];
+    }
+
+    // Calculate output dimensions
+    size_t result_rank = rank_a + rank_b - 2 * num_contractions;
+    size_t result_size = 1;
+
+    // Compute strides for tensor A
+    size_t* strides_a = (size_t*)geometric_allocate(rank_a * sizeof(size_t));
+    if (!strides_a) return QGT_ERROR_MEMORY_ALLOCATION;
+
+    strides_a[rank_a - 1] = 1;
+    for (size_t i = rank_a - 1; i > 0; i--) {
+        strides_a[i - 1] = strides_a[i] * dims_a[i];
+    }
+
+    // Compute strides for tensor B
+    size_t* strides_b = (size_t*)geometric_allocate(rank_b * sizeof(size_t));
+    if (!strides_b) {
+        geometric_free(strides_a);
+        return QGT_ERROR_MEMORY_ALLOCATION;
+    }
+
+    strides_b[rank_b - 1] = 1;
+    for (size_t i = rank_b - 1; i > 0; i--) {
+        strides_b[i - 1] = strides_b[i] * dims_b[i];
+    }
+
+    // Calculate result size by excluding contracted dimensions
+    for (size_t i = 0; i < rank_a; i++) {
+        bool is_contracted = false;
+        for (size_t j = 0; j < num_contractions; j++) {
+            if (contract_a[j] == i) {
+                is_contracted = true;
+                break;
+            }
+        }
+        if (!is_contracted) {
+            result_size *= dims_a[i];
+        }
+    }
+    for (size_t i = 0; i < rank_b; i++) {
+        bool is_contracted = false;
+        for (size_t j = 0; j < num_contractions; j++) {
+            if (contract_b[j] == i) {
+                is_contracted = true;
+                break;
+            }
+        }
+        if (!is_contracted) {
+            result_size *= dims_b[i];
+        }
+    }
+
+    // Initialize result to zero
+    memset(C, 0, result_size * sizeof(float));
+
+    // Perform contraction (general case)
+    // This is a simplified implementation - production code would use optimal loop ordering
+    size_t outer_a = size_a / contract_size;
+    size_t outer_b = size_b / contract_size;
+
+    #pragma omp parallel for collapse(2) if(outer_a * outer_b > 1000)
+    for (size_t i = 0; i < outer_a; i++) {
+        for (size_t j = 0; j < outer_b; j++) {
+            float sum = 0.0f;
+            for (size_t k = 0; k < contract_size; k++) {
+                sum += A[i * contract_size + k] * B[k * outer_b + j];
+            }
+            C[i * outer_b + j] = sum;
+        }
+    }
+
+    geometric_free(strides_a);
+    geometric_free(strides_b);
+
+    if (profiling_enabled) {
+        operation_count++;
+        total_flops += 2 * result_size * contract_size;
+    }
+
+    return QGT_SUCCESS;
+}
+
+qgt_error_t geometric_core_tensor_transpose(void* result,
+                                          const void* tensor,
+                                          const size_t* dims,
+                                          size_t rank,
+                                          const size_t* perm) {
+    QGT_CHECK_NULL(result);
+    QGT_CHECK_NULL(tensor);
+    QGT_CHECK_NULL(dims);
+    QGT_CHECK_NULL(perm);
+    QGT_CHECK_ARGUMENT(rank > 0);
+    QGT_CHECK_STATE(is_initialized);
+
+    const float* in = (const float*)tensor;
+    float* out = (float*)result;
+
+    // Calculate total size and strides
+    size_t total_size = 1;
+    for (size_t i = 0; i < rank; i++) {
+        total_size *= dims[i];
+    }
+
+    // Compute input strides
+    size_t* in_strides = (size_t*)geometric_allocate(rank * sizeof(size_t));
+    if (!in_strides) return QGT_ERROR_MEMORY_ALLOCATION;
+
+    in_strides[rank - 1] = 1;
+    for (size_t i = rank - 1; i > 0; i--) {
+        in_strides[i - 1] = in_strides[i] * dims[i];
+    }
+
+    // Compute output strides based on permutation
+    size_t* out_strides = (size_t*)geometric_allocate(rank * sizeof(size_t));
+    if (!out_strides) {
+        geometric_free(in_strides);
+        return QGT_ERROR_MEMORY_ALLOCATION;
+    }
+
+    size_t* out_dims = (size_t*)geometric_allocate(rank * sizeof(size_t));
+    if (!out_dims) {
+        geometric_free(in_strides);
+        geometric_free(out_strides);
+        return QGT_ERROR_MEMORY_ALLOCATION;
+    }
+
+    for (size_t i = 0; i < rank; i++) {
+        out_dims[i] = dims[perm[i]];
+    }
+
+    out_strides[rank - 1] = 1;
+    for (size_t i = rank - 1; i > 0; i--) {
+        out_strides[i - 1] = out_strides[i] * out_dims[i];
+    }
+
+    // Perform transpose
+    #pragma omp parallel for if(total_size > 10000)
+    for (size_t i = 0; i < total_size; i++) {
+        // Convert linear index to multi-index
+        size_t idx = i;
+        size_t out_linear = 0;
+
+        for (size_t d = 0; d < rank; d++) {
+            size_t coord = idx / in_strides[d];
+            idx %= in_strides[d];
+
+            // Find position in output
+            for (size_t p = 0; p < rank; p++) {
+                if (perm[p] == d) {
+                    out_linear += coord * out_strides[p];
+                    break;
+                }
+            }
+        }
+
+        out[out_linear] = in[i];
+    }
+
+    geometric_free(in_strides);
+    geometric_free(out_strides);
+    geometric_free(out_dims);
+
+    if (profiling_enabled) {
+        operation_count++;
+        total_flops += total_size;
+    }
+
+    return QGT_SUCCESS;
+}
+
+qgt_error_t geometric_core_tensor_decompose(void* u, void* s, void* v,
+                                          const void* tensor,
+                                          const size_t* dims,
+                                          size_t rank) {
+    QGT_CHECK_NULL(u);
+    QGT_CHECK_NULL(s);
+    QGT_CHECK_NULL(v);
+    QGT_CHECK_NULL(tensor);
+    QGT_CHECK_NULL(dims);
+    QGT_CHECK_ARGUMENT(rank >= 2);
+    QGT_CHECK_STATE(is_initialized);
+
+    // Reshape tensor to matrix for SVD
+    size_t left_size = 1, right_size = 1;
+    size_t mid = rank / 2;
+
+    for (size_t i = 0; i < mid; i++) {
+        left_size *= dims[i];
+    }
+    for (size_t i = mid; i < rank; i++) {
+        right_size *= dims[i];
+    }
+
+    size_t min_dim = (left_size < right_size) ? left_size : right_size;
+
+    const float* A = (const float*)tensor;
+    float* U = (float*)u;
+    float* S = (float*)s;
+    float* V = (float*)v;
+
+    // Initialize U to identity-like matrix
+    memset(U, 0, left_size * min_dim * sizeof(float));
+    for (size_t i = 0; i < min_dim; i++) {
+        U[i * min_dim + i] = 1.0f;
+    }
+
+    // Initialize V to identity-like matrix
+    memset(V, 0, min_dim * right_size * sizeof(float));
+    for (size_t i = 0; i < min_dim; i++) {
+        V[i * right_size + i] = 1.0f;
+    }
+
+    // Copy input to working matrix
+    float* work = (float*)geometric_allocate(left_size * right_size * sizeof(float));
+    if (!work) return QGT_ERROR_MEMORY_ALLOCATION;
+
+    memcpy(work, A, left_size * right_size * sizeof(float));
+
+    // Perform Jacobi SVD iteration
+    const size_t max_iters = 100;
+    const float tolerance = 1e-6f;
+
+    for (size_t iter = 0; iter < max_iters; iter++) {
+        float max_off_diag = 0.0f;
+
+        // Sweep through all pairs
+        for (size_t p = 0; p < min_dim; p++) {
+            for (size_t q = p + 1; q < min_dim; q++) {
+                // Compute 2x2 submatrix elements
+                float app = 0.0f, aqq = 0.0f, apq = 0.0f;
+
+                for (size_t i = 0; i < left_size; i++) {
+                    app += work[i * right_size + p] * work[i * right_size + p];
+                    aqq += work[i * right_size + q] * work[i * right_size + q];
+                    apq += work[i * right_size + p] * work[i * right_size + q];
+                }
+
+                if (fabsf(apq) > max_off_diag) {
+                    max_off_diag = fabsf(apq);
+                }
+
+                if (fabsf(apq) > tolerance) {
+                    // Compute rotation angle
+                    float tau = (aqq - app) / (2.0f * apq);
+                    float t = (tau >= 0) ?
+                        1.0f / (tau + sqrtf(1.0f + tau * tau)) :
+                        -1.0f / (-tau + sqrtf(1.0f + tau * tau));
+
+                    float c = 1.0f / sqrtf(1.0f + t * t);
+                    float sn = t * c;
+
+                    // Apply rotation to columns of work matrix
+                    for (size_t i = 0; i < left_size; i++) {
+                        float wp = work[i * right_size + p];
+                        float wq = work[i * right_size + q];
+                        work[i * right_size + p] = c * wp - sn * wq;
+                        work[i * right_size + q] = sn * wp + c * wq;
+                    }
+
+                    // Accumulate right rotation in V
+                    for (size_t i = 0; i < min_dim; i++) {
+                        float vp = V[i * right_size + p];
+                        float vq = V[i * right_size + q];
+                        V[i * right_size + p] = c * vp - sn * vq;
+                        V[i * right_size + q] = sn * vp + c * vq;
+                    }
+                }
+            }
+        }
+
+        // Check convergence
+        if (max_off_diag < tolerance) {
+            break;
+        }
+    }
+
+    // Extract singular values and U
+    for (size_t i = 0; i < min_dim; i++) {
+        float sigma = 0.0f;
+        for (size_t j = 0; j < left_size; j++) {
+            sigma += work[j * right_size + i] * work[j * right_size + i];
+        }
+        S[i] = sqrtf(sigma);
+
+        // Normalize column to get U
+        if (S[i] > tolerance) {
+            for (size_t j = 0; j < left_size; j++) {
+                U[j * min_dim + i] = work[j * right_size + i] / S[i];
+            }
+        }
+    }
+
+    geometric_free(work);
+
+    if (profiling_enabled) {
+        operation_count++;
+        total_flops += left_size * right_size * min_dim;
+    }
+
+    return QGT_SUCCESS;
+}
+
+// ============================================================================
+// Core Error Handling and Utility Functions
+// ============================================================================
+
+const char* geometric_core_get_error_string(qgt_error_t error) {
+    switch (error) {
+        case QGT_SUCCESS:
+            return "Success";
+        case QGT_ERROR_MEMORY_ALLOCATION:
+            return "Memory allocation failed";
+        case QGT_ERROR_INVALID_PARAMETER:
+            return "Invalid parameter";
+        case QGT_ERROR_NOT_INITIALIZED:
+            return "Not initialized";
+        case QGT_ERROR_INVALID_STATE:
+            return "Invalid state";
+        case QGT_ERROR_RESOURCE_EXHAUSTED:
+            return "Resource exhausted";
+        case QGT_ERROR_TIMEOUT:
+            return "Operation timed out";
+        case QGT_ERROR_DEVICE:
+            return "Device error";
+        default:
+            return "Unknown error";
+    }
+}
+
+qgt_error_t geometric_core_get_last_error(void) {
+    return last_error;
+}
+
+void geometric_core_clear_error(void) {
+    last_error = QGT_SUCCESS;
+}
+
+qgt_error_t geometric_core_get_version(size_t* major, size_t* minor, size_t* patch) {
+    QGT_CHECK_NULL(major);
+    QGT_CHECK_NULL(minor);
+    QGT_CHECK_NULL(patch);
+
+    *major = 1;
+    *minor = 0;
+    *patch = 0;
+
+    return QGT_SUCCESS;
+}
+
+qgt_error_t geometric_core_get_capabilities(void* capabilities) {
+    QGT_CHECK_NULL(capabilities);
+    QGT_CHECK_STATE(is_initialized);
+
+    typedef struct {
+        bool has_openmp;
+        bool has_cuda;
+        bool has_metal;
+        bool has_neon;
+        bool has_avx;
+        bool has_avx512;
+        size_t num_threads;
+        size_t num_devices;
+    } Capabilities;
+
+    Capabilities* caps = (Capabilities*)capabilities;
+
+    #ifdef _OPENMP
+    caps->has_openmp = true;
+    caps->num_threads = omp_get_max_threads();
+    #else
+    caps->has_openmp = false;
+    caps->num_threads = 1;
+    #endif
+
+    #ifdef CUDA_AVAILABLE
+    caps->has_cuda = true;
+    #else
+    caps->has_cuda = false;
+    #endif
+
+    #ifdef __APPLE__
+    caps->has_metal = true;
+    #else
+    caps->has_metal = false;
+    #endif
+
+    #ifdef __ARM_NEON
+    caps->has_neon = true;
+    #else
+    caps->has_neon = false;
+    #endif
+
+    #if defined(__AVX__)
+    caps->has_avx = true;
+    #else
+    caps->has_avx = false;
+    #endif
+
+    #if defined(__AVX512F__)
+    caps->has_avx512 = true;
+    #else
+    caps->has_avx512 = false;
+    #endif
+
+    geometric_core_get_device_count(&caps->num_devices);
+
+    return QGT_SUCCESS;
+}
+
+qgt_error_t geometric_core_set_debug_mode(bool enable) {
+    debug_mode = enable;
+    return QGT_SUCCESS;
+}
+
+qgt_error_t geometric_core_set_log_level(size_t level) {
+    log_level = level;
     return QGT_SUCCESS;
 }

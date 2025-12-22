@@ -103,7 +103,7 @@ static uint16_t get_size_class(size_t size) {
 }
 
 // Initialize memory pool
-MemoryPool* init_memory_pool(const PoolConfig* config) {
+MemoryPool* create_memory_pool(const PoolConfig* config) {
     if (!config) {
         geometric_log_error("Null config passed to init_memory_pool");
         return NULL;
@@ -330,7 +330,7 @@ static void update_peak_memory(MemoryPool* pool, size_t current) {
 }
 
 // Allocate memory
-void* pool_malloc(MemoryPool* pool, size_t size) {
+void* pool_allocate(MemoryPool* pool, size_t size) {
     if (!pool || !size) {
         return NULL;
     }
@@ -500,7 +500,7 @@ void pool_free(MemoryPool* pool, void* ptr) {
 }
 
 // Cleanup memory pool
-void cleanup_memory_pool(MemoryPool* pool) {
+void destroy_memory_pool(MemoryPool* pool) {
     if (!pool) return;
     
     // Free all blocks in size classes

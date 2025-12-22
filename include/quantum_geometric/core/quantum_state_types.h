@@ -50,7 +50,9 @@ struct quantum_operator_t {
     size_t dimension;                // Operator dimension
     ComplexFloat* matrix;            // Operator matrix elements
     void* auxiliary_data;            // Additional operator data
-    bool is_hermitian;              // Whether operator is Hermitian
+    bool is_hermitian;               // Whether operator is Hermitian
+    void* device_data;               // GPU device buffer (if on device)
+    HardwareType device_type;        // Current device type (CPU, GPU, Metal)
 };
 
 // Measurement structure

@@ -3,7 +3,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <immintrin.h>
+
+// Platform-specific SIMD includes
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    #include <immintrin.h>
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    #if defined(__ARM_NEON) || defined(__ARM_NEON__)
+        #include <arm_neon.h>
+    #endif
+#endif
 
 // Constants for geometric operations
 #define MAX_SPHERICAL_DEGREE 4

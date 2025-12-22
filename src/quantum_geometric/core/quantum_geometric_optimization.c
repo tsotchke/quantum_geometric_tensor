@@ -1,4 +1,5 @@
 #include "quantum_geometric/core/quantum_geometric_optimization.h"
+#include "quantum_geometric/core/quantum_geometric_operations.h"
 #include "quantum_geometric/core/quantum_geometric_types.h"
 #include "quantum_geometric/core/quantum_geometric_constants.h"
 #include "quantum_geometric/core/memory_pool.h"
@@ -25,7 +26,7 @@ static qgt_error_t init_thread_local_storage(size_t size) {
         if (thread_local_buffer) {
             pool_free(g_state.pool, thread_local_buffer);
         }
-        thread_local_buffer = pool_malloc(g_state.pool, size);
+        thread_local_buffer = pool_allocate(g_state.pool, size);
         if (!thread_local_buffer) {
             return QGT_ERROR_MEMORY_ALLOCATION;
         }
@@ -43,13 +44,7 @@ static void cleanup_thread_local_storage(void) {
     }
 }
 
-// Global state from quantum_geometric_core.h
-extern struct {
-    bool initialized;
-    quantum_geometric_config_t config;
-    MemoryPool* pool;
-    quantum_geometric_hardware_t* hardware;
-} g_state;
+// g_state is declared in quantum_geometric_operations.h
 
 // Block sizes and optimization settings
 #define QGT_OPT_BLOCK_SIZE QGT_MAX_BLOCK_SIZE       // 1024 - Maximizes SIMD vectorization
@@ -72,7 +67,7 @@ qgt_error_t geometric_create_optimization(quantum_geometric_optimization_t** opt
     QGT_CHECK_ARGUMENT(dimension > 0 && dimension <= QGT_MAX_DIMENSIONS);
     QGT_CHECK_STATE(validate_state());
     
-    *optimization = pool_malloc(g_state.pool, sizeof(quantum_geometric_optimization_t));
+    *optimization = pool_allocate(g_state.pool, sizeof(quantum_geometric_optimization_t));
     if (!*optimization) {
         return QGT_ERROR_MEMORY_ALLOCATION;
     }
@@ -80,7 +75,7 @@ qgt_error_t geometric_create_optimization(quantum_geometric_optimization_t** opt
     // Allocate optimization parameters with alignment for SIMD
     size_t size = dimension * sizeof(ComplexFloat);
     size_t aligned_size = (size + QGT_CACHE_LINE_SIZE - 1) & ~(QGT_CACHE_LINE_SIZE - 1);
-    (*optimization)->parameters = pool_malloc(g_state.pool, aligned_size);
+    (*optimization)->parameters = pool_allocate(g_state.pool, aligned_size);
     if (!(*optimization)->parameters) {
         pool_free(g_state.pool, *optimization);
         return QGT_ERROR_MEMORY_ALLOCATION;
@@ -319,7 +314,7 @@ qgt_error_t geometric_check_convergence(const quantum_geometric_optimization_t* 
     size_t block_size = QGT_OPT_BLOCK_SIZE / sizeof(double);
     
     // Allocate thread-local storage for norm calculation
-    double* thread_norms = pool_malloc(g_state.pool, omp_get_max_threads() * sizeof(double));
+    double* thread_norms = pool_allocate(g_state.pool, omp_get_max_threads() * sizeof(double));
     if (!thread_norms) return QGT_ERROR_MEMORY_ALLOCATION;
     memset(thread_norms, 0, omp_get_max_threads() * sizeof(double));
     

@@ -4,14 +4,25 @@
 #include <math.h>
 #include <string.h>
 #include <complex.h>
-#include <immintrin.h>
+
+// Platform-specific SIMD includes
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    #define QGT_USE_AVX 1
+    #include <immintrin.h>
+#elif defined(__aarch64__) || defined(_M_ARM64) || defined(__arm__) || defined(_M_ARM)
+    #define QGT_USE_NEON 1
+    #if defined(__ARM_NEON) || defined(__ARM_NEON__)
+        #include <arm_neon.h>
+    #endif
+#endif
 
 /**
  * @file quantum_topological_operations.c
  * @brief Implementation of topological operations with SIMD optimization and thread safety
  */
 
-/* SIMD helper for braiding operations */
+#if QGT_USE_AVX
+/* SIMD helper for braiding operations - AVX version */
 static inline void qgt_braid_multiply_pd(__m256d* result_real, __m256d* result_imag,
                                        const __m256d* braid1_real, const __m256d* braid1_imag,
                                        const __m256d* braid2_real, const __m256d* braid2_imag) {
@@ -26,7 +37,7 @@ static inline void qgt_braid_multiply_pd(__m256d* result_real, __m256d* result_i
     );
 }
 
-/* SIMD helper functions for matrix operations */
+/* SIMD helper functions for matrix operations - AVX version */
 static inline void qgt_matrix_multiply_complex_pd(__m256d* real_result, __m256d* imag_result,
                                                 const __m256d* real1, const __m256d* imag1,
                                                 const __m256d* real2, const __m256d* imag2,
@@ -44,6 +55,69 @@ static inline void qgt_matrix_multiply_complex_pd(__m256d* real_result, __m256d*
         imag_result[i/4] = imag_prod;
     }
 }
+
+#elif QGT_USE_NEON
+/* SIMD helper for braiding operations - NEON version */
+static inline void qgt_braid_multiply_pd(double* result_real, double* result_imag,
+                                        const double* braid1_real, const double* braid1_imag,
+                                        const double* braid2_real, const double* braid2_imag,
+                                        size_t count) {
+    for (size_t i = 0; i + 2 <= count; i += 2) {
+        float64x2_t b1r = vld1q_f64(braid1_real + i);
+        float64x2_t b1i = vld1q_f64(braid1_imag + i);
+        float64x2_t b2r = vld1q_f64(braid2_real + i);
+        float64x2_t b2i = vld1q_f64(braid2_imag + i);
+
+        float64x2_t rr = vsubq_f64(vmulq_f64(b1r, b2r), vmulq_f64(b1i, b2i));
+        float64x2_t ri = vaddq_f64(vmulq_f64(b1r, b2i), vmulq_f64(b1i, b2r));
+
+        vst1q_f64(result_real + i, rr);
+        vst1q_f64(result_imag + i, ri);
+    }
+}
+
+/* SIMD helper functions for matrix operations - NEON version */
+static inline void qgt_matrix_multiply_complex_pd(double* real_result, double* imag_result,
+                                                 const double* real1, const double* imag1,
+                                                 const double* real2, const double* imag2,
+                                                 size_t n) {
+    for (size_t i = 0; i + 2 <= n; i += 2) {
+        float64x2_t r1 = vld1q_f64(real1 + i);
+        float64x2_t i1 = vld1q_f64(imag1 + i);
+        float64x2_t r2 = vld1q_f64(real2 + i);
+        float64x2_t i2 = vld1q_f64(imag2 + i);
+
+        float64x2_t rr = vsubq_f64(vmulq_f64(r1, r2), vmulq_f64(i1, i2));
+        float64x2_t ri = vaddq_f64(vmulq_f64(r1, i2), vmulq_f64(i1, r2));
+
+        vst1q_f64(real_result + i, rr);
+        vst1q_f64(imag_result + i, ri);
+    }
+}
+
+#else
+/* Scalar fallback for braiding operations */
+static inline void qgt_braid_multiply_pd(double* result_real, double* result_imag,
+                                        const double* braid1_real, const double* braid1_imag,
+                                        const double* braid2_real, const double* braid2_imag,
+                                        size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        result_real[i] = braid1_real[i] * braid2_real[i] - braid1_imag[i] * braid2_imag[i];
+        result_imag[i] = braid1_real[i] * braid2_imag[i] + braid1_imag[i] * braid2_real[i];
+    }
+}
+
+/* Scalar fallback for matrix operations */
+static inline void qgt_matrix_multiply_complex_pd(double* real_result, double* imag_result,
+                                                 const double* real1, const double* imag1,
+                                                 const double* real2, const double* imag2,
+                                                 size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        real_result[i] = real1[i] * real2[i] - imag1[i] * imag2[i];
+        imag_result[i] = real1[i] * imag2[i] + imag1[i] * real2[i];
+    }
+}
+#endif
 
 /* Quantum-accelerated boundary matrix computation using phase estimation - O(log N) */
 static qgt_error_t compute_boundary_matrix(const quantum_geometric_tensor* tensor,

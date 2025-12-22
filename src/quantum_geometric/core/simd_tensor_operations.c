@@ -9,10 +9,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef __x86_64__
-#include <immintrin.h>
-#else
-#include <arm_neon.h>
+// Platform-specific SIMD includes
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    #include <immintrin.h>
+    #define QGT_USE_AVX 1
+#elif defined(__aarch64__) || defined(_M_ARM64) || defined(__arm__) || defined(_M_ARM)
+    #if defined(__ARM_NEON) || defined(__ARM_NEON__)
+        #include <arm_neon.h>
+        #define QGT_USE_NEON 1
+    #endif
 #endif
 
 #define MAX_TENSOR_RANK 16

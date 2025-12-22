@@ -46,6 +46,48 @@ typedef enum {
     DWAVE_PROBLEM_DQM        // Discrete Quadratic Model
 } DWaveProblemType;
 
+// ============================================================================
+// Generic Quantum Problem Types
+// Used by optimized backends for problem representation
+// ============================================================================
+
+#define MAX_TERM_QUBITS 8
+
+/**
+ * @brief A term in a quantum problem (Hamiltonian term)
+ */
+typedef struct quantum_term {
+    size_t num_qubits;                  // Number of qubits in term
+    size_t qubits[MAX_TERM_QUBITS];     // Qubit indices
+    double coefficient;                  // Term coefficient
+} quantum_term;
+
+/**
+ * @brief Quantum optimization problem representation
+ */
+typedef struct quantum_problem {
+    quantum_term* terms;                 // Array of problem terms
+    size_t num_terms;                    // Number of terms
+    size_t capacity;                     // Allocated capacity
+    size_t num_qubits;                   // Total number of qubits
+    double energy_offset;                // Constant energy offset
+} quantum_problem;
+
+/**
+ * @brief D-Wave optimization result (distinct from quantum_result in quantum_circuit.h)
+ */
+typedef struct dwave_result {
+    double* energies;                    // Solution energies
+    int32_t** solutions;                 // Solution configurations
+    double* probabilities;               // Solution probabilities
+    size_t num_solutions;                // Number of solutions
+    size_t num_qubits;                   // Number of qubits per solution
+    double best_energy;                  // Best (lowest) energy found
+    int32_t* best_solution;              // Best solution configuration
+    double execution_time;               // Execution time in seconds
+    void* raw_data;                      // Backend-specific raw data
+} dwave_result;
+
 // D-Wave sampling parameters
 typedef struct {
     uint32_t num_reads;          // Number of samples
@@ -85,11 +127,14 @@ typedef struct {
     DWaveSolverType solver_type;
     DWaveProblemType problem_type;
     DWaveSamplingParams sampling_params;
-    NoiseModel noise_model;
-    MitigationParams error_mitigation;
-    SimulatorConfig simulator_config; // For emulation mode
+    struct NoiseModel noise_model;
+    struct MitigationParams error_mitigation;
+    struct SimulatorConfig simulator_config; // For emulation mode
     void* custom_config;
 } DWaveBackendConfig;
+
+// DWave config - typedef for convenience
+typedef struct DWaveConfig DWaveConfig;
 
 // D-Wave problem specification
 typedef struct {
@@ -178,7 +223,7 @@ double get_dwave_estimated_runtime(DWaveConfig* config, const DWaveProblem* prob
 bool optimize_dwave_problem(DWaveProblem* problem, const DWaveCapabilities* capabilities);
 
 // Apply error mitigation
-bool apply_dwave_error_mitigation(DWaveJobResult* result, const MitigationParams* params);
+bool apply_dwave_error_mitigation(DWaveJobResult* result, const struct MitigationParams* params);
 
 // Convert between problem formats
 DWaveProblem* qubo_to_ising(const DWaveProblem* qubo);

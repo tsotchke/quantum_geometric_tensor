@@ -5,12 +5,18 @@ cmake-build-*/
 Debug/
 Release/
 
+# Doxygen
+doc/
+
 # IDE directories
 .vscode/
 .idea/
 *.swp
 *.swo
 .DS_Store
+
+# Memory bank
+memory-bank/
 
 # Compiled Object files
 *.slo

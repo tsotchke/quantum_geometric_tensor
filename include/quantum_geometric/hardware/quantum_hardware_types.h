@@ -9,12 +9,28 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
+
+// Include base types for HardwareType (defined there)
+#include "quantum_geometric/core/quantum_base_types.h"
+
 #include "hardware_capabilities.h"
 #include "quantum_backend_types.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// Forward declarations for types used in this header
+struct QuantumCircuit;
+struct QuantumProgram;
+struct ExecutionResult;
+struct HardwareGate;
+struct IBMConfig;
+struct RigettiConfig;
+struct DWaveConfig;
+struct SimulatorConfig;
+struct MitigationParams;
+struct NoiseModel;
 
 // Hardware capability flags
 typedef enum {
@@ -46,14 +62,7 @@ typedef enum {
     HARDWARE_SIMULATOR
 } HardwareBackendType;
 
-// Hardware type enum
-typedef enum {
-    HARDWARE_TYPE_CPU,
-    HARDWARE_TYPE_GPU,
-    HARDWARE_TYPE_QPU,
-    HARDWARE_TYPE_SIMULATOR,
-    HARDWARE_TYPE_METAL
-} HardwareType;
+// HardwareType is defined in quantum_base_types.h - do not redefine
 
 // Backend type enum
 typedef enum {
@@ -73,6 +82,8 @@ typedef enum {
 } MitigationType;
 
 // IBM backend configuration
+#ifndef IBM_BACKEND_CONFIG_DEFINED
+#define IBM_BACKEND_CONFIG_DEFINED
 typedef struct IBMBackendConfig {
     char* backend_name;
     char* hub;
@@ -85,6 +96,7 @@ typedef struct IBMBackendConfig {
     bool readout_error_mitigation;
     bool measurement_error_mitigation;
 } IBMBackendConfig;
+#endif
 
 // IBM backend state
 typedef struct IBMBackendState {
@@ -108,6 +120,9 @@ typedef struct QuantumHardwareCapabilities {
     bool supports_distributed;        // Distributed computing support
     bool supports_feedback;           // Real-time feedback support
     bool supports_reset;              // Qubit reset support
+    bool supports_gates;              // Gate-based quantum operations
+    bool supports_measurement;        // Measurement support
+    bool supports_annealing;          // Quantum annealing support
     uint32_t max_qubits;              // Maximum number of qubits
     uint32_t max_gates;               // Maximum number of gates
     uint32_t max_depth;               // Maximum circuit depth
@@ -117,9 +132,14 @@ typedef struct QuantumHardwareCapabilities {
     double coherence_time;            // Qubit coherence time
     double gate_time;                 // Gate operation time
     double readout_time;              // Measurement readout time
+    size_t num_gates;                 // Number of available gates
+    char** available_gates;           // Names of available gates
     void* extensions;                 // Backend-specific extensions
     void* device_specific;            // Device-specific data
 } QuantumHardwareCapabilities;
+
+// Alias for HardwareCapabilities used in abstraction layer
+typedef QuantumHardwareCapabilities HardwareCapabilities;
 
 // Function declarations for runtime capability detection
 SystemCapabilities detect_system_capabilities(void);
@@ -141,12 +161,24 @@ struct NoiseModel {
     void* backend_specific_noise;  // Backend-specific noise parameters
 };
 
+// Generic gate structure (for named gates)
 typedef struct {
     char name[64];                    // Gate name
     uint32_t num_qubits;             // Number of qubits
     uint32_t* qubit_indices;         // Target qubit indices
     double* parameters;              // Gate parameters
     void* custom_data;               // Custom gate data
+} GenericQuantumGate;
+
+// Gate structure for hardware abstraction (type-based)
+typedef struct {
+    gate_type_t type;                // Gate type (GATE_X, GATE_H, etc.)
+    uint32_t qubit;                  // Target qubit for single-qubit gates
+    uint32_t control_qubit;          // Control qubit for 2-qubit gates
+    uint32_t target_qubit;           // Target qubit for 2-qubit gates
+    double parameter;                // Rotation parameter
+    double* parameters;              // Multiple parameters (optional)
+    size_t num_parameters;           // Number of parameters
 } QuantumGate;
 
 // Hardware configuration
@@ -215,6 +247,16 @@ typedef struct {
         double fragmentation;
         double utilization;
     } memory;
+
+    // Production monitoring metrics
+    double error_rate;
+    double avg_latency;
+    double peak_memory_usage;
+    double avg_cpu_utilization;
+    double avg_gpu_utilization;
+    double success_rate;
+    double false_positive_rate;
+    double recovery_success_rate;
 } PerformanceMetrics;
 
 typedef struct {
@@ -236,6 +278,141 @@ typedef struct {
         struct SimulatorState simulator;
     } state;
 } QuantumBackendState;
+
+// ============================================================================
+// Hardware Abstraction Types
+// ============================================================================
+
+// HARDWARE_METAL is a backend type for Apple Metal GPU acceleration
+#define HARDWARE_METAL 4
+
+// Circuit validation result
+typedef struct ValidationResult {
+    bool is_valid;                    // Whether the circuit is valid
+    char* error_message;              // Error message if invalid
+    size_t error_location;            // Location of error in circuit
+    int error_code;                   // Error code
+} ValidationResult;
+
+// Error mitigation strategy
+typedef struct ErrorMitigationStrategy {
+    MitigationType type;              // Mitigation type
+    double* noise_amplification;      // Noise amplification factors for ZNE
+    size_t num_amplification;         // Number of amplification factors
+    double* quasi_probabilities;      // Quasi-probabilities for PEC
+    size_t num_qp;                    // Number of quasi-probability entries
+    void* custom_data;                // Custom mitigation data
+} ErrorMitigationStrategy;
+
+// Optimized circuit structure
+typedef struct OptimizedCircuit {
+    struct QuantumCircuit* circuit;   // The optimized circuit
+    struct MitigationParams* error_mitigation;  // Error mitigation parameters
+    int optimization_level;           // Optimization level applied
+    double estimated_fidelity;        // Estimated fidelity after optimization
+    double* qubit_mapping;            // Logical to physical qubit mapping
+    size_t num_qubits;                // Number of qubits
+} OptimizedCircuit;
+
+// D-Wave QUBO (Quadratic Unconstrained Binary Optimization) problem
+typedef struct QUBO {
+    double* linear;                   // Linear terms (bias)
+    double* quadratic;                // Quadratic terms (coupling)
+    size_t num_variables;             // Number of binary variables
+    size_t num_couplings;             // Number of quadratic terms
+    uint32_t* variable_indices;       // Variable indices for quadratic terms
+    double offset;                    // Constant offset
+} QUBO;
+
+// D-Wave QUBO solution result
+typedef struct QUBOResult {
+    int* solutions;                   // Array of solutions (binary values)
+    double* energies;                 // Energy of each solution
+    size_t num_solutions;             // Number of solutions
+    size_t num_variables;             // Number of variables per solution
+    int* num_occurrences;             // Occurrence count of each solution
+    double timing_total;              // Total execution time
+    double timing_sampling;           // Sampling time
+    void* raw_data;                   // Raw backend data
+} QUBOResult;
+
+// Crosstalk mitigation data
+typedef struct CrosstalkMitigation {
+    double** crosstalk_matrix;        // Crosstalk coefficient matrix
+    size_t num_qubits;                // Number of qubits
+    double** compensation_pulses;     // Compensation pulse parameters
+} CrosstalkMitigation;
+
+// Crosstalk map
+typedef struct CrosstalkMap {
+    double** coefficients;            // Crosstalk coefficients between qubit pairs
+    size_t num_qubits;                // Number of qubits
+    CrosstalkMitigation* mitigation_strategies;  // Mitigation strategies
+} CrosstalkMap;
+
+// Qubit connectivity map
+typedef struct ConnectivityMap {
+    bool** connected;                 // Adjacency matrix of connected qubits
+    size_t num_qubits;                // Number of qubits
+    double** coupling_strengths;      // Coupling strengths between qubits
+    double** gate_fidelities;         // Two-qubit gate fidelities
+} ConnectivityMap;
+
+// Error rate data
+typedef struct ErrorRates {
+    double* single_qubit_errors;      // Single-qubit gate errors
+    double* two_qubit_errors;         // Two-qubit gate errors
+    double* readout_errors;           // Readout/measurement errors
+    double* t1_times;                 // T1 relaxation times
+    double* t2_times;                 // T2 coherence times
+    size_t num_qubits;                // Number of qubits
+} ErrorRates;
+
+// Unified quantum hardware structure
+typedef struct QuantumHardware {
+    HardwareBackendType type;         // Backend type (IBM, Rigetti, etc.)
+    QuantumHardwareCapabilities capabilities;  // Hardware capabilities
+    ConnectivityMap connectivity;     // Qubit connectivity
+    ErrorRates error_rates;           // Error rates
+    struct NoiseModel noise_model;    // Noise model
+    CrosstalkMap crosstalk;           // Crosstalk information
+    union {
+        struct IBMConfig* ibm;
+        struct RigettiConfig* rigetti;
+        struct DWaveConfig* dwave;
+        struct SimulatorConfig* simulator;
+    } backend;
+    void* device_data;                // Device-specific data
+} QuantumHardware;
+
+// Helper function prototypes for new types
+void cleanup_optimized_circuit(OptimizedCircuit* circuit);
+void cleanup_qubo(QUBO* qubo);
+void cleanup_qubo_result(QUBOResult* result);
+void cleanup_connectivity(ConnectivityMap* connectivity);
+void cleanup_noise_model(struct NoiseModel* noise_model);
+void cleanup_crosstalk(CrosstalkMap* crosstalk);
+QUBO* program_to_qubo(const struct QuantumProgram* program);
+QUBO* circuit_to_qubo(const struct QuantumCircuit* circuit);
+void convert_qubo_result(const QUBOResult* qubo_result, struct ExecutionResult* result);
+bool is_qubo_circuit(const struct QuantumCircuit* circuit);
+size_t compute_circuit_depth(const struct QuantumCircuit* circuit);
+bool is_gate_supported(const struct HardwareGate* gate, const QuantumHardwareCapabilities* caps);
+bool check_connectivity(const struct QuantumCircuit* circuit, const ConnectivityMap* connectivity);
+double estimate_circuit_fidelity(const struct QuantumCircuit* circuit, const ErrorRates* rates, const struct NoiseModel* noise);
+ErrorMitigationStrategy select_error_mitigation(const struct QuantumCircuit* circuit, const ErrorRates* rates, const struct NoiseModel* noise);
+
+// Backend-specific functions
+CrosstalkMap get_rigetti_crosstalk(struct RigettiConfig* config);
+CrosstalkMitigation* get_rigetti_crosstalk_mitigation(struct RigettiConfig* config);
+CrosstalkMap get_ibm_crosstalk(struct IBMConfig* config);
+CrosstalkMap get_dwave_crosstalk(struct DWaveConfig* config);
+
+// Circuit submission functions
+int submit_rigetti_circuit(struct RigettiConfig* config, struct QuantumCircuit* circuit, struct MitigationParams* mitigation, struct ExecutionResult* result);
+int submit_ibm_circuit(struct IBMConfig* config, struct QuantumCircuit* circuit, struct ExecutionResult* result);
+bool submit_dwave_problem(struct DWaveConfig* config, QUBO* qubo, QUBOResult* result);
+int simulate_circuit(struct QuantumCircuit* circuit, struct ExecutionResult* result);
 
 #ifdef __cplusplus
 }

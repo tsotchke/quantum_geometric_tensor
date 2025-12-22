@@ -254,9 +254,16 @@ void geometric_tensor_destroy(quantum_geometric_tensor_t* tensor) {
     }
 }
 
-qgt_error_t geometric_tensor_initialize_random(quantum_geometric_tensor_t* tensor) {
+qgt_error_t geometric_tensor_initialize_random(quantum_geometric_tensor_t* tensor,
+                                              float min_val, float max_val) {
     QGT_CHECK_NULL(tensor);
     QGT_CHECK_NULL(tensor->components);
+
+    if (min_val >= max_val) {
+        return QGT_ERROR_INVALID_ARGUMENT;
+    }
+
+    const float range = max_val - min_val;
 
     // Initialize QRNG context
     qrng_ctx* rng_ctx = NULL;
@@ -285,13 +292,13 @@ qgt_error_t geometric_tensor_initialize_random(quantum_geometric_tensor_t* tenso
             for (size_t j = i; j < dim; j++) {
                 if (i == j) {
                     // Diagonal elements must be real for Hermitian matrices
-                    float real = 2.0f * ((float)qrng_double(rng_ctx)) - 1.0f;
+                    float real = min_val + ((float)qrng_double(rng_ctx)) * range;
                     data[i * dim + i].real = real;
                     data[i * dim + i].imag = 0.0f;
                 } else {
                     // Generate random values for upper triangle
-                    float real = 2.0f * ((float)qrng_double(rng_ctx)) - 1.0f;
-                    float imag = 2.0f * ((float)qrng_double(rng_ctx)) - 1.0f;
+                    float real = min_val + ((float)qrng_double(rng_ctx)) * range;
+                    float imag = min_val + ((float)qrng_double(rng_ctx)) * range;
                     
                     // Normalize to ensure unit magnitude
                     float magnitude = sqrtf(real * real + imag * imag);
@@ -313,17 +320,17 @@ qgt_error_t geometric_tensor_initialize_random(quantum_geometric_tensor_t* tenso
     } else {
         // For non-Hermitian tensors, use standard random initialization
         for (size_t i = 0; i < tensor->total_elements; i++) {
-            // Generate random values between -1 and 1
-            float real = 2.0f * ((float)qrng_double(rng_ctx)) - 1.0f;
-            float imag = 2.0f * ((float)qrng_double(rng_ctx)) - 1.0f;
-            
+            // Generate random values in specified range
+            float real = min_val + ((float)qrng_double(rng_ctx)) * range;
+            float imag = min_val + ((float)qrng_double(rng_ctx)) * range;
+
             // Normalize to ensure unit magnitude
             float magnitude = sqrtf(real * real + imag * imag);
             if (magnitude > 0) {
                 real /= magnitude;
                 imag /= magnitude;
             }
-            
+
             data[i].real = real;
             data[i].imag = imag;
         }

@@ -72,7 +72,7 @@ typedef struct {
     void* kernel_params;         // Additional parameters
 } KernelConfig;
 
-// Performance metrics
+// Multi-GPU performance metrics
 typedef struct {
     double execution_time;        // Execution time
     double memory_throughput;     // Memory throughput
@@ -80,7 +80,7 @@ typedef struct {
     double efficiency;            // GPU efficiency
     size_t memory_used;          // Memory usage
     void* metric_data;           // Additional metrics
-} PerformanceMetrics;
+} MultiGPUPerformanceMetrics;
 
 // Core functions
 MultiGPUManager* init_multi_gpu_manager(void);
@@ -126,7 +126,7 @@ int wait_event(MultiGPUManager* manager, int event_id);
 // Performance monitoring
 int start_profiling(MultiGPUManager* manager);
 int stop_profiling(MultiGPUManager* manager);
-int get_performance_metrics(MultiGPUManager* manager, PerformanceMetrics* metrics);
+int get_performance_metrics(MultiGPUManager* manager, MultiGPUPerformanceMetrics* metrics);
 int reset_performance_metrics(MultiGPUManager* manager);
 
 // Quantum-specific operations

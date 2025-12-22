@@ -1,4 +1,5 @@
 #include "quantum_geometric/core/quantum_system.h"
+#include "quantum_geometric/core/error_codes.h"
 #include <stdlib.h>
 #include <string.h>
 

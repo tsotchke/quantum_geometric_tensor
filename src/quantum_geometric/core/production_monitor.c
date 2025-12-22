@@ -21,13 +21,7 @@ static struct {
     size_t num_alert_handlers;
     pthread_t monitor_thread;
     bool monitor_running;
-    struct {
-        double error_rate;
-        double latency;
-        double memory_usage;
-        double cpu_usage;
-        double success_rate;
-    } thresholds;
+    threshold_config_t thresholds;
 } monitor_state = {0};
 
 // Forward declarations
@@ -256,10 +250,12 @@ static void trigger_alerts(alert_level_t level, const char* message) {
 
 const char* alert_level_str(alert_level_t level) {
     switch (level) {
-        case ALERT_LEVEL_INFO:    return "INFO";
-        case ALERT_LEVEL_WARNING: return "WARNING";
-        case ALERT_LEVEL_ERROR:   return "ERROR";
-        case ALERT_LEVEL_FATAL:   return "FATAL";
-        default:                  return "UNKNOWN";
+        case ALERT_LEVEL_DEBUG:    return "DEBUG";
+        case ALERT_LEVEL_INFO:     return "INFO";
+        case ALERT_LEVEL_WARNING:  return "WARNING";
+        case ALERT_LEVEL_ERROR:    return "ERROR";
+        case ALERT_LEVEL_CRITICAL: return "CRITICAL";
+        case ALERT_LEVEL_FATAL:    return "FATAL";
+        default:                   return "UNKNOWN";
     }
 }

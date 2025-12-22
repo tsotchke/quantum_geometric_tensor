@@ -78,10 +78,10 @@ typedef struct MemoryPool {
 } MemoryPool;
 
 // Memory pool functions
-MemoryPool* init_memory_pool(const struct PoolConfig* config);
-void* pool_malloc(MemoryPool* pool, size_t size);
+MemoryPool* create_memory_pool(const struct PoolConfig* config);
+void* pool_allocate(MemoryPool* pool, size_t size);
 void pool_free(MemoryPool* pool, void* ptr);
-void cleanup_memory_pool(MemoryPool* pool);
+void destroy_memory_pool(MemoryPool* pool);
 
 // Statistics functions
 size_t get_total_allocated(const MemoryPool* pool);

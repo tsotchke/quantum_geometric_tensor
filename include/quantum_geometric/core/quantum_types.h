@@ -3,37 +3,16 @@
 
 #include <stddef.h>
 #include <stdbool.h>
+
+// Include base types for gate_type_t, quantum_state_type_t, HardwareType, ComplexFloat
+// This is the authoritative source for these fundamental types
+#include "quantum_geometric/core/quantum_base_types.h"
+
+// Include quantum_complex for additional complex number operations
 #include "quantum_geometric/core/quantum_complex.h"
-#include "quantum_geometric/hardware/quantum_hardware_types.h"
 
-// Gate types
-typedef enum {
-    GATE_TYPE_I = 0,   // Identity
-    GATE_TYPE_X = 1,   // Pauli-X
-    GATE_TYPE_Y = 2,   // Pauli-Y
-    GATE_TYPE_Z = 3,   // Pauli-Z
-    GATE_TYPE_H = 4,   // Hadamard
-    GATE_TYPE_S = 5,   // Phase
-    GATE_TYPE_T = 6,   // T gate
-    GATE_TYPE_RX = 7,  // Rotation around X
-    GATE_TYPE_RY = 8,  // Rotation around Y
-    GATE_TYPE_RZ = 9,  // Rotation around Z
-    GATE_TYPE_CNOT = 10, // Controlled-NOT
-    GATE_TYPE_CZ = 11,   // Controlled-Z
-    GATE_TYPE_SWAP = 12, // SWAP
-    GATE_TYPE_CUSTOM = 13 // Custom unitary
-} gate_type_t;
-
-// State types
-typedef enum {
-    QUANTUM_STATE_PURE,          // Pure quantum state
-    QUANTUM_STATE_MIXED,         // Mixed quantum state
-    QUANTUM_STATE_THERMAL,       // Thermal quantum state
-    QUANTUM_STATE_COHERENT,      // Coherent quantum state
-    QUANTUM_STATE_SQUEEZED,      // Squeezed quantum state
-    QUANTUM_STATE_ENTANGLED,     // Entangled quantum state
-    QUANTUM_STATE_CUSTOM         // Custom quantum state
-} quantum_state_type_t;
+// gate_type_t and quantum_state_type_t are defined in quantum_base_types.h
+// Do not redefine them here to avoid conflicts
 
 // Forward declarations of all structs
 struct quantum_state_t;
@@ -56,6 +35,9 @@ typedef enum {
     NODE_ROTATION      // For parameterized rotation gates (RX, RY, RZ)
 } quantum_node_type_t;
 
+// Forward declaration for state buffer
+struct quantum_geometric_state_t;
+
 // Node structure for quantum operations
 struct quantum_compute_node_t {
     quantum_node_type_t type;
@@ -64,6 +46,10 @@ struct quantum_compute_node_t {
     ComplexFloat* parameters;
     size_t num_parameters;
     void* additional_data;
+    // Tree structure for composite operations (tensor product, partial trace)
+    struct quantum_compute_node_t** children;
+    size_t num_children;
+    struct quantum_geometric_state_t* state_buffer;
 };
 
 // Forward declarations for geometric operations
@@ -80,26 +66,38 @@ typedef struct quantum_register_t quantum_register_t;
 typedef struct quantum_system_t quantum_system_t;
 typedef struct quantum_gate_t quantum_gate_t;
 
-// Gate structure
+// Gate structure - supports both high-level circuit building and low-level matrix operations
 struct quantum_gate_t {
-    size_t num_qubits;
-    ComplexFloat* matrix;
-    size_t* target_qubits;
-    size_t* control_qubits;
-    size_t num_controls;
-    bool is_controlled;
+    // Core gate properties
     gate_type_t type;
+    size_t num_qubits;
+    bool is_controlled;
+    bool is_parameterized;
+
+    // Qubit targeting - dual interface for compatibility
+    size_t* target_qubits;          // Target qubit indices
+    size_t* control_qubits;         // Control qubit indices (for controlled gates)
+    size_t num_controls;            // Number of control qubits
+    size_t* qubits;                 // Unified qubit array (for circuit operations interface)
+
+    // Gate parameters (angles for rotation gates, etc.)
     double* parameters;
     size_t num_parameters;
-    bool is_parameterized;
+
+    // Matrix representation (optional - computed on demand)
+    ComplexFloat* matrix;
+
+    // Extension data for custom gates
+    void* custom_data;
 };
 
 // Struct definitions
 struct quantum_state_t {
     quantum_state_type_t type;      // Type of quantum state
-    size_t dimension;               // State dimension
+    size_t num_qubits;              // Number of qubits (convenience field)
+    size_t dimension;               // State dimension (2^num_qubits for pure states)
     size_t manifold_dim;           // Manifold dimension
-    ComplexFloat* coordinates;      // State coordinates
+    ComplexFloat* coordinates;      // State coordinates / amplitudes
     ComplexFloat* metric;          // Metric tensor
     ComplexFloat* connection;      // Connection coefficients
     void* auxiliary_data;          // Additional state data
@@ -114,14 +112,29 @@ typedef struct circuit_layer_t {
     bool is_parameterized;
 } circuit_layer_t;
 
-// Quantum circuit structure
+// Quantum circuit structure - supports both layer-based and flat gate array interfaces
 struct quantum_circuit_t {
-    circuit_layer_t** layers;
-    size_t num_layers;
+    // ========== Core circuit properties ==========
     size_t num_qubits;
     bool is_parameterized;
-    
-    // Additional fields for quantum geometric operations
+
+    // ========== Layer-based structure (for optimized execution) ==========
+    // Gates are organized into layers where all gates in a layer can execute in parallel
+    circuit_layer_t** layers;
+    size_t num_layers;
+    size_t layers_capacity;           // Allocated capacity for layers array
+
+    // ========== Flat gate array (for circuit building) ==========
+    // Sequential gate list for easy circuit construction
+    quantum_gate_t** gates;
+    size_t num_gates;
+    size_t max_gates;                 // Allocated capacity for gates array
+
+    // ========== Circuit optimization and compilation ==========
+    int optimization_level;           // 0=none, 1=basic, 2=aggressive
+    bool is_compiled;                 // Whether gates have been compiled to layers
+
+    // ========== Quantum geometric operations ==========
     computational_graph_t* graph;
     quantum_geometric_state_t* state;
     quantum_compute_node_t** nodes;

@@ -18,11 +18,44 @@ typedef int lapack_int;
 #define LAPACK_ROW_MAJOR 101
 #ifdef _OPENMP
 #include <omp.h>
+#else
+// Stubs when OpenMP is not available
+static inline int omp_get_thread_num(void) { return 0; }
+static inline int omp_get_max_threads(void) { return 1; }
 #endif
 
-// LAPACK function declarations
+// LAPACK function declarations and compatibility wrappers
 #ifdef __APPLE__
-// LAPACK functions are already declared in Accelerate framework
+// Accelerate uses CLAPACK interface, we provide LAPACKE-compatible wrappers
+
+// LAPACKE_sgetrf compatibility wrapper
+static inline lapack_int LAPACKE_sgetrf(int matrix_layout, lapack_int m, lapack_int n,
+                                        float* a, lapack_int lda, lapack_int* ipiv) {
+    (void)matrix_layout; // Accelerate uses column-major by default
+    lapack_int info = 0;
+    // Transpose for row-major if needed (simplified - assumes col-major)
+    sgetrf_(&m, &n, a, &lda, ipiv, &info);
+    return info;
+}
+
+// LAPACKE_ssyev compatibility wrapper
+static inline lapack_int LAPACKE_ssyev(int matrix_layout, char jobz, char uplo,
+                                       lapack_int n, float* a, lapack_int lda, float* w) {
+    (void)matrix_layout;
+    lapack_int info = 0;
+    lapack_int lwork = -1;
+    float work_query;
+    // Query optimal workspace size
+    ssyev_(&jobz, &uplo, &n, a, &lda, w, &work_query, &lwork, &info);
+    lwork = (lapack_int)work_query;
+    float* work = malloc(lwork * sizeof(float));
+    if (!work) return -1;
+    // Compute eigenvalues/eigenvectors
+    ssyev_(&jobz, &uplo, &n, a, &lda, w, work, &lwork, &info);
+    free(work);
+    return info;
+}
+
 #else
 extern void LAPACKE_sgesvd(int matrix_layout, char jobu, char jobvt,
                           lapack_int m, lapack_int n, float* a,
@@ -1002,9 +1035,8 @@ bool geometric_tensor_is_positive_definite(const quantum_geometric_tensor_t* ten
     // Convert to real array format for LAPACK
     convert_complex_to_real_array(a, tensor->components, n * n);
 
-    // Compute eigenvalues
-    lapack_int info = LAPACKE_ssyev(LAPACK_ROW_MAJOR, 'N', 'U', n,
-                                   a, n, w, work, 3 * n);
+    // Compute eigenvalues (workspace handled internally by wrapper on Apple)
+    lapack_int info = LAPACKE_ssyev(LAPACK_ROW_MAJOR, 'N', 'U', n, a, n, w);
 
     if (info != 0) {
         free(a);
@@ -1087,14 +1119,20 @@ qgt_error_t geometric_tensor_initialize_random(quantum_geometric_tensor_t* tenso
 }
 
 qgt_error_t geometric_tensor_transpose(quantum_geometric_tensor_t* result,
-                                     const quantum_geometric_tensor_t* tensor) {
+                                      const quantum_geometric_tensor_t* tensor,
+                                      const size_t* permutation) {
     if (!result || !tensor) {
         return QGT_ERROR_INVALID_ARGUMENT;
     }
 
-    // Only works on 2D tensors
+    // Currently only supports 2D tensors
     if (tensor->rank != 2) {
         return QGT_ERROR_INVALID_DIMENSION;
+    }
+
+    // Validate permutation for 2D case (should be {1, 0})
+    if (permutation && (permutation[0] != 1 || permutation[1] != 0)) {
+        return QGT_ERROR_INVALID_ARGUMENT;
     }
 
     const size_t m = tensor->dimensions[0];

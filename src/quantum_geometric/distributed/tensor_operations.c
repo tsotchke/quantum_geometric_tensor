@@ -1,72 +1,15 @@
 #include "quantum_geometric/distributed/tensor_operations.h"
 #include "quantum_geometric/core/simd_operations.h"
-#include <cblas.h>
 
-// Tensor parameters
-#define MAX_RANK 8
-#define MAX_DIMENSION 16
+#ifdef __APPLE__
+#include <Accelerate/Accelerate.h>
+#else
+#include <cblas.h>
+#endif
+
+// Internal constants
 #define ALIGNMENT 64
 #define CACHE_LINE 64
-
-// Tensor storage format
-typedef enum {
-    DENSE_FORMAT,
-    SPARSE_FORMAT,
-    SYMMETRIC_FORMAT,
-    BLOCK_FORMAT
-} StorageFormat;
-
-// Tensor index
-typedef struct {
-    size_t* indices;
-    size_t rank;
-    size_t* dimensions;
-} TensorIndex;
-
-// Tensor block
-typedef struct {
-    double* data;
-    size_t size;
-    TensorIndex index;
-    bool is_zero;
-} TensorBlock;
-
-// Tensor storage
-typedef struct {
-    // Data storage
-    double* data;
-    size_t size;
-    StorageFormat format;
-    
-    // Structure information
-    size_t* dimensions;
-    size_t rank;
-    size_t num_elements;
-    
-    // Block structure
-    TensorBlock** blocks;
-    size_t num_blocks;
-    
-    // Symmetry information
-    bool* symmetries;
-    size_t num_symmetries;
-} TensorStorage;
-
-// Tensor operations
-typedef struct {
-    // Storage management
-    TensorStorage* storage;
-    
-    // Workspace
-    double* workspace;
-    size_t workspace_size;
-    
-    // SIMD operations
-    SIMDOperations* simd_ops;
-    
-    // Configuration
-    TensorConfig config;
-} TensorOperations;
 
 // Initialize tensor operations
 TensorOperations* init_tensor_operations(
@@ -89,8 +32,8 @@ TensorOperations* init_tensor_operations(
         workspace_size * sizeof(double));
     ops->workspace_size = workspace_size;
     
-    // Initialize SIMD operations
-    ops->simd_ops = init_simd_operations();
+    // SIMD operations are stateless function-based, no struct needed
+    ops->simd_ops = NULL;
     
     // Store configuration
     ops->config = *config;
@@ -256,8 +199,8 @@ void cleanup_tensor_operations(TensorOperations* ops) {
     // Clean up workspace
     free(ops->workspace);
     
-    // Clean up SIMD operations
-    cleanup_simd_operations(ops->simd_ops);
+    // SIMD operations are stateless, no cleanup needed
+    // (simd_ops is NULL)
     
     free(ops);
 }

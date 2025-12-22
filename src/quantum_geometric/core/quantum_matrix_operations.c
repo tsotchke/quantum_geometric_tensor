@@ -162,7 +162,17 @@ bool quantum_matrix_to_hierarchical(const float* matrix, int size, HierarchicalM
 
     // Copy data and compress recursively
     memcpy(hmatrix->data, matrix, size * size * sizeof(float));
-    hierarchical_matrix_compress(hmatrix);  // Using the correct function name
+
+    // Use default compression parameters
+    compression_params_t params = {
+        .mode = COMPRESS_SVD,
+        .tolerance = 1e-6,
+        .max_rank = size,
+        .recompression = false,
+        .threshold = 1e-10,
+        .compression_data = NULL
+    };
+    compress_matrix(hmatrix, &params);
 
     return true;
 }

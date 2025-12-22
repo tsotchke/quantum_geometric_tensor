@@ -7,26 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Internal state structure
-struct quantum_llm_state_internal {
-    quantum_llm_config_t config;
-    quantum_distributed_system_t* distributed_system;
-    quantum_geometric_state_t** parameter_states;
-    uint32_t num_parameter_states;
-    float current_loss;
-    memory_pool_t* memory_pool;
-    tensor_network_t* attention_network;
-    quantum_geometric_projector_t* projector;
-};
-
-// Internal training data structure
-struct training_data_internal {
-    void* data_buffer;
-    uint64_t buffer_size;
-    uint32_t batch_size;
-    uint32_t sequence_length;
-    uint32_t feature_dimension;
-};
+// Types are now defined in quantum_llm_core.h
 
 // Initialize quantum LLM system
 quantum_status_t initialize_quantum_llm(
@@ -34,7 +15,7 @@ quantum_status_t initialize_quantum_llm(
     quantum_llm_state_t** state
 ) {
     *state = malloc(sizeof(quantum_llm_state_t));
-    if (!*state) return QUANTUM_STATUS_NO_MEMORY;
+    if (!*state) return QUANTUM_STATUS_OUT_OF_MEMORY;
     
     quantum_llm_state_t* s = *state;
     memcpy(&s->config, config, sizeof(quantum_llm_config_t));
@@ -58,7 +39,7 @@ quantum_status_t initialize_quantum_llm(
     if (!s->parameter_states) {
         cleanup_quantum_distributed_system(s->distributed_system);
         free(s);
-        return QUANTUM_STATUS_NO_MEMORY;
+        return QUANTUM_STATUS_OUT_OF_MEMORY;
     }
     
     // Initialize memory pool
@@ -264,7 +245,7 @@ quantum_status_t prepare_noisy_quantum_state(
 }
 
 // State cleanup
-void cleanup_quantum_state(quantum_state_t* state) {
+void cleanup_llm_quantum_state(quantum_state_t* state) {
     if (state) {
         cleanup_quantum_geometric_state(state);
     }

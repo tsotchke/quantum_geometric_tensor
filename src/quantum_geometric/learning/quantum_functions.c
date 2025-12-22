@@ -1088,38 +1088,45 @@ bool quantum_calculate_gradients(
             return false;
         }
         
-        // Set gradient options
-        gradient_options_t options = {
-            .shift_amount = M_PI / 2.0,  // π/2 shift for parameter shift rule
-            .use_centered_difference = true,
-            .use_higher_order = false,
-            .num_points = 2,
-            .accumulate_gradients = false,
-            .custom_options = NULL
-        };
-        
-        if (!set_gradient_options(&options)) {
-            printf("DEBUG: Failed to set gradient options\n");
+        // Compute LOSS gradients for ALL parameters using parameter shift rule
+        // This is the critical fix - we need gradients of the LOSS, not the state
+        double* loss_gradients = NULL;
+        size_t num_loss_gradients = 0;
+
+        if (!compute_all_loss_gradients(qgtn,
+                                        &label_node->data[base_idx],
+                                        1,  // Single sample at a time
+                                        output_dim,
+                                        &loss_gradients,
+                                        &num_loss_gradients)) {
+            printf("DEBUG: Failed to compute loss gradients\n");
             destroy_quantum_geometric_tensor_network(qgtn);
             free(gradients);
             return false;
         }
 
-        // Compute gradient using parameter shift rule
-        ComplexFloat* grad_output;
-        size_t grad_dim;
-        if (!compute_quantum_gradient(qgtn, 0, &grad_output, &grad_dim)) {
-            printf("DEBUG: Failed to compute quantum gradient\n");
-            destroy_quantum_geometric_tensor_network(qgtn);
-            free(gradients);
-            return false;
+        printf("DEBUG: Computed %zu loss gradients for batch item %zu\n",
+               num_loss_gradients, b);
+
+        // Convert scalar loss gradients to complex format for compatibility
+        // The gradient is distributed across output dimensions
+        for (size_t i = 0; i < output_dim && i < num_loss_gradients; i++) {
+            gradients[base_idx + i].real = (float)loss_gradients[i];
+            gradients[base_idx + i].imag = 0.0f;
         }
-        
-        // Copy gradient to output buffer and ensure proper cleanup
-        if (grad_output) {
-            memcpy(&gradients[base_idx], grad_output, output_dim * sizeof(ComplexFloat));
-            free(grad_output);
-            grad_output = NULL;
+
+        // If we have fewer loss gradients than output dims, use first gradient
+        if (num_loss_gradients > 0 && num_loss_gradients < output_dim) {
+            for (size_t i = num_loss_gradients; i < output_dim; i++) {
+                gradients[base_idx + i].real = (float)loss_gradients[0];
+                gradients[base_idx + i].imag = 0.0f;
+            }
+        }
+
+        // Clean up loss gradients and QGTN
+        if (loss_gradients) {
+            free(loss_gradients);
+            loss_gradients = NULL;
         }
         if (qgtn) {
             destroy_quantum_geometric_tensor_network(qgtn);

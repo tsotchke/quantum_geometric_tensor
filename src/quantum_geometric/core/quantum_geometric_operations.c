@@ -1,4 +1,5 @@
 #include "quantum_geometric/core/quantum_geometric_operations.h"
+#include "quantum_geometric/core/quantum_geometric_hardware.h"
 #include "quantum_geometric/hardware/quantum_geometric_gpu.h"
 #include "quantum_geometric/hardware/quantum_hardware_types.h"
 #include "quantum_geometric/core/quantum_geometric_types.h"
@@ -119,15 +120,9 @@ static qgt_error_t cleanup_hardware_resources(quantum_geometric_hardware_t* hard
 
 #define QGT_POOL_INITIAL_SIZE (1024 * 1024)
 
-// Cache-aligned global state
-typedef struct {
-    atomic_bool initialized;
-    quantum_geometric_config_t config;
-    MemoryPool* pool;
-    quantum_geometric_hardware_t* hardware;
-} GlobalState __attribute__((aligned(64)));
-
-static GlobalState g_state = {
+// GlobalState is defined in quantum_geometric_operations.h
+// g_state is cache-aligned for optimal performance
+GlobalState g_state __attribute__((aligned(64))) = {
     .initialized = ATOMIC_VAR_INIT(false),
     .config = {0},
     .pool = NULL,
@@ -142,9 +137,7 @@ static inline qgt_error_t validate_dimensions(size_t dim1, size_t dim2) {
     return (dim1 == dim2) ? QGT_SUCCESS : QGT_ERROR_DIMENSION_MISMATCH;
 }
 
-static inline qgt_error_t validate_state(void) {
-    return g_state.initialized ? QGT_SUCCESS : QGT_ERROR_INVALID_STATE;
-}
+// validate_state is now defined in quantum_geometric_operations.h
 
 static inline void init_default_config(quantum_geometric_config_t* config) {
     *config = (quantum_geometric_config_t) {
@@ -192,7 +185,7 @@ qgt_error_t geometric_initialize(void) {
         .enable_stats = true
     };
     
-    MemoryPool* temp_pool = init_memory_pool(&pool_config);
+    MemoryPool* temp_pool = create_memory_pool(&pool_config);
     if (!temp_pool) {
         err = QGT_ERROR_MEMORY_ALLOCATION;
         geometric_set_error(err, __FILE__, __LINE__, __func__,
@@ -200,9 +193,9 @@ qgt_error_t geometric_initialize(void) {
         goto cleanup;
     }
     g_state.pool = temp_pool;
-    
+
     // Initialize hardware with cache line alignment
-    g_state.hardware = pool_malloc(g_state.pool,
+    g_state.hardware = pool_allocate(g_state.pool,
                                  sizeof(quantum_geometric_hardware_t));
     if (!g_state.hardware) {
         err = QGT_ERROR_MEMORY_ALLOCATION;
@@ -216,7 +209,11 @@ qgt_error_t geometric_initialize(void) {
     g_state.hardware->type = HARDWARE_TYPE_CPU;
     
     // Initialize hardware capabilities
-    err = init_hardware_capabilities(g_state.hardware);
+    hardware_config_t hw_config = {
+        .gpu_device_id = 0,
+        .qpu_connection_string = NULL
+    };
+    err = geometric_initialize_hardware(g_state.hardware, &hw_config);
     if (err != QGT_SUCCESS) {
         geometric_set_error(err, __FILE__, __LINE__, __func__,
                           "Failed to initialize hardware capabilities");
@@ -249,9 +246,9 @@ cleanup:
     return err;
 }
 
-qgt_error_t geometric_shutdown(void) {
+void geometric_shutdown(void) {
     if (!atomic_load(&g_state.initialized)) {
-        return QGT_SUCCESS;
+        return;
     }
     
     pthread_mutex_lock(&g_mutex);
@@ -263,14 +260,12 @@ qgt_error_t geometric_shutdown(void) {
     
     // First cleanup hardware resources if they exist
     if (g_state.hardware) {
-        err = cleanup_hardware_resources(g_state.hardware);
-        if (err != QGT_SUCCESS) {
-            geometric_set_error(err, __FILE__, __LINE__, __func__,
+        qgt_error_t hw_err = cleanup_hardware_resources(g_state.hardware);
+        if (hw_err != QGT_SUCCESS) {
+            geometric_set_error(hw_err, __FILE__, __LINE__, __func__,
                               "Failed to cleanup hardware resources");
-            pthread_mutex_unlock(&g_mutex);
-            return err;
         }
-        
+
         // Now safe to free hardware struct
         if (g_state.pool) {
             pool_free(g_state.pool, g_state.hardware);
@@ -288,9 +283,8 @@ qgt_error_t geometric_shutdown(void) {
     memset(&g_state.config, 0, sizeof(quantum_geometric_config_t));
     g_state.pool = NULL;
     g_state.hardware = NULL;
-    
+
     pthread_mutex_unlock(&g_mutex);
-    return QGT_SUCCESS;
 }
 
 qgt_error_t geometric_reset(void) {
@@ -334,14 +328,14 @@ qgt_error_t geometric_reset(void) {
         .enable_stats = true
     };
     
-    g_state.pool = init_memory_pool(&config);
+    g_state.pool = create_memory_pool(&config);
     if (!g_state.pool) {
         pthread_mutex_unlock(&reset_mutex);
         return QGT_ERROR_MEMORY_ALLOCATION;
     }
     
     // Reinitialize hardware
-    g_state.hardware = pool_malloc(g_state.pool, sizeof(quantum_geometric_hardware_t));
+    g_state.hardware = pool_allocate(g_state.pool, sizeof(quantum_geometric_hardware_t));
     if (!g_state.hardware) {
         cleanup_memory_pool(g_state.pool);
         g_state.pool = NULL;
@@ -367,7 +361,7 @@ qgt_error_t geometric_create_optimization(quantum_geometric_optimization_t** opt
     QGT_CHECK_ARGUMENT(dimension > 0 && dimension <= QGT_MAX_DIMENSIONS);
     QGT_CHECK_STATE(validate_state());
     
-    *optimization = pool_malloc(g_state.pool, sizeof(quantum_geometric_optimization_t));
+    *optimization = pool_allocate(g_state.pool, sizeof(quantum_geometric_optimization_t));
     if (!*optimization) return QGT_ERROR_MEMORY_ALLOCATION;
     
     // Initialize basic fields
@@ -383,7 +377,7 @@ qgt_error_t geometric_create_optimization(quantum_geometric_optimization_t** opt
     };
     
     // Allocate parameters array
-    (*optimization)->parameters = pool_malloc(g_state.pool, dimension * sizeof(ComplexFloat));
+    (*optimization)->parameters = pool_allocate(g_state.pool, dimension * sizeof(ComplexFloat));
     if (!(*optimization)->parameters) {
         pool_free(g_state.pool, *optimization);
         return QGT_ERROR_MEMORY_ALLOCATION;
@@ -418,13 +412,13 @@ qgt_error_t geometric_optimize_parameters(quantum_geometric_optimization_t* opti
     size_t block_size = QGT_BLOCK_SIZE / sizeof(ComplexFloat);
     
     // Allocate and zero initialize gradient buffer
-    ComplexFloat* gradient = pool_malloc(g_state.pool, dim * sizeof(ComplexFloat));
+    ComplexFloat* gradient = pool_allocate(g_state.pool, dim * sizeof(ComplexFloat));
     if (!gradient) return QGT_ERROR_MEMORY_ALLOCATION;
     memset(gradient, 0, dim * sizeof(ComplexFloat));
     
     // Allocate thread-local storage for parallel reduction
     int num_threads = omp_get_max_threads();
-    ComplexFloat** thread_local_grads = pool_malloc(g_state.pool, num_threads * sizeof(ComplexFloat*));
+    ComplexFloat** thread_local_grads = pool_allocate(g_state.pool, num_threads * sizeof(ComplexFloat*));
     if (!thread_local_grads) {
         pool_free(g_state.pool, gradient);
         return QGT_ERROR_MEMORY_ALLOCATION;
@@ -435,7 +429,7 @@ qgt_error_t geometric_optimize_parameters(quantum_geometric_optimization_t* opti
     #pragma omp parallel
     {
         int thread_id = omp_get_thread_num();
-        thread_local_grads[thread_id] = pool_malloc(g_state.pool, dim * sizeof(ComplexFloat));
+        thread_local_grads[thread_id] = pool_allocate(g_state.pool, dim * sizeof(ComplexFloat));
         if (!thread_local_grads[thread_id]) {
             allocation_failed = true;
         } else {
@@ -580,7 +574,7 @@ qgt_error_t geometric_check_convergence(const quantum_geometric_optimization_t* 
     size_t block_size = QGT_BLOCK_SIZE / sizeof(double);
     
     // Allocate thread-local storage for norm calculation
-    double* thread_norms = pool_malloc(g_state.pool, omp_get_max_threads() * sizeof(double));
+    double* thread_norms = pool_allocate(g_state.pool, omp_get_max_threads() * sizeof(double));
     if (!thread_norms) return QGT_ERROR_MEMORY_ALLOCATION;
     memset(thread_norms, 0, omp_get_max_threads() * sizeof(double));
     
@@ -670,7 +664,7 @@ qgt_error_t geometric_optimize_step(quantum_geometric_optimization_t* optimizati
     size_t block_size = QGT_BLOCK_SIZE / sizeof(ComplexFloat);
     
     // Allocate temporary gradient buffer
-    ComplexFloat* gradient = pool_malloc(g_state.pool, dim * sizeof(ComplexFloat));
+    ComplexFloat* gradient = pool_allocate(g_state.pool, dim * sizeof(ComplexFloat));
     if (!gradient) return QGT_ERROR_MEMORY_ALLOCATION;
     
     // Zero initialize gradient
@@ -680,7 +674,7 @@ qgt_error_t geometric_optimize_step(quantum_geometric_optimization_t* optimizati
     #pragma omp parallel if(dim > QGT_PARALLEL_THRESHOLD)
     {
         // Thread-local buffer to avoid false sharing
-        ComplexFloat* local_grad = pool_malloc(g_state.pool, dim * sizeof(ComplexFloat));
+        ComplexFloat* local_grad = pool_allocate(g_state.pool, dim * sizeof(ComplexFloat));
         if (local_grad) {
             memset(local_grad, 0, dim * sizeof(ComplexFloat));
             
@@ -961,7 +955,7 @@ qgt_error_t geometric_create_state(quantum_geometric_state_t** state,
     QGT_CHECK_ARGUMENT(dimension > 0 && dimension <= QGT_MAX_DIMENSIONS);
     QGT_CHECK_STATE(validate_state());
     
-    *state = pool_malloc(g_state.pool, sizeof(quantum_geometric_state_t));
+    *state = pool_allocate(g_state.pool, sizeof(quantum_geometric_state_t));
     if (!*state) return QGT_ERROR_MEMORY_ALLOCATION;
     
     // Initialize basic fields
@@ -978,7 +972,7 @@ qgt_error_t geometric_create_state(quantum_geometric_state_t** state,
     };
     
     // Allocate coordinates array
-    (*state)->coordinates = pool_malloc(g_state.pool, dimension * sizeof(ComplexFloat));
+    (*state)->coordinates = pool_allocate(g_state.pool, dimension * sizeof(ComplexFloat));
     if (!(*state)->coordinates) {
         pool_free(g_state.pool, *state);
         return QGT_ERROR_MEMORY_ALLOCATION;
@@ -986,7 +980,7 @@ qgt_error_t geometric_create_state(quantum_geometric_state_t** state,
     memset((*state)->coordinates, 0, dimension * sizeof(ComplexFloat));
     
     // Allocate metric array
-    (*state)->metric = pool_malloc(g_state.pool, dimension * dimension * sizeof(ComplexFloat));
+    (*state)->metric = pool_allocate(g_state.pool, dimension * dimension * sizeof(ComplexFloat));
     if (!(*state)->metric) {
         pool_free(g_state.pool, (*state)->coordinates);
         pool_free(g_state.pool, *state);
@@ -995,7 +989,7 @@ qgt_error_t geometric_create_state(quantum_geometric_state_t** state,
     memset((*state)->metric, 0, dimension * dimension * sizeof(ComplexFloat));
     
     // Allocate connection array
-    (*state)->connection = pool_malloc(g_state.pool, dimension * dimension * dimension * sizeof(ComplexFloat));
+    (*state)->connection = pool_allocate(g_state.pool, dimension * dimension * dimension * sizeof(ComplexFloat));
     if (!(*state)->connection) {
         pool_free(g_state.pool, (*state)->metric);
         pool_free(g_state.pool, (*state)->coordinates);
@@ -1074,7 +1068,7 @@ qgt_error_t geometric_error_correct(quantum_geometric_state_t* state,
     QGT_CHECK_STATE(validate_state());
     QGT_CHECK_STATE(validate_dimensions(state->dimension, metric->dimension));
     
-    ComplexFloat* corrected = pool_malloc(g_state.pool, 
+    ComplexFloat* corrected = pool_allocate(g_state.pool, 
         state->dimension * sizeof(ComplexFloat));
     if (!corrected) return QGT_ERROR_MEMORY_ALLOCATION;
     
@@ -1238,12 +1232,12 @@ qgt_error_t geometric_create_metric(quantum_geometric_metric_t** metric,
     QGT_CHECK_ARGUMENT(dimension > 0 && dimension <= QGT_MAX_DIMENSIONS);
     QGT_CHECK_STATE(validate_state());
     
-    *metric = pool_malloc(g_state.pool, sizeof(quantum_geometric_metric_t));
+    *metric = pool_allocate(g_state.pool, sizeof(quantum_geometric_metric_t));
     if (!*metric) return QGT_ERROR_MEMORY_ALLOCATION;
     
     (*metric)->type = type;
     (*metric)->dimension = dimension;
-    (*metric)->components = pool_malloc(g_state.pool,
+    (*metric)->components = pool_allocate(g_state.pool,
         dimension * dimension * sizeof(ComplexFloat));
     
     if (!(*metric)->components) {
@@ -1280,7 +1274,7 @@ qgt_error_t geometric_distance(double* distance,
     ComplexFloat sum = COMPLEX_FLOAT_ZERO;
     
     // Pre-compute differences to avoid redundant calculations
-    ComplexFloat* differences = pool_malloc(g_state.pool, dim * sizeof(ComplexFloat));
+    ComplexFloat* differences = pool_allocate(g_state.pool, dim * sizeof(ComplexFloat));
     if (!differences) return QGT_ERROR_MEMORY_ALLOCATION;
     
     #pragma omp parallel for if(dim > QGT_PARALLEL_THRESHOLD)
@@ -1343,13 +1337,13 @@ qgt_error_t geometric_create_connection(quantum_geometric_connection_t** connect
     QGT_CHECK_ARGUMENT(dimension > 0 && dimension <= QGT_MAX_DIMENSIONS);
     QGT_CHECK_STATE(validate_state());
     
-    *connection = pool_malloc(g_state.pool,
+    *connection = pool_allocate(g_state.pool,
                                   sizeof(quantum_geometric_connection_t));
     if (!*connection) return QGT_ERROR_MEMORY_ALLOCATION;
     
     (*connection)->type = type;
     (*connection)->dimension = dimension;
-    (*connection)->coefficients = pool_malloc(g_state.pool,
+    (*connection)->coefficients = pool_allocate(g_state.pool,
         dimension * dimension * dimension * sizeof(ComplexFloat));
     
     if (!(*connection)->coefficients) {
@@ -1419,13 +1413,13 @@ qgt_error_t geometric_create_curvature(quantum_geometric_curvature_t** curvature
     QGT_CHECK_ARGUMENT(dimension > 0 && dimension <= QGT_MAX_DIMENSIONS);
     QGT_CHECK_STATE(validate_state());
     
-    *curvature = pool_malloc(g_state.pool,
+    *curvature = pool_allocate(g_state.pool,
                                   sizeof(quantum_geometric_curvature_t));
     if (!*curvature) return QGT_ERROR_MEMORY_ALLOCATION;
     
     (*curvature)->type = type;
     (*curvature)->dimension = dimension;
-    (*curvature)->components = pool_malloc(g_state.pool,
+    (*curvature)->components = pool_allocate(g_state.pool,
         dimension * dimension * dimension * dimension * sizeof(ComplexFloat));
     
     if (!(*curvature)->components) {
@@ -1452,7 +1446,7 @@ qgt_error_t geometric_to_device(quantum_geometric_state_t* state,
     QGT_CHECK_STATE(validate_state());
     
     // Validate hardware type
-    if (!is_valid_hardware_type(hardware)) {
+    if (validate_hardware_type(hardware) != QGT_SUCCESS) {
         return QGT_ERROR_INVALID_HARDWARE;
     }
 
@@ -1476,7 +1470,7 @@ qgt_error_t geometric_to_device(quantum_geometric_state_t* state,
         case HARDWARE_TYPE_GPU:
             // Allocate and transfer coordinates
             if (state->coordinates) {
-                device_coordinates = gpu_malloc(hw->context,
+                device_coordinates = gpu_allocate(hw->context,
                     state->dimension * sizeof(ComplexFloat));
                 if (!device_coordinates) {
                     err = QGT_ERROR_MEMORY_ALLOCATION;
@@ -1490,7 +1484,7 @@ qgt_error_t geometric_to_device(quantum_geometric_state_t* state,
             
             // Allocate and transfer metric if present
             if (state->metric) {
-                device_metric = gpu_malloc(hw->context,
+                device_metric = gpu_allocate(hw->context,
                     state->dimension * state->dimension * sizeof(ComplexFloat));
                 if (!device_metric) {
                     err = QGT_ERROR_MEMORY_ALLOCATION;
@@ -1504,7 +1498,7 @@ qgt_error_t geometric_to_device(quantum_geometric_state_t* state,
             
             // Allocate and transfer connection if present
             if (state->connection) {
-                device_connection = gpu_malloc(hw->context,
+                device_connection = gpu_allocate(hw->context,
                     state->dimension * state->dimension * state->dimension * sizeof(ComplexFloat));
                 if (!device_connection) {
                     err = QGT_ERROR_MEMORY_ALLOCATION;
@@ -1550,7 +1544,7 @@ qgt_error_t geometric_from_device(quantum_geometric_state_t* state,
     QGT_CHECK_STATE(validate_state());
     
     // Validate hardware type
-    if (!is_valid_hardware_type(hardware)) {
+    if (validate_hardware_type(hardware) != QGT_SUCCESS) {
         return QGT_ERROR_INVALID_HARDWARE;
     }
 
@@ -1565,7 +1559,7 @@ qgt_error_t geometric_from_device(quantum_geometric_state_t* state,
     qgt_error_t err = QGT_SUCCESS;
     
     switch (hardware) {
-        case HARDWARE_TYPE_GPU:
+        case HARDWARE_TYPE_GPU: {
             // Get hardware context
             quantum_geometric_hardware_t* hw = g_state.hardware;
             if (!hw || !hw->context) {
@@ -1575,47 +1569,48 @@ qgt_error_t geometric_from_device(quantum_geometric_state_t* state,
 
             // Allocate and transfer coordinates
             if (state->coordinates) {
-                host_coordinates = pool_malloc(g_state.pool,
+                host_coordinates = pool_allocate(g_state.pool,
                     state->dimension * sizeof(ComplexFloat));
                 if (!host_coordinates) {
                     err = QGT_ERROR_MEMORY_ALLOCATION;
                     goto cleanup;
                 }
-                
+
                 err = gpu_memcpy_from_device(hw->context, host_coordinates,
                     state->coordinates, state->dimension * sizeof(ComplexFloat));
                 if (err != QGT_SUCCESS) goto cleanup;
             }
-            
+
             // Allocate and transfer metric if present
             if (state->metric) {
-                host_metric = pool_malloc(g_state.pool,
+                host_metric = pool_allocate(g_state.pool,
                     state->dimension * state->dimension * sizeof(ComplexFloat));
                 if (!host_metric) {
                     err = QGT_ERROR_MEMORY_ALLOCATION;
                     goto cleanup;
                 }
-                
+
                 err = gpu_memcpy_from_device(hw->context, host_metric,
                     state->metric, state->dimension * state->dimension * sizeof(ComplexFloat));
                 if (err != QGT_SUCCESS) goto cleanup;
             }
-            
+
             // Allocate and transfer connection if present
             if (state->connection) {
-                host_connection = pool_malloc(g_state.pool,
+                host_connection = pool_allocate(g_state.pool,
                     state->dimension * state->dimension * state->dimension * sizeof(ComplexFloat));
                 if (!host_connection) {
                     err = QGT_ERROR_MEMORY_ALLOCATION;
                     goto cleanup;
                 }
-                
+
                 err = gpu_memcpy_from_device(hw->context, host_connection,
                     state->connection, state->dimension * state->dimension * state->dimension * sizeof(ComplexFloat));
                 if (err != QGT_SUCCESS) goto cleanup;
             }
             break;
-            
+        }
+
         default:
             err = QGT_ERROR_INVALID_HARDWARE;
             goto cleanup;
@@ -1855,7 +1850,7 @@ qgt_error_t geometric_validate_metric(const quantum_geometric_metric_t* metric,
     
     if (flags & GEOMETRIC_VALIDATION_CHECK_POSITIVE_DEFINITE) {
         // Allocate temporary buffer for Cholesky decomposition
-        double* temp = pool_malloc(g_state.pool, dim * dim * sizeof(double));
+        double* temp = pool_allocate(g_state.pool, dim * dim * sizeof(double));
         if (!temp) {
             result->is_valid = false;
             result->error_code = QGT_ERROR_MEMORY_ALLOCATION;
@@ -2026,7 +2021,7 @@ qgt_error_t geometric_clone_state(quantum_geometric_state_t** dest,
     
     // Allocate and copy coordinates
     if (src->coordinates) {
-        (*dest)->coordinates = pool_malloc(g_state.pool,
+        (*dest)->coordinates = pool_allocate(g_state.pool,
             src->dimension * sizeof(ComplexFloat));
         if (!(*dest)->coordinates) {
             geometric_destroy_state(*dest);
@@ -2038,7 +2033,7 @@ qgt_error_t geometric_clone_state(quantum_geometric_state_t** dest,
     
     // Allocate and copy metric if present
     if (src->metric) {
-        (*dest)->metric = pool_malloc(g_state.pool,
+        (*dest)->metric = pool_allocate(g_state.pool,
             src->dimension * src->dimension * sizeof(ComplexFloat));
         if (!(*dest)->metric) {
             geometric_destroy_state(*dest);
@@ -2050,7 +2045,7 @@ qgt_error_t geometric_clone_state(quantum_geometric_state_t** dest,
     
     // Allocate and copy connection if present
     if (src->connection) {
-        (*dest)->connection = pool_malloc(g_state.pool,
+        (*dest)->connection = pool_allocate(g_state.pool,
             src->dimension * src->dimension * src->dimension * sizeof(ComplexFloat));
         if (!(*dest)->connection) {
             geometric_destroy_state(*dest);

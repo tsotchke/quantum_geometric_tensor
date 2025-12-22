@@ -21,6 +21,7 @@ typedef enum {
     QGT_ERROR_RESOURCE_EXHAUSTED = -14,
     QGT_ERROR_INTERNAL = -15,
     QGT_ERROR_IO_ERROR = -16,
+    QGT_ERROR_IO = QGT_ERROR_IO_ERROR,  // Alias for backward compatibility
     QGT_ERROR_ALREADY_INITIALIZED = -17,
     QGT_ERROR_NOT_INITIALIZED = -18,
     QGT_ERROR_INCOMPATIBLE = -19,
@@ -78,6 +79,8 @@ typedef enum {
     QGT_ERROR_NO_METAL_BACKEND = -113,
     QGT_ERROR_NO_CUDA_BACKEND = -114,
     QGT_ERROR_UNSUPPORTED_FEATURE = -115,
+    QGT_ERROR_DEVICE = -116,              // Generic device error
+    QGT_ERROR_NO_DEVICE = -117,           // No device available
 
     // Simulator errors
     QGT_ERROR_SIMULATOR_MEMORY = -200,
@@ -131,7 +134,20 @@ typedef enum {
     QGT_ERROR_AUTH_RATE_LIMIT = -605,
     QGT_ERROR_AUTH_CONFIG = -606,
 
-    QGT_ERROR_ALLOCATION_FAILED = QGT_ERROR_MEMORY_ALLOCATION  // Alias for backward compatibility
+    QGT_ERROR_ALLOCATION_FAILED = QGT_ERROR_MEMORY_ALLOCATION,  // Alias for backward compatibility
+
+    // Operator and gate errors
+    QGT_ERROR_INVALID_OPERATOR = -650,
+    QGT_ERROR_INVALID_GATE = -651,
+    QGT_ERROR_UNSUPPORTED_GATE = -652,
+
+    // Memory optimization errors
+    QGT_ERROR_INITIALIZATION_FAILED = -700,
+    QGT_ERROR_OPERATION_FAILED = -701,
+    QGT_ERROR_NOT_OPTIMIZED = -702,
+    QGT_ERROR_PREFETCH_FAILED = -703,
+    QGT_ERROR_DEFRAGMENT_FAILED = -704,
+    QGT_ERROR_MEMORY_CORRUPTION = -705
 } qgt_error_t;
 
 #endif // QUANTUM_ERROR_CODES_H

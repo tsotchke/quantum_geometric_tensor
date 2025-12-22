@@ -11,6 +11,8 @@
 extern "C" {
 #endif
 
+#include "quantum_geometric/core/quantum_circuit_types.h"
+
 // Forward declaration - actual type defined in quantum_types.h
 struct quantum_circuit_t;
 

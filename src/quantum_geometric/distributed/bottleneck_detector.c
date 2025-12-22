@@ -1,54 +1,13 @@
 #include "quantum_geometric/distributed/bottleneck_detector.h"
 #include "quantum_geometric/core/performance_operations.h"
 #include <math.h>
+#include <string.h>
 
 // Detection parameters
 #define HISTORY_SIZE 1000
 #define MIN_SAMPLES 100
 #define CONFIDENCE_THRESHOLD 0.95
 #define ANOMALY_THRESHOLD 2.0
-
-// Bottleneck types
-typedef enum {
-    COMPUTE_BOUND,
-    MEMORY_BOUND,
-    IO_BOUND,
-    COMMUNICATION_BOUND,
-    QUANTUM_BOUND,
-    NO_BOTTLENECK
-} BottleneckType;
-
-// Performance pattern
-typedef struct {
-    double* values;
-    size_t size;
-    double mean;
-    double std_dev;
-    bool is_anomaly;
-} PerformancePattern;
-
-// Bottleneck detector
-typedef struct {
-    // Pattern analysis
-    PerformancePattern** patterns;
-    size_t num_patterns;
-    
-    // ML model
-    MLModel* model;
-    double* feature_importance;
-    
-    // Detection state
-    BottleneckType current_bottleneck;
-    double confidence;
-    
-    // History
-    SystemMetrics* metrics_history;
-    size_t history_index;
-    
-    // Optimization suggestions
-    OptimizationSuggestion* suggestions;
-    size_t num_suggestions;
-} BottleneckDetector;
 
 // Initialize bottleneck detector
 BottleneckDetector* init_bottleneck_detector(void) {
@@ -101,7 +60,7 @@ void analyze_system_metrics(
 }
 
 // Update performance patterns
-static void update_performance_patterns(
+void update_performance_patterns(
     BottleneckDetector* detector,
     const SystemMetrics* metrics) {
     
@@ -125,7 +84,7 @@ static void update_performance_patterns(
 }
 
 // Update single performance pattern
-static void update_pattern(
+void update_pattern(
     PerformancePattern* pattern,
     double value) {
     
@@ -142,7 +101,7 @@ static void update_pattern(
 }
 
 // Detect anomalies in patterns
-static void detect_anomalies(BottleneckDetector* detector) {
+void detect_anomalies(BottleneckDetector* detector) {
     for (size_t i = 0; i < detector->num_patterns; i++) {
         PerformancePattern* pattern = detector->patterns[i];
         
@@ -159,7 +118,7 @@ static void detect_anomalies(BottleneckDetector* detector) {
 }
 
 // Identify system bottleneck
-static void identify_bottleneck(BottleneckDetector* detector) {
+void identify_bottleneck(BottleneckDetector* detector) {
     // Prepare feature vector
     double* features = extract_features(detector);
     
@@ -179,7 +138,7 @@ static void identify_bottleneck(BottleneckDetector* detector) {
 }
 
 // Generate optimization suggestions
-static void generate_suggestions(BottleneckDetector* detector) {
+void generate_suggestions(BottleneckDetector* detector) {
     detector->num_suggestions = 0;
     
     switch (detector->current_bottleneck) {

@@ -3,6 +3,7 @@
 #include "quantum_geometric/core/numerical_backend.h"
 #include "quantum_geometric/core/error_handling.h"
 #include "quantum_geometric/core/advanced_memory_system.h"
+#include "quantum_geometric/core/memory_singleton.h"
 #include "quantum_geometric/core/quantum_geometric_compute.h"
 #include "quantum_geometric/core/geometric_processor.h"
 #include "quantum_geometric/core/computational_graph.h"
@@ -23,59 +24,105 @@ bool compute_gradient_with_error(
     printf("DEBUG: Starting compute_gradient_with_error\n");
     printf("DEBUG: param_idx=%zu\n", param_idx);
     
-    // Use two different step sizes to estimate error
-    const double step_size1 = M_PI_4;  // π/4
-    const double step_size2 = M_PI_2;  // π/2
+    // Use adaptive step sizes for Richardson extrapolation
+    // We'll use 4 different step sizes in a geometric sequence
+    const double base_step = M_PI / 16.0;  // Smaller base step size for better accuracy
+    const int num_steps = 4;               // Number of step sizes to use
+    const double step_ratio = 2.0;         // Ratio between consecutive step sizes
     
-    // Compute gradients with both step sizes
-    ComplexFloat* gradient1 = NULL;
-    ComplexFloat* gradient2 = NULL;
-    size_t dim1, dim2;
+    // Allocate arrays for multiple gradients
+    ComplexFloat** gradients = malloc(num_steps * sizeof(ComplexFloat*));
+    size_t* dims = malloc(num_steps * sizeof(size_t));
     
-    printf("DEBUG: Computing gradient with step size %.6f\n", step_size1);
-    if (!compute_centered_difference_gradient(qgtn, param_idx, step_size1, &gradient1, &dim1)) {
-        printf("DEBUG: Failed to compute first gradient\n");
+    if (!gradients || !dims) {
+        printf("DEBUG: Failed to allocate memory for gradient arrays\n");
+        free(gradients);
+        free(dims);
         return false;
     }
     
-    printf("DEBUG: Computing gradient with step size %.6f\n", step_size2);
-    if (!compute_centered_difference_gradient(qgtn, param_idx, step_size2, &gradient2, &dim2)) {
-        printf("DEBUG: Failed to compute second gradient\n");
-        free(gradient1);
-        return false;
+    // Initialize gradient pointers to NULL
+    for (int i = 0; i < num_steps; i++) {
+        gradients[i] = NULL;
     }
     
-    if (dim1 != dim2) {
-        printf("DEBUG: Dimension mismatch between gradients\n");
-        free(gradient1);
-        free(gradient2);
+    // Compute gradients with different step sizes
+    bool success = true;
+    size_t common_dim = 0;
+    
+    for (int i = 0; i < num_steps; i++) {
+        double step_size = base_step * pow(step_ratio, i);
+        printf("DEBUG: Computing gradient with step size %.6f\n", step_size);
+        
+        if (!compute_centered_difference_gradient(qgtn, param_idx, step_size, &gradients[i], &dims[i])) {
+            printf("DEBUG: Failed to compute gradient with step size %.6f\n", step_size);
+            success = false;
+            break;
+        }
+        
+        // Check dimension consistency
+        if (i == 0) {
+            common_dim = dims[i];
+        } else if (dims[i] != common_dim) {
+            printf("DEBUG: Dimension mismatch between gradients: %zu vs %zu\n", dims[i], common_dim);
+            success = false;
+            break;
+        }
+    }
+    
+    // If any gradient computation failed, clean up and return
+    if (!success) {
+        for (int i = 0; i < num_steps; i++) {
+            if (gradients[i]) free(gradients[i]);
+        }
+        free(gradients);
+        free(dims);
         return false;
     }
     
     // Allocate output gradient array
-    *gradient = malloc(dim1 * sizeof(ComplexFloat));
+    *gradient = malloc(common_dim * sizeof(ComplexFloat));
     if (!*gradient) {
         printf("DEBUG: Failed to allocate gradient array\n");
-        free(gradient1);
-        free(gradient2);
+        for (int i = 0; i < num_steps; i++) {
+            free(gradients[i]);
+        }
+        free(gradients);
+        free(dims);
         return false;
     }
     
-    // Compute error estimate and average gradient
-    double total_error = 0.0;
-    printf("DEBUG: Computing error estimate and average gradient\n");
+    // Perform Richardson extrapolation to get higher-order accuracy
+    printf("DEBUG: Performing Richardson extrapolation\n");
     
-    for (size_t i = 0; i < dim1; i++) {
-        // Compute difference between gradients
-        double real_diff = gradient1[i].real - gradient2[i].real;
-        double imag_diff = gradient1[i].imag - gradient2[i].imag;
+    // Initialize with the finest step size gradient
+    for (size_t i = 0; i < common_dim; i++) {
+        (*gradient)[i] = gradients[0][i];
+    }
+    
+    // Apply Richardson extrapolation formula
+    for (int k = 1; k < num_steps; k++) {
+        double factor = pow(step_ratio, 2 * k);
+        double weight = factor / (factor - 1.0);
+        
+        for (size_t i = 0; i < common_dim; i++) {
+            // Extrapolated value = weight * fine_step - (weight-1) * coarse_step
+            (*gradient)[i].real = weight * (*gradient)[i].real - (weight - 1.0) * gradients[k][i].real;
+            (*gradient)[i].imag = weight * (*gradient)[i].imag - (weight - 1.0) * gradients[k][i].imag;
+        }
+    }
+    
+    // Compute error estimate using the difference between the extrapolated result
+    // and the finest step size gradient
+    double total_error = 0.0;
+    printf("DEBUG: Computing error estimate\n");
+    
+    for (size_t i = 0; i < common_dim; i++) {
+        double real_diff = (*gradient)[i].real - gradients[0][i].real;
+        double imag_diff = (*gradient)[i].imag - gradients[0][i].imag;
         
         // Add to total error (using L2 norm of differences)
         total_error += real_diff * real_diff + imag_diff * imag_diff;
-        
-        // Store average of gradients
-        (*gradient)[i].real = (gradient1[i].real + gradient2[i].real) / 2.0;
-        (*gradient)[i].imag = (gradient1[i].imag + gradient2[i].imag) / 2.0;
         
         if (i < 4) {
             printf("DEBUG: Gradient[%zu]: (%.6f,%.6f)\n", 
@@ -86,14 +133,17 @@ bool compute_gradient_with_error(
     }
     
     // Compute RMS error
-    *error_estimate = sqrt(total_error / dim1);
+    *error_estimate = sqrt(total_error / common_dim);
     printf("DEBUG: Error estimate: %.6f\n", *error_estimate);
     
-    *dimension = dim1;
+    *dimension = common_dim;
     
     // Clean up
-    free(gradient1);
-    free(gradient2);
+    for (int i = 0; i < num_steps; i++) {
+        free(gradients[i]);
+    }
+    free(gradients);
+    free(dims);
     
     return true;
 }
@@ -386,22 +436,45 @@ bool compute_shifted_states(
     size_t state_dim = 1 << qgtn->num_qubits;
     printf("DEBUG: state_dim=%zu (num_qubits=%zu)\n", state_dim, qgtn->num_qubits);
     
-    // Allocate states
-    *forward_state = calloc(state_dim, sizeof(ComplexFloat));
-    *backward_state = calloc(state_dim, sizeof(ComplexFloat));
+    // Get global memory system
+    advanced_memory_system_t* memory = get_global_memory_system();
+    if (!memory) {
+        // Create memory system if it doesn't exist
+        memory_system_config_t mem_config = {
+            .type = MEM_SYSTEM_QUANTUM,
+            .strategy = ALLOC_STRATEGY_BUDDY,
+            .optimization = MEM_OPT_ADVANCED,
+            .alignment = sizeof(ComplexFloat),
+            .enable_monitoring = true,
+            .enable_defragmentation = true
+        };
+        memory = create_memory_system(&mem_config);
+        if (!memory) {
+            printf("DEBUG: Failed to create memory system\n");
+            return false;
+        }
+    }
+    
+    // Allocate states using safe memory allocation
+    *forward_state = safe_memory_allocate(memory, state_dim * sizeof(ComplexFloat), sizeof(ComplexFloat));
+    *backward_state = safe_memory_allocate(memory, state_dim * sizeof(ComplexFloat), sizeof(ComplexFloat));
     if (!*forward_state || !*backward_state) {
-        free(*forward_state);
-        free(*backward_state);
+        if (*forward_state) safe_memory_free(memory, *forward_state);
+        if (*backward_state) safe_memory_free(memory, *backward_state);
         return false;
     }
+    
+    // Initialize to zero
+    memset(*forward_state, 0, state_dim * sizeof(ComplexFloat));
+    memset(*backward_state, 0, state_dim * sizeof(ComplexFloat));
     
     // Save original state coordinates
     ComplexFloat* original_coordinates = NULL;
     if (qgtn->circuit->state && qgtn->circuit->state->coordinates) {
-        original_coordinates = malloc(state_dim * sizeof(ComplexFloat));
+        original_coordinates = safe_memory_allocate(memory, state_dim * sizeof(ComplexFloat), sizeof(ComplexFloat));
         if (!original_coordinates) {
-            free(*forward_state);
-            free(*backward_state);
+            safe_memory_free(memory, *forward_state);
+            safe_memory_free(memory, *backward_state);
             return false;
         }
         memcpy(original_coordinates, qgtn->circuit->state->coordinates, 
@@ -411,45 +484,46 @@ bool compute_shifted_states(
     // Initialize quantum state in tensor network
     if (!qgtn->network || !qgtn->network->nodes || qgtn->network->num_nodes < 1) {
         printf("DEBUG: Invalid tensor network state\n");
-        free(original_coordinates);
-        free(*forward_state);
-        free(*backward_state);
+        if (original_coordinates) safe_memory_free(memory, original_coordinates);
+        safe_memory_free(memory, *forward_state);
+        safe_memory_free(memory, *backward_state);
         return false;
     }
     printf("DEBUG: Tensor network state valid\n");
 
     // Initialize state vector with |0> state
-    ComplexFloat* init_state = calloc(state_dim, sizeof(ComplexFloat));
+    ComplexFloat* init_state = safe_memory_allocate(memory, state_dim * sizeof(ComplexFloat), sizeof(ComplexFloat));
     if (!init_state) {
         printf("DEBUG: Failed to allocate init_state\n");
-        free(original_coordinates);
-        free(*forward_state);
-        free(*backward_state);
+        if (original_coordinates) safe_memory_free(memory, original_coordinates);
+        safe_memory_free(memory, *forward_state);
+        safe_memory_free(memory, *backward_state);
         return false;
     }
+    memset(init_state, 0, state_dim * sizeof(ComplexFloat));
     init_state[0] = (ComplexFloat){1.0f, 0.0f};  // |0> state
     printf("DEBUG: Initialized |0> state\n");
 
     // Set initial state in tensor network
     if (!qgtn->network->nodes[0] || !qgtn->network->nodes[0]->data) {
         printf("DEBUG: Invalid tensor network node or data\n");
-        free(init_state);
-        free(original_coordinates);
-        free(*forward_state);
-        free(*backward_state);
+        safe_memory_free(memory, init_state);
+        if (original_coordinates) safe_memory_free(memory, original_coordinates);
+        safe_memory_free(memory, *forward_state);
+        safe_memory_free(memory, *backward_state);
         return false;
     }
     memcpy(qgtn->network->nodes[0]->data, init_state, state_dim * sizeof(ComplexFloat));
-    free(init_state);
+    safe_memory_free(memory, init_state);
     printf("DEBUG: Set initial state in tensor network\n");
 
     // Forward shift
     printf("DEBUG: Applying forward shift (amount=%.6f)\n", shift_amount);
     if (!shift_parameter(qgtn, param_idx, shift_amount)) {
         printf("DEBUG: Forward shift_parameter failed\n");
-        free(original_coordinates);
-        free(*forward_state);
-        free(*backward_state);
+        if (original_coordinates) safe_memory_free(memory, original_coordinates);
+        safe_memory_free(memory, *forward_state);
+        safe_memory_free(memory, *backward_state);
         return false;
     }
     printf("DEBUG: Forward shift applied successfully\n");
@@ -459,39 +533,65 @@ bool compute_shifted_states(
     if (!apply_quantum_circuit(qgtn, qgtn->circuit)) {
         printf("DEBUG: Forward apply_quantum_circuit failed\n");
         shift_parameter(qgtn, param_idx, -shift_amount); // Restore parameter
-        free(original_coordinates);
-        free(*forward_state);
-        free(*backward_state);
+        if (original_coordinates) {
+            safe_memory_free(memory, original_coordinates);
+        }
+        safe_memory_free(memory, *forward_state);
+        safe_memory_free(memory, *backward_state);
         return false;
     }
     printf("DEBUG: Forward quantum circuit applied successfully\n");
     
     // Copy forward state
-    memcpy(*forward_state, qgtn->circuit->state->coordinates, 
-           state_dim * sizeof(ComplexFloat));
+    if (qgtn->circuit->state && qgtn->circuit->state->coordinates) {
+        memcpy(*forward_state, qgtn->circuit->state->coordinates, 
+               state_dim * sizeof(ComplexFloat));
+    } else {
+        printf("DEBUG: Forward state coordinates are NULL\n");
+        if (original_coordinates) {
+            safe_memory_free(memory, original_coordinates);
+        }
+        safe_memory_free(memory, *forward_state);
+        safe_memory_free(memory, *backward_state);
+        return false;
+    }
     
     // Reset state to |0> for backward shift
     printf("DEBUG: Resetting state for backward shift\n");
-    init_state = calloc(state_dim, sizeof(ComplexFloat));
+    init_state = safe_memory_allocate(memory, state_dim * sizeof(ComplexFloat), sizeof(ComplexFloat));
     if (!init_state) {
         printf("DEBUG: Failed to allocate init_state for backward shift\n");
-        free(original_coordinates);
-        free(*forward_state);
-        free(*backward_state);
+        if (original_coordinates) {
+            safe_memory_free(memory, original_coordinates);
+        }
+        safe_memory_free(memory, *forward_state);
+        safe_memory_free(memory, *backward_state);
         return false;
     }
+    memset(init_state, 0, state_dim * sizeof(ComplexFloat));
     init_state[0] = (ComplexFloat){1.0f, 0.0f};  // |0> state
-    memcpy(qgtn->network->nodes[0]->data, init_state, state_dim * sizeof(ComplexFloat));
-    free(init_state);
+    if (qgtn->network && qgtn->network->nodes && qgtn->network->nodes[0] && qgtn->network->nodes[0]->data) {
+        memcpy(qgtn->network->nodes[0]->data, init_state, state_dim * sizeof(ComplexFloat));
+    } else {
+        printf("DEBUG: Network nodes data is NULL\n");
+        safe_memory_free(memory, init_state);
+        if (original_coordinates) {
+            safe_memory_free(memory, original_coordinates);
+        }
+        safe_memory_free(memory, *forward_state);
+        safe_memory_free(memory, *backward_state);
+        return false;
+    }
+    safe_memory_free(memory, init_state);
     printf("DEBUG: Reset state to |0> for backward shift\n");
 
     // Backward shift
     printf("DEBUG: Applying backward shift (amount=%.6f)\n", -shift_amount);
     if (!shift_parameter(qgtn, param_idx, -shift_amount)) {  // Apply negative shift
         printf("DEBUG: Backward shift_parameter failed\n");
-        free(original_coordinates);
-        free(*forward_state);
-        free(*backward_state);
+        if (original_coordinates) safe_memory_free(memory, original_coordinates);
+        safe_memory_free(memory, *forward_state);
+        safe_memory_free(memory, *backward_state);
         return false;
     }
     printf("DEBUG: Backward shift applied successfully\n");
@@ -501,33 +601,60 @@ bool compute_shifted_states(
     if (!apply_quantum_circuit(qgtn, qgtn->circuit)) {
         printf("DEBUG: Backward apply_quantum_circuit failed\n");
         shift_parameter(qgtn, param_idx, shift_amount); // Restore parameter
-        free(original_coordinates);
-        free(*forward_state);
-        free(*backward_state);
+        if (original_coordinates) {
+            safe_memory_free(memory, original_coordinates);
+        }
+        safe_memory_free(memory, *forward_state);
+        safe_memory_free(memory, *backward_state);
         return false;
     }
     printf("DEBUG: Backward quantum circuit applied successfully\n");
     
     // Copy backward state
-    memcpy(*backward_state, qgtn->circuit->state->coordinates,
-           state_dim * sizeof(ComplexFloat));
+    if (qgtn->circuit->state && qgtn->circuit->state->coordinates) {
+        memcpy(*backward_state, qgtn->circuit->state->coordinates,
+               state_dim * sizeof(ComplexFloat));
+    } else {
+        printf("DEBUG: Backward state coordinates are NULL\n");
+        if (original_coordinates) {
+            safe_memory_free(memory, original_coordinates);
+        }
+        safe_memory_free(memory, *forward_state);
+        safe_memory_free(memory, *backward_state);
+        return false;
+    }
     
     // Restore parameter to original value
     if (!shift_parameter(qgtn, param_idx, shift_amount)) {  // Shift back to original
         printf("DEBUG: Failed to restore parameter to original value\n");
-        free(original_coordinates);
-        free(*forward_state);
-        free(*backward_state);
+        if (original_coordinates) safe_memory_free(memory, original_coordinates);
+        safe_memory_free(memory, *forward_state);
+        safe_memory_free(memory, *backward_state);
         return false;
     }
     printf("DEBUG: Parameter restored to original value\n");
     
     // Restore original state if it existed
+    printf("DEBUG: Restoring original state, original_coordinates=%p\n", (void*)original_coordinates);
     if (original_coordinates) {
-        if (qgtn->circuit->state->coordinates) {
-            free(qgtn->circuit->state->coordinates);
+        if (qgtn->circuit->state && qgtn->circuit->state->coordinates) {
+            printf("DEBUG: Circuit state coordinates exist at %p\n", (void*)qgtn->circuit->state->coordinates);
+            // Simply copy the original coordinates back to the existing buffer
+            // This avoids unnecessary free/malloc cycles and potential memory leaks
+            printf("DEBUG: Copying original coordinates back to circuit state\n");
+            memcpy(qgtn->circuit->state->coordinates, original_coordinates, 
+                   state_dim * sizeof(ComplexFloat));
+            printf("DEBUG: Original coordinates copied successfully\n");
+        } else {
+            printf("DEBUG: Circuit state coordinates are NULL, cannot restore\n");
         }
-        qgtn->circuit->state->coordinates = original_coordinates;
+        
+        // Free our backup of the original coordinates
+        printf("DEBUG: Freeing original coordinates backup\n");
+        safe_memory_free(memory, original_coordinates);
+        printf("DEBUG: Original coordinates freed successfully\n");
+    } else {
+        printf("DEBUG: No original coordinates to restore\n");
     }
     
     *dimension = state_dim;

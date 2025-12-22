@@ -87,6 +87,26 @@ typedef struct {
     void* metric_data;             // Additional metrics
 } training_metrics_t;
 
+// Differential attention state (internal structure exposed for legacy code)
+typedef struct {
+    double* query;                  // Query vectors
+    double* key;                    // Key vectors
+    double* value;                  // Value vectors
+    double* gradients;              // Attention gradients
+    double* jacobian;               // Jacobian matrix
+    size_t head_dim;                // Head dimension
+} DiffAttention;
+
+// Differential transformer state (internal structure exposed for legacy code)
+typedef struct {
+    double* values;                 // Current values
+    double* derivatives;            // Derivatives
+    size_t seq_length;              // Sequence length
+    size_t hidden_dim;              // Hidden dimension
+    size_t num_heads;               // Number of heads
+    double learning_rate;           // Learning rate
+} DiffTransformerState;
+
 // Opaque transformer handle
 typedef struct differential_transformer_t differential_transformer_t;
 
@@ -169,6 +189,27 @@ bool metal_backward_pass(differential_transformer_t* transformer,
                         const double* gradient,
                         double* input_gradient,
                         model_state_t* state);
+
+// Legacy differential transformer functions
+DiffTransformerState* create_diff_transformer(size_t seq_length,
+                                              size_t hidden_dim,
+                                              size_t num_heads,
+                                              double learning_rate);
+void free_diff_transformer(DiffTransformerState* state);
+void diff_transformer_forward(DiffTransformerState* state,
+                             const double* input,
+                             double* output);
+
+// Legacy differential attention functions
+DiffAttention* create_diff_attention(size_t hidden_dim, size_t num_heads);
+void free_diff_attention(DiffAttention* attn);
+void diff_attention_forward(DiffAttention* attn,
+                           const double* input,
+                           double* output,
+                           size_t seq_length);
+
+// Regularization
+void apply_differential_regularization(DiffTransformerState* state, double lambda);
 
 // Utility functions
 bool export_model(const differential_transformer_t* transformer,

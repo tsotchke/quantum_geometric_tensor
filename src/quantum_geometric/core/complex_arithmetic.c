@@ -144,15 +144,15 @@ ComplexFloat from_dsp_complex(DSPComplex a) {
 
 __CLPK_complex to_lapack_complex(ComplexFloat a) {
     __CLPK_complex result;
-    result.real = a.real;
-    result.imag = a.imag;
+    result.r = a.real;
+    result.i = a.imag;
     return result;
 }
 
 ComplexFloat from_lapack_complex(__CLPK_complex a) {
     ComplexFloat result;
-    result.real = a.real;
-    result.imag = a.imag;
+    result.real = a.r;
+    result.imag = a.i;
     return result;
 }
 #endif

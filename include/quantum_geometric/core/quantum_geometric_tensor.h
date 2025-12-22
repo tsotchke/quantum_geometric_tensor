@@ -22,7 +22,8 @@ qgt_error_t geometric_tensor_clone(quantum_geometric_tensor_t** dest,
 qgt_error_t geometric_tensor_initialize(quantum_geometric_tensor_t* tensor,
                                       const ComplexFloat* data);
 qgt_error_t geometric_tensor_initialize_zero(quantum_geometric_tensor_t* tensor);
-qgt_error_t geometric_tensor_initialize_random(quantum_geometric_tensor_t* tensor);
+qgt_error_t geometric_tensor_initialize_random(quantum_geometric_tensor_t* tensor,
+                                              float min_val, float max_val);
 qgt_error_t geometric_tensor_initialize_identity(quantum_geometric_tensor_t* tensor);
 
 // Tensor operations

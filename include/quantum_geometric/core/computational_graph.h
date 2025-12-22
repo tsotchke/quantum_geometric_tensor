@@ -52,8 +52,8 @@ typedef struct computational_graph_t {
 } computational_graph_t;
 
 // Graph creation and destruction
-struct computational_graph_t* create_computational_graph(struct geometric_processor_t* processor);
-void destroy_computational_graph(struct computational_graph_t* graph);
+computational_graph_t* create_computational_graph(geometric_processor_t* processor);
+void destroy_computational_graph(computational_graph_t* graph);
 
 // Node management
 computation_node_t* add_node(struct computational_graph_t* graph, 

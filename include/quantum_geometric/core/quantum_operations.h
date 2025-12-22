@@ -7,6 +7,7 @@
 #include "quantum_geometric/core/quantum_state.h"
 #include <stddef.h>
 #include <stdbool.h>
+#include <complex.h>
 
 // Operator creation/destruction
 qgt_error_t quantum_operator_create(quantum_operator_t** operator,
@@ -51,16 +52,16 @@ qgt_error_t quantum_operator_add(quantum_operator_t* result,
 qgt_error_t quantum_operator_subtract(quantum_operator_t* result,
                                      const quantum_operator_t* a,
                                      const quantum_operator_t* b);
-qgt_error_t quantum_operator_multiply(quantum_operator_t* result,
-                                     const quantum_operator_t* a,
-                                     const quantum_operator_t* b);
-qgt_error_t quantum_operator_tensor_product(quantum_operator_t* result,
-                                           const quantum_operator_t* a,
-                                           const quantum_operator_t* b);
+qgt_error_t quantum_operator_multiply(const quantum_operator_t* op1,
+                                     const quantum_operator_t* op2,
+                                     quantum_operator_t* result);
+qgt_error_t quantum_operator_tensor_product(const quantum_operator_t* op1,
+                                           const quantum_operator_t* op2,
+                                           quantum_operator_t* result);
 
 // Operator transformations
-qgt_error_t quantum_operator_adjoint(quantum_operator_t* result,
-                                    const quantum_operator_t* operator);
+qgt_error_t quantum_operator_adjoint(const quantum_operator_t* operator,
+                                    quantum_operator_t* result);
 qgt_error_t quantum_operator_transpose(quantum_operator_t* result,
                                       const quantum_operator_t* operator);
 qgt_error_t quantum_operator_conjugate(quantum_operator_t* result,
@@ -69,9 +70,9 @@ qgt_error_t quantum_operator_exponential(quantum_operator_t* result,
                                         const quantum_operator_t* operator);
 
 // Operator properties
-qgt_error_t quantum_operator_trace(ComplexFloat* trace,
-                                  const quantum_operator_t* operator);
-qgt_error_t quantum_operator_determinant(ComplexFloat* determinant,
+qgt_error_t quantum_operator_trace(const quantum_operator_t* operator,
+                                  complex double* trace);
+qgt_error_t quantum_operator_determinant(complex double* determinant,
                                         const quantum_operator_t* operator);
 qgt_error_t quantum_operator_eigenvalues(ComplexFloat* eigenvalues,
                                         const quantum_operator_t* operator);
@@ -80,17 +81,17 @@ qgt_error_t quantum_operator_eigenvectors(quantum_operator_t* eigenvectors,
 
 // Operator validation
 qgt_error_t quantum_operator_validate(const quantum_operator_t* operator);
-bool quantum_operator_is_hermitian(const quantum_operator_t* operator);
-bool quantum_operator_is_unitary(const quantum_operator_t* operator);
-bool quantum_operator_is_positive(const quantum_operator_t* operator);
+qgt_error_t quantum_operator_is_hermitian(const quantum_operator_t* operator, bool* result);
+qgt_error_t quantum_operator_is_unitary(const quantum_operator_t* operator, bool* result);
+qgt_error_t quantum_operator_is_positive(const quantum_operator_t* operator, bool* result);
 
 // Hardware operations
 qgt_error_t quantum_operator_to_device(quantum_operator_t* operator,
-                                      quantum_hardware_t hardware);
+                                      HardwareType hardware);
 qgt_error_t quantum_operator_from_device(quantum_operator_t* operator,
-                                        quantum_hardware_t hardware);
-bool quantum_operator_is_on_device(const quantum_operator_t* operator,
-                                  quantum_hardware_t hardware);
+                                        HardwareType hardware);
+qgt_error_t quantum_operator_is_on_device(const quantum_operator_t* operator,
+                                         HardwareType hardware, bool* result);
 
 // Resource management
 qgt_error_t quantum_operator_estimate_resources(const quantum_operator_t* operator,

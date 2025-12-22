@@ -92,7 +92,7 @@ bool get_gradient_options(gradient_options_t* options);
 
 /**
  * @brief Compute higher order gradient using multiple shifts
- * 
+ *
  * @param qgtn The quantum geometric tensor network
  * @param param_idx Index of the parameter
  * @param shift_amounts Array of shift amounts
@@ -109,6 +109,78 @@ bool compute_higher_order_gradient(
     ComplexFloat** gradient,
     size_t* dimension
 );
+
+/**
+ * @brief Count the number of trainable parameters in the quantum circuit
+ *
+ * @param qgtn The quantum geometric tensor network
+ * @return Number of trainable parameters, or 0 if none found
+ */
+size_t count_trainable_parameters(const quantum_geometric_tensor_network_t* qgtn);
+
+/**
+ * @brief Compute loss gradient using parameter shift rule for a single parameter
+ *
+ * Computes the gradient of the MSE loss with respect to a circuit parameter:
+ * dL/dθ = [L(θ + π/2) - L(θ - π/2)] / 2
+ *
+ * @param qgtn The quantum geometric tensor network (will be modified temporarily)
+ * @param param_idx Index of the parameter to compute gradient for
+ * @param labels Target labels array
+ * @param num_samples Number of samples
+ * @param output_dim Dimension of output
+ * @param gradient Output gradient value
+ * @return true if successful, false otherwise
+ */
+bool compute_loss_gradient_single_param(
+    quantum_geometric_tensor_network_t* qgtn,
+    size_t param_idx,
+    const ComplexFloat* labels,
+    size_t num_samples,
+    size_t output_dim,
+    double* gradient);
+
+/**
+ * @brief Compute loss gradients for ALL trainable parameters
+ *
+ * Uses the parameter shift rule to compute the gradient of the loss function
+ * with respect to each trainable parameter in the quantum circuit.
+ *
+ * @param qgtn The quantum geometric tensor network (will be modified temporarily)
+ * @param labels Target labels array
+ * @param num_samples Number of samples
+ * @param output_dim Dimension of output
+ * @param gradients Output array of gradients (caller must free)
+ * @param num_gradients Output number of gradients (equals number of trainable params)
+ * @return true if successful, false otherwise
+ */
+bool compute_all_loss_gradients(
+    quantum_geometric_tensor_network_t* qgtn,
+    const ComplexFloat* labels,
+    size_t num_samples,
+    size_t output_dim,
+    double** gradients,
+    size_t* num_gradients);
+
+/**
+ * @brief Run forward pass and compute loss
+ *
+ * Helper function that runs the forward pass through the quantum circuit
+ * and computes the MSE loss against the target labels.
+ *
+ * @param qgtn The quantum geometric tensor network
+ * @param labels Target labels array
+ * @param num_samples Number of samples
+ * @param output_dim Dimension of output
+ * @param loss Output loss value
+ * @return true if successful, false otherwise
+ */
+bool compute_forward_loss(
+    quantum_geometric_tensor_network_t* qgtn,
+    const ComplexFloat* labels,
+    size_t num_samples,
+    size_t output_dim,
+    double* loss);
 
 #ifdef __cplusplus
 }

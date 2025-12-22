@@ -80,19 +80,20 @@ void* quantum_pipeline_create_impl(const float* config) {
         }
         
         // Initialize learning task
-        task_config_t task_config = {
-            .task_type = TASK_CLASSIFICATION,
-            .model_type = MODEL_QUANTUM_NEURAL_NETWORK,
-            .optimizer_type = OPTIMIZER_QUANTUM_GRADIENT_DESCENT,
-            .input_dim = static_cast<size_t>(config[QG_CONFIG_INPUT_DIM]),
-            .output_dim = static_cast<size_t>(config[QG_CONFIG_NUM_CLASSES]),
-            .latent_dim = static_cast<size_t>(config[QG_CONFIG_LATENT_DIM]),
-            .num_qubits = 8, // TODO: Make configurable
-            .num_layers = 4,  // TODO: Make configurable
-            .batch_size = static_cast<size_t>(config[QG_CONFIG_BATCH_SIZE]),
-            .learning_rate = config[QG_CONFIG_LEARNING_RATE],
-            .use_gpu = config[QG_CONFIG_USE_GPU] > 0.5f
-        };
+        task_config_t task_config;
+        task_config.task_type = TASK_CLASSIFICATION;
+        task_config.model_type = MODEL_QUANTUM_NEURAL_NETWORK;
+        task_config.optimizer_type = OPTIMIZER_QUANTUM_GRADIENT_DESCENT;
+        task_config.input_dim = static_cast<size_t>(config[QG_CONFIG_INPUT_DIM]);
+        task_config.output_dim = static_cast<size_t>(config[QG_CONFIG_NUM_CLASSES]);
+        task_config.latent_dim = static_cast<size_t>(config[QG_CONFIG_LATENT_DIM]);
+        task_config.num_qubits = config[QG_CONFIG_NUM_QUBITS] > 0 ? static_cast<size_t>(config[QG_CONFIG_NUM_QUBITS]) : 8;
+        task_config.num_layers = config[QG_CONFIG_NUM_LAYERS] > 0 ? static_cast<size_t>(config[QG_CONFIG_NUM_LAYERS]) : 4;
+        task_config.batch_size = static_cast<size_t>(config[QG_CONFIG_BATCH_SIZE]);
+        task_config.learning_rate = static_cast<double>(config[QG_CONFIG_LEARNING_RATE]);
+        task_config.use_gpu = config[QG_CONFIG_USE_GPU] > 0.5f;
+        task_config.enable_error_mitigation = true;
+        task_config.num_shots = 1024;
         
         state->learning_task = quantum_create_learning_task(&task_config);
         if (!state->learning_task) {
@@ -286,9 +287,47 @@ int quantum_pipeline_evaluate_impl(void* pipeline, const float* data, const int*
 int quantum_pipeline_save_impl(void* pipeline, const char* filename) {
     auto state = static_cast<QuantumPipelineState*>(pipeline);
     if (!state || !filename) return QG_ERROR_INVALID_ARGUMENT;
-    
+
     try {
-        // TODO: Implement model saving
+        FILE* fp = fopen(filename, "wb");
+        if (!fp) return QG_ERROR_RUNTIME;
+
+        // Write header with magic number and version
+        const uint32_t MAGIC = 0x51475450; // "QGTP" - Quantum Geometric Tensor Pipeline
+        const uint32_t VERSION = 1;
+        fwrite(&MAGIC, sizeof(uint32_t), 1, fp);
+        fwrite(&VERSION, sizeof(uint32_t), 1, fp);
+
+        // Write configuration
+        fwrite(state->config, sizeof(float), QG_CONFIG_SIZE, fp);
+
+        // Write training state
+        fwrite(&state->current_epoch, sizeof(size_t), 1, fp);
+        fwrite(&state->current_loss, sizeof(float), 1, fp);
+        fwrite(&state->current_accuracy, sizeof(float), 1, fp);
+
+        // Save learning task parameters if available
+        if (state->learning_task) {
+            // Get model parameters from learning task
+            size_t num_params = 0;
+            float* params = nullptr;
+
+            if (quantum_get_task_parameters(state->learning_task, &params, &num_params)) {
+                fwrite(&num_params, sizeof(size_t), 1, fp);
+                if (params && num_params > 0) {
+                    fwrite(params, sizeof(float), num_params, fp);
+                }
+                free(params);
+            } else {
+                num_params = 0;
+                fwrite(&num_params, sizeof(size_t), 1, fp);
+            }
+        } else {
+            size_t num_params = 0;
+            fwrite(&num_params, sizeof(size_t), 1, fp);
+        }
+
+        fclose(fp);
         return QG_SUCCESS;
     } catch (const std::exception&) {
         return QG_ERROR_RUNTIME;

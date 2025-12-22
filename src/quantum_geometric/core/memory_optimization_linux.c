@@ -8,8 +8,16 @@
 #include "quantum_geometric/core/quantum_geometric_logging.h"
 #include <stdlib.h>
 #include <string.h>
-#include <immintrin.h>
 #include <sys/mman.h>
+
+// Platform-specific SIMD includes
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    #include <immintrin.h>
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    #if defined(__ARM_NEON) || defined(__ARM_NEON__)
+        #include <arm_neon.h>
+    #endif
+#endif
 
 #ifdef __linux__
 #include <numa.h>

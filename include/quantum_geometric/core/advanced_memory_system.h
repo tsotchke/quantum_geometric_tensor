@@ -165,7 +165,6 @@ void memory_transfer(MemoryBuffer* buffer,
                     geometric_state_type_t direction);
 
 // Memory pool management
-void cleanup_memory_pool(MemoryPool* pool);
 void update_memory_access(MemoryPool* pool);
 
 // Memory optimization functions

@@ -4,6 +4,11 @@
 #include <stdbool.h>
 #include <math.h>
 
+// ComplexFloat and ComplexDouble are defined in quantum_base_types.h
+// This header provides the operations on those types
+#ifndef COMPLEX_FLOAT_DEFINED
+#define COMPLEX_FLOAT_DEFINED
+
 // Complex number type using single precision
 typedef struct {
     float real;
@@ -15,6 +20,8 @@ typedef struct {
     double real;
     double imag;
 } ComplexDouble;
+
+#endif // COMPLEX_FLOAT_DEFINED
 
 // Complex number constants
 static const ComplexFloat COMPLEX_FLOAT_ZERO = {0.0f, 0.0f};

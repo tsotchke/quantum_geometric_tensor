@@ -6,6 +6,12 @@
 #include "quantum_geometric/core/quantum_types.h"
 #include "quantum_geometric/core/quantum_geometric_types.h"
 
+// Forward declaration for quantum_operator_t (defined in quantum_state_types.h)
+#ifndef QUANTUM_STATE_TYPES_H
+struct quantum_operator_t;
+typedef struct quantum_operator_t quantum_operator_t;
+#endif
+
 // Creation and destruction
 quantum_register_t* quantum_register_create(size_t num_qubits, int flags);
 quantum_register_t* quantum_register_create_state(complex double* amplitudes, size_t size, quantum_system_t* system);

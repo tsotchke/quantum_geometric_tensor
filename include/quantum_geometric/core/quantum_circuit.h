@@ -8,41 +8,18 @@
 
 #include "quantum_geometric/core/quantum_geometric_types.h"
 #include "quantum_geometric/core/quantum_circuit_types.h"
+#include "quantum_geometric/hardware/quantum_hardware_types.h"
 #include <stdbool.h>
 
-// Forward declarations
-typedef struct quantum_result quantum_result;
+// Include the canonical quantum_result definition
+#include "quantum_geometric/core/quantum_result.h"
 
-// Gate types
-typedef enum {
-    GATE_H,      // Hadamard gate
-    GATE_X,      // Pauli X gate
-    GATE_Y,      // Pauli Y gate
-    GATE_Z,      // Pauli Z gate
-    GATE_S,      // S gate (phase gate)
-    GATE_T,      // T gate
-    GATE_CNOT,   // Controlled NOT gate
-    GATE_CZ,     // Controlled Z gate
-    GATE_SWAP,   // SWAP gate
-    GATE_RX,     // Rotation around X axis
-    GATE_RY,     // Rotation around Y axis
-    GATE_RZ,     // Rotation around Z axis
-    GATE_U1,     // U1 gate (phase rotation)
-    GATE_U2,     // U2 gate (sqrt of NOT)
-    GATE_U3,     // U3 gate (general single qubit)
-    GATE_CUSTOM  // Custom gate
-} gate_type_t;
+// Gate types and aliases are defined in quantum_base_types.h (included via quantum_types.h)
+// gate_type_t enum and GATE_* aliases are available from there
 
 // Gate structure is defined in quantum_types.h
 
-// Result structure
-typedef struct quantum_result {
-    double* measurements;     // Measurement results
-    size_t num_measurements; // Number of measurements
-    double* probabilities;   // Measurement probabilities
-    size_t shots;           // Number of shots
-    void* backend_data;     // Backend-specific data
-} quantum_result;
+// quantum_result is defined in quantum_result.h - do not redefine here
 
 // Circuit creation and management
 quantum_circuit* create_quantum_circuit(size_t num_qubits);

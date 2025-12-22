@@ -3,6 +3,7 @@
 
 #include "quantum_geometric/core/quantum_types.h"
 #include "quantum_geometric/core/quantum_circuit.h"
+#include "quantum_geometric/core/quantum_phase_estimation.h"
 
 // Circuit creation functions
 quantum_circuit_t* quantum_create_inversion_circuit(size_t num_qubits, int flags);

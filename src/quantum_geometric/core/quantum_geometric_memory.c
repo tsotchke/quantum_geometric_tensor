@@ -27,7 +27,7 @@ qgt_error_t geometric_init_memory(void) {
     };
 
     // Try to initialize with optimized settings
-    global_memory_pool = init_memory_pool(&config);
+    global_memory_pool = create_memory_pool(&config);
     if (!global_memory_pool) {
         // Fall back to minimal configuration
         config.min_block_size = QG_MIN_BLOCK_SIZE;  // Keep minimum block size
@@ -37,7 +37,7 @@ qgt_error_t geometric_init_memory(void) {
         config.prefetch_distance = 2;  // Moderate prefetching
         config.cache_local_free_lists = true;  // Keep thread caching
         
-        global_memory_pool = init_memory_pool(&config);
+        global_memory_pool = create_memory_pool(&config);
         if (!global_memory_pool) {
             geometric_log_error("Failed to initialize memory pool with fallback configuration");
             return QGT_ERROR_ALLOCATION_FAILED;
@@ -54,7 +54,7 @@ qgt_error_t geometric_init_memory(void) {
 // Cleanup memory system
 void geometric_cleanup_memory(void) {
     if (global_memory_pool) {
-        cleanup_memory_pool(global_memory_pool);
+        destroy_memory_pool(global_memory_pool);
         global_memory_pool = NULL;
     }
 }
@@ -71,7 +71,7 @@ void* geometric_allocate(size_t size) {
         return NULL;
     }
     
-    void* ptr = pool_malloc(global_memory_pool, size);
+    void* ptr = pool_allocate(global_memory_pool, size);
     if (!ptr) {
         geometric_log_error("Failed to allocate %zu bytes", size);
     }
@@ -103,6 +103,6 @@ qgt_error_t geometric_reset_memory(void) {
         return QGT_ERROR_NOT_INITIALIZED;
     }
     
-    cleanup_memory_pool(global_memory_pool);
+    destroy_memory_pool(global_memory_pool);
     return geometric_init_memory();
 }

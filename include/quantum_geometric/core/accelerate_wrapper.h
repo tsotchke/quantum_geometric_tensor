@@ -1,13 +1,47 @@
 #ifndef ACCELERATE_WRAPPER_H
 #define ACCELERATE_WRAPPER_H
 
+/**
+ * @file accelerate_wrapper.h
+ * @brief Cross-platform wrapper for BLAS/LAPACK operations
+ *
+ * On Apple platforms: Uses the native Accelerate framework
+ * On other platforms: Provides fallback definitions for compatibility
+ */
+
 #ifdef __APPLE__
 
-// Include system headers
-#include <TargetConditionals.h>
-#include "quantum_geometric/core/lapack_internal.h"
+// On Apple, use the real Accelerate framework
+#include <Accelerate/Accelerate.h>
 
-// CBLAS enum definitions - moved to global scope
+// Helper macros for error checking
+#define CHECK_LAPACK_ERROR(info) \
+    if (info != 0) { \
+        return false; \
+    }
+
+#define CHECK_NULL(ptr) \
+    if (ptr == NULL) { \
+        return false; \
+    }
+
+// Define MIN macro if not defined
+#ifndef MIN
+#define MIN(a,b) ((a) < (b) ? (a) : (b))
+#endif
+
+#ifndef MAX
+#define MAX(a,b) ((a) > (b) ? (a) : (b))
+#endif
+
+#else // !__APPLE__
+
+// Non-Apple platforms - provide compatible definitions
+
+#include <stddef.h>
+#include <stdbool.h>
+
+// CBLAS enum definitions
 enum CBLAS_ORDER {
     CblasRowMajor = 101,
     CblasColMajor = 102
@@ -19,49 +53,35 @@ enum CBLAS_TRANSPOSE {
     CblasConjTrans = 113
 };
 
-// Forward declarations for Accelerate types we need
-typedef struct {
-    float real;
-    float imag;
-} __CLPK_complex;
+enum CBLAS_UPLO {
+    CblasUpper = 121,
+    CblasLower = 122
+};
 
-typedef struct {
-    double real;
-    double imag;
-} __CLPK_doublecomplex;
+enum CBLAS_DIAG {
+    CblasNonUnit = 131,
+    CblasUnit = 132
+};
 
+enum CBLAS_SIDE {
+    CblasLeft = 141,
+    CblasRight = 142
+};
+
+// CLAPACK types
 typedef int __CLPK_integer;
 typedef float __CLPK_real;
 typedef double __CLPK_doublereal;
 
-// Define MIN macro if not defined
-#ifndef MIN
-#define MIN(a,b) ((a) < (b) ? (a) : (b))
-#endif
+typedef struct {
+    float r, i;
+} __CLPK_complex;
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+typedef struct {
+    double r, i;
+} __CLPK_doublecomplex;
 
-// Single precision matrix multiply
-void cblas_cgemm(enum CBLAS_ORDER Order,
-                 enum CBLAS_TRANSPOSE TransA,
-                 enum CBLAS_TRANSPOSE TransB,
-                 const int M, const int N, const int K,
-                 const void* alpha, const void* A, const int lda,
-                 const void* B, const int ldb, const void* beta,
-                 void* C, const int ldc);
-
-// Double precision matrix multiply
-void cblas_zgemm(enum CBLAS_ORDER Order,
-                 enum CBLAS_TRANSPOSE TransA,
-                 enum CBLAS_TRANSPOSE TransB,
-                 const int M, const int N, const int K,
-                 const void* alpha, const void* A, const int lda,
-                 const void* B, const int ldb, const void* beta,
-                 void* C, const int ldc);
-
-// vDSP operations for complex arithmetic
+// DSP types for vDSP compatibility
 typedef struct DSPComplex {
     float real;
     float imag;
@@ -72,41 +92,55 @@ typedef struct DSPDoubleComplex {
     double imag;
 } DSPDoubleComplex;
 
-// vDSP complex operations
-void vDSP_zvmul(const DSPComplex* __A, __CLPK_integer __IA,
-                const DSPComplex* __B, __CLPK_integer __IB,
-                DSPComplex* __C, __CLPK_integer __IC,
-                __CLPK_integer __N, __CLPK_integer __F);
+typedef struct DSPSplitComplex {
+    float* realp;
+    float* imagp;
+} DSPSplitComplex;
 
-void vDSP_zvadd(const DSPComplex* __A, __CLPK_integer __IA,
-                const DSPComplex* __B, __CLPK_integer __IB,
-                DSPComplex* __C, __CLPK_integer __IC,
-                __CLPK_integer __N);
+typedef struct DSPDoubleSplitComplex {
+    double* realp;
+    double* imagp;
+} DSPDoubleSplitComplex;
 
-void vDSP_zvabs(const DSPComplex* __A, __CLPK_integer __IA,
-                float* __C, __CLPK_integer __IC,
-                __CLPK_integer __N);
+typedef unsigned long vDSP_Length;
+typedef long vDSP_Stride;
 
-void vDSP_zrvadd(const float* __A, __CLPK_integer __IA,
-                 const DSPComplex* __B, __CLPK_integer __IB,
-                 DSPComplex* __C, __CLPK_integer __IC,
-                 __CLPK_integer __N);
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-void vDSP_zrvmul(const float* __A, __CLPK_integer __IA,
-                 const DSPComplex* __B, __CLPK_integer __IB,
-                 DSPComplex* __C, __CLPK_integer __IC,
-                 __CLPK_integer __N);
+// CBLAS function declarations (typically provided by OpenBLAS, MKL, etc.)
+void cblas_sgemm(enum CBLAS_ORDER Order,
+                 enum CBLAS_TRANSPOSE TransA,
+                 enum CBLAS_TRANSPOSE TransB,
+                 const int M, const int N, const int K,
+                 const float alpha, const float* A, const int lda,
+                 const float* B, const int ldb, const float beta,
+                 float* C, const int ldc);
 
-// Additional vDSP operations needed for matrix operations
-void vDSP_zmmul(const DSPComplex* __A, __CLPK_integer __IA,
-                const DSPComplex* __B, __CLPK_integer __IB,
-                DSPComplex* __C, __CLPK_integer __IC,
-                __CLPK_integer __M, __CLPK_integer __N, __CLPK_integer __K);
+void cblas_dgemm(enum CBLAS_ORDER Order,
+                 enum CBLAS_TRANSPOSE TransA,
+                 enum CBLAS_TRANSPOSE TransB,
+                 const int M, const int N, const int K,
+                 const double alpha, const double* A, const int lda,
+                 const double* B, const int ldb, const double beta,
+                 double* C, const int ldc);
 
-void vDSP_zdotpr(const DSPComplex* __A, __CLPK_integer __IA,
-                 const DSPComplex* __B, __CLPK_integer __IB,
-                 DSPComplex* __C,
-                 __CLPK_integer __N);
+void cblas_cgemm(enum CBLAS_ORDER Order,
+                 enum CBLAS_TRANSPOSE TransA,
+                 enum CBLAS_TRANSPOSE TransB,
+                 const int M, const int N, const int K,
+                 const void* alpha, const void* A, const int lda,
+                 const void* B, const int ldb, const void* beta,
+                 void* C, const int ldc);
+
+void cblas_zgemm(enum CBLAS_ORDER Order,
+                 enum CBLAS_TRANSPOSE TransA,
+                 enum CBLAS_TRANSPOSE TransB,
+                 const int M, const int N, const int K,
+                 const void* alpha, const void* A, const int lda,
+                 const void* B, const int ldb, const void* beta,
+                 void* C, const int ldc);
 
 #ifdef __cplusplus
 }
@@ -122,6 +156,15 @@ void vDSP_zdotpr(const DSPComplex* __A, __CLPK_integer __IA,
     if (ptr == NULL) { \
         return false; \
     }
+
+// Define MIN/MAX macros if not defined
+#ifndef MIN
+#define MIN(a,b) ((a) < (b) ? (a) : (b))
+#endif
+
+#ifndef MAX
+#define MAX(a,b) ((a) > (b) ? (a) : (b))
+#endif
 
 #endif // __APPLE__
 

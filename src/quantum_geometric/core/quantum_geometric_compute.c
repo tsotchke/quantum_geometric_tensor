@@ -9,16 +9,6 @@
 #include <string.h>
 #include <math.h>
 
-// Add fields to existing quantum_circuit_t from quantum_types.h
-static bool extend_quantum_circuit(quantum_circuit_t* circuit) {
-    circuit->graph = NULL;
-    circuit->state = NULL;
-    circuit->nodes = NULL;
-    circuit->num_nodes = 0;
-    circuit->capacity = 0;
-    return true;
-}
-
 // Initialize quantum circuit
 quantum_circuit_t* quantum_circuit_create(size_t num_qubits) {
     quantum_circuit_t* circuit = malloc(sizeof(quantum_circuit_t));
@@ -278,14 +268,123 @@ bool quantum_circuit_execute(quantum_circuit_t* circuit) {
             }
             
             case NODE_TENSOR_PRODUCT: {
-                // Implement tensor product operation
-                // TODO: Implement tensor product
+                // Tensor product of two quantum states: |ψ⟩ ⊗ |φ⟩
+                // Result dimension = dim_A * dim_B
+
+                // Get the two input states from child nodes
+                if (node->num_children < 2) {
+                    return false;
+                }
+
+                quantum_compute_node_t* child_a = node->children[0];
+                quantum_compute_node_t* child_b = node->children[1];
+
+                size_t dim_a = 1 << child_a->num_qubits;
+                size_t dim_b = 1 << child_b->num_qubits;
+                size_t dim_result = dim_a * dim_b;
+
+                // Allocate result state
+                ComplexFloat* tensor_product = malloc(dim_result * sizeof(ComplexFloat));
+                if (!tensor_product) return false;
+
+                // Get states from children's state buffers or circuit state
+                ComplexFloat* coords_a = (child_a->state_buffer && child_a->state_buffer->coordinates) ?
+                    child_a->state_buffer->coordinates : circuit->state->coordinates;
+                ComplexFloat* coords_b = (child_b->state_buffer && child_b->state_buffer->coordinates) ?
+                    child_b->state_buffer->coordinates : circuit->state->coordinates;
+
+                for (size_t i = 0; i < dim_a; i++) {
+                    for (size_t j = 0; j < dim_b; j++) {
+                        size_t idx = i * dim_b + j;
+                        // Complex multiplication: (a + bi)(c + di) = (ac - bd) + (ad + bc)i
+                        tensor_product[idx].real = coords_a[i].real * coords_b[j].real -
+                                                   coords_a[i].imag * coords_b[j].imag;
+                        tensor_product[idx].imag = coords_a[i].real * coords_b[j].imag +
+                                                   coords_a[i].imag * coords_b[j].real;
+                    }
+                }
+
+                // Store result in node's state buffer
+                if (node->state_buffer && node->state_buffer->coordinates) {
+                    memcpy(node->state_buffer->coordinates, tensor_product,
+                           dim_result * sizeof(ComplexFloat));
+                } else if (dim_result <= (1UL << circuit->num_qubits)) {
+                    memcpy(circuit->state->coordinates, tensor_product,
+                           dim_result * sizeof(ComplexFloat));
+                }
+
+                free(tensor_product);
                 break;
             }
-            
+
             case NODE_PARTIAL_TRACE: {
-                // Implement partial trace operation
-                // TODO: Implement partial trace
+                // Partial trace over subsystem B: ρ_A = Tr_B(ρ_AB)
+                // For pure state |ψ⟩, trace over second subsystem
+
+                if (node->num_children < 1) {
+                    return false;
+                }
+
+                // Get dimensions - subsystem sizes stored in parameters array
+                // parameters[0].real = subsystem_a_size, parameters[1].real = subsystem_b_size
+                size_t n_qubits_a = (node->parameters && node->num_parameters >= 1) ?
+                    (size_t)node->parameters[0].real : 0;
+                size_t n_qubits_b = (node->parameters && node->num_parameters >= 2) ?
+                    (size_t)node->parameters[1].real : 0;
+
+                if (n_qubits_a == 0) n_qubits_a = node->num_qubits / 2;
+                if (n_qubits_b == 0) n_qubits_b = node->num_qubits - n_qubits_a;
+
+                size_t dim_a = 1 << n_qubits_a;
+                size_t dim_b = 1 << n_qubits_b;
+                size_t dim_total = dim_a * dim_b;
+
+                // Get input state
+                ComplexFloat* input_state = (ComplexFloat*)circuit->state->coordinates;
+
+                // Allocate reduced density matrix for subsystem A
+                // ρ_A is dim_a x dim_a
+                ComplexFloat* rho_a = calloc(dim_a * dim_a, sizeof(ComplexFloat));
+                if (!rho_a) return false;
+
+                // Compute partial trace: ρ_A[i,j] = Σ_k ψ[i*dim_b + k] * conj(ψ[j*dim_b + k])
+                for (size_t i = 0; i < dim_a; i++) {
+                    for (size_t j = 0; j < dim_a; j++) {
+                        ComplexFloat sum = {0.0f, 0.0f};
+                        for (size_t k = 0; k < dim_b; k++) {
+                            size_t idx_i = i * dim_b + k;
+                            size_t idx_j = j * dim_b + k;
+
+                            if (idx_i < dim_total && idx_j < dim_total) {
+                                // ψ_i * conj(ψ_j)
+                                ComplexFloat psi_i = input_state[idx_i];
+                                ComplexFloat psi_j_conj = {input_state[idx_j].real,
+                                                          -input_state[idx_j].imag};
+
+                                sum.real += psi_i.real * psi_j_conj.real -
+                                           psi_i.imag * psi_j_conj.imag;
+                                sum.imag += psi_i.real * psi_j_conj.imag +
+                                           psi_i.imag * psi_j_conj.real;
+                            }
+                        }
+                        rho_a[i * dim_a + j] = sum;
+                    }
+                }
+
+                // Store result - for partial trace we store the diagonal as probabilities
+                // or the full density matrix if output buffer supports it
+                if (node->state_buffer && node->state_buffer->coordinates) {
+                    // Store full reduced density matrix
+                    memcpy(node->state_buffer->coordinates, rho_a,
+                           dim_a * dim_a * sizeof(ComplexFloat));
+                } else {
+                    // Store diagonal elements (reduced state probabilities) in circuit state
+                    for (size_t i = 0; i < dim_a && i < (1UL << circuit->num_qubits); i++) {
+                        circuit->state->coordinates[i] = rho_a[i * dim_a + i];
+                    }
+                }
+
+                free(rho_a);
                 break;
             }
             
@@ -349,6 +448,41 @@ bool quantum_circuit_execute(quantum_circuit_t* circuit) {
     }
     
     return true;
+}
+
+// Add dense quantum layer
+void add_quantum_dense_layer(quantum_circuit* circuit, void* params) {
+    if (!circuit || !params) return;
+    
+    // Create a new layer of gates
+    size_t num_qubits = circuit->num_qubits;
+    
+    // Add rotation gates for each qubit
+    for (size_t i = 0; i < num_qubits; i++) {
+        // Add RY rotation gate
+        if (!quantum_circuit_add_rotation((quantum_circuit_t*)circuit, i, GATE_TYPE_RY, 0.0f)) {
+            return;
+        }
+        
+        // Add RZ rotation gate
+        if (!quantum_circuit_add_rotation((quantum_circuit_t*)circuit, i, GATE_TYPE_RZ, 0.0f)) {
+            return;
+        }
+    }
+    
+    // Add entangling CNOT gates between adjacent qubits
+    for (size_t i = 0; i < num_qubits - 1; i++) {
+        if (!quantum_circuit_add_cnot((quantum_circuit_t*)circuit, i, i + 1)) {
+            return;
+        }
+    }
+    
+    // Add final rotation layer
+    for (size_t i = 0; i < num_qubits; i++) {
+        if (!quantum_circuit_add_rotation((quantum_circuit_t*)circuit, i, GATE_TYPE_RY, 0.0f)) {
+            return;
+        }
+    }
 }
 
 // Clean up quantum circuit

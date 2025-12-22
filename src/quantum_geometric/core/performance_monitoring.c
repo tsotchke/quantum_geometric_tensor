@@ -3,12 +3,18 @@
  * @brief Performance monitoring system for quantum operations
  */
 
+#include "quantum_geometric/core/production_monitor.h"
 #include "quantum_geometric/core/performance_monitor.h"
 #include "quantum_geometric/core/quantum_geometric_core.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <sys/resource.h>
+
+// Forward declarations
+void cleanup_performance_monitoring(void);
+static void log_performance_warning(const char* message, double value, double threshold);
+static double get_gpu_utilization(void);
 
 // Performance thresholds from requirements
 #define MAX_ERROR_DETECTION_LATENCY 10    // microseconds
@@ -191,7 +197,8 @@ void update_resource_usage(void) {
     }
 }
 
-void record_operation_result(bool success, bool false_positive) {
+// Local version that tracks false positives for internal monitoring
+static void record_operation_result_internal(bool success, bool false_positive) {
     if (!monitor_state.initialized || !monitor_state.monitoring_active) {
         return;
     }
@@ -218,6 +225,15 @@ void record_operation_result(bool success, bool false_positive) {
     if (false_positive_rate > MAX_FALSE_POSITIVE_RATE) {
         log_performance_warning("False positive rate exceeded threshold",
                              false_positive_rate, MAX_FALSE_POSITIVE_RATE);
+    }
+}
+
+// Implementation of record_operation_result from production_monitor.h
+void record_operation_result(bool success, double latency) {
+    record_operation_result_internal(success, false);
+    // Store latency metric for analysis
+    if (monitor_state.initialized && monitor_state.num_operations > 0) {
+        monitor_state.operation_latencies[monitor_state.num_operations - 1] = latency;
     }
 }
 
@@ -287,7 +303,15 @@ static void log_performance_warning(const char* message,
 }
 
 static double get_gpu_utilization(void) {
-    // Get GPU utilization through hardware abstraction layer
-    // Returns -1 if GPU monitoring not available
-    return get_gpu_usage();
+    // Get GPU utilization - platform specific implementation
+#ifdef __APPLE__
+    // On macOS with Metal, we can query GPU utilization via IOKit
+    // For now, return -1 to indicate GPU monitoring not available inline
+    // Real implementation would use MTLDevice performance statistics
+    return -1.0;
+#else
+    // On Linux, check nvidia-smi or AMD's rocm-smi
+    // Return -1 if no GPU or monitoring not available
+    return -1.0;
+#endif
 }

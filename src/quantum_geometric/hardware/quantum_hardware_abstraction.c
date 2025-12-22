@@ -3,6 +3,7 @@
 #include "quantum_geometric/hardware/quantum_rigetti_backend.h"
 #include "quantum_geometric/hardware/quantum_dwave_backend.h"
 #include "quantum_geometric/hardware/quantum_hardware_types.h"
+#include "quantum_geometric/hardware/quantum_backend_types.h"
 #ifdef ENABLE_METAL
 #include "quantum_geometric/hardware/metal/quantum_geometric_metal.h"
 #include "quantum_geometric/hardware/metal/mnist_metal.h"
@@ -30,17 +31,84 @@
 #include <lapacke.h>
 #endif
 
-// Forward declarations
+// Global log level
+static int g_log_level = 0;
+
+// Hardware version string
+#define QUANTUM_HARDWARE_VERSION "1.0.0"
+
+// Minimum fidelity threshold
+#define RIGETTI_MIN_FIDELITY 0.95
+
+// Forward declarations - Conversion helpers
 static bool operation_to_qasm(const QuantumOperation* operation, char* buffer, size_t size);
 static bool operation_to_quil(const QuantumOperation* operation, char* buffer, size_t size);
 static bool operation_to_json(const QuantumOperation* operation, char* buffer, size_t size);
+
+// Forward declarations - Validation helpers
 static bool validate_gate_operation(const QuantumGate* gate);
 static bool validate_annealing_schedule(const double* schedule, size_t points);
-static QuantumProgram* optimize_for_hardware(const QuantumProgram* program, const struct HardwareState* hw);
+
+// Forward declarations - Optimization helpers
+static struct QuantumProgram* optimize_for_hardware(const struct QuantumProgram* program, const struct HardwareState* hw);
+
+// Forward declarations - Error mitigation helpers (internal)
 static double richardson_extrapolate(double value, const double* scale_factors, size_t num_factors);
-static bool apply_zne_mitigation(struct ExecutionResult* result, const struct MitigationParams* params);
-static bool apply_probabilistic_mitigation(struct ExecutionResult* result, const struct MitigationParams* params);
-static bool apply_custom_mitigation(struct ExecutionResult* result, const void* custom_params);
+static bool apply_zne_mitigation(ExecutionResult* result, const struct MitigationParams* params);
+static bool apply_probabilistic_mitigation(ExecutionResult* result, const struct MitigationParams* params);
+static bool apply_custom_mitigation(ExecutionResult* result, const void* custom_params);
+
+// Forward declarations - Backend configuration helpers (internal)
+static struct IBMConfig* internal_init_ibm_config(const struct IBMConfig* config);
+static struct RigettiConfig* internal_init_rigetti_config(const struct RigettiConfig* config);
+static struct DWaveConfig* internal_init_dwave_config(const struct DWaveConfig* config);
+static struct SimulatorConfig* internal_init_simulator_config(const struct SimulatorConfig* config);
+
+// Forward declarations - Backend execution helpers
+static bool execute_on_ibm(struct IBMConfig* backend, const QuantumProgram* program, ExecutionResult* result);
+static bool execute_on_rigetti(struct RigettiConfig* backend, const QuantumProgram* program, ExecutionResult* result);
+static bool execute_on_dwave(struct DWaveConfig* backend, const QuantumProgram* program, ExecutionResult* result);
+static bool execute_on_simulator(struct SimulatorConfig* backend, const QuantumProgram* program, ExecutionResult* result);
+
+// Forward declarations - Backend status helpers
+static char* get_ibm_status(struct IBMConfig* config, const char* job_id);
+static char* get_rigetti_status(struct RigettiConfig* config, const char* job_id);
+static char* get_dwave_status(struct DWaveConfig* config, const char* job_id);
+
+// Forward declarations - Backend listing helpers
+static char** get_available_ibm_backends(size_t* num_backends);
+static char** get_available_rigetti_backends(size_t* num_backends);
+static char** get_available_dwave_backends(size_t* num_backends);
+
+// Forward declarations - Backend test helpers (internal)
+static bool internal_test_ibm_connection(struct IBMConfig* config);
+static bool internal_test_rigetti_connection(struct RigettiConfig* config);
+static bool internal_test_dwave_connection(struct DWaveConfig* config);
+
+// Forward declarations - Backend options helpers
+static bool set_ibm_options(struct IBMConfig* config, const void* options);
+static bool set_rigetti_options(struct RigettiConfig* config, const void* options);
+static bool set_dwave_options(struct DWaveConfig* config, const void* options);
+static bool set_simulator_options(struct SimulatorConfig* config, const void* options);
+
+// Forward declarations - Simulator helpers
+static void* init_quantum_state(uint32_t num_qubits);
+static bool apply_operation(struct SimulatorConfig* backend, void* state, const QuantumOperation* op);
+static void get_measurement_results(void* state, ExecutionResult* result);
+static void calculate_probabilities(void* state, ExecutionResult* result);
+static void store_statevector(void* state, ExecutionResult* result);
+static void cleanup_quantum_state(void* state);
+
+// Forward declarations - Job submission helpers (internal)
+static bool internal_submit_ibm_job(struct IBMConfig* backend, const char* qasm, ExecutionResult* result);
+static bool internal_submit_rigetti_job(struct RigettiConfig* backend, const char* quil, ExecutionResult* result);
+
+// Forward declarations - Circuit optimization helpers (internal)
+static void internal_optimize_circuit_depth(QuantumProgram* program);
+static void optimize_gate_reordering(QuantumProgram* program);
+static void optimize_qubit_mapping(QuantumProgram* program, const HardwareCapabilities* caps);
+static void optimize_gate_decomposition(QuantumProgram* program, const HardwareCapabilities* caps);
+static void internal_validate_circuit(const QuantumCircuit* circuit, const QuantumHardware* hardware);
 
 bool apply_error_mitigation(struct ExecutionResult* result, const struct MitigationParams* params) {
     if (!result || !params) {
@@ -183,16 +251,16 @@ static bool init_backend_specific(void* hardware, const HardwareConfig* config) 
     // Initialize backend-specific state
     switch (config->type) {
         case HARDWARE_IBM:
-            hw->backend.ibm = init_ibm_backend(&config->config.ibm);
+            hw->backend.ibm = internal_init_ibm_config(&config->config.ibm);
             return hw->backend.ibm != NULL;
         case HARDWARE_RIGETTI:
-            hw->backend.rigetti = init_rigetti_backend(&config->config.rigetti);
+            hw->backend.rigetti = internal_init_rigetti_config(&config->config.rigetti);
             return hw->backend.rigetti != NULL;
         case HARDWARE_DWAVE:
-            hw->backend.dwave = init_dwave_backend(&config->config.dwave);
+            hw->backend.dwave = internal_init_dwave_config(&config->config.dwave);
             return hw->backend.dwave != NULL;
         case HARDWARE_SIMULATOR:
-            hw->backend.simulator = init_simulator(&config->config.simulator);
+            hw->backend.simulator = internal_init_simulator_config(&config->config.simulator);
             return hw->backend.simulator != NULL;
         default:
             return false;
@@ -689,10 +757,11 @@ void cleanup_result(ExecutionResult* result) {
         return;
     }
 
+    free(result->measurements);
     free(result->probabilities);
     free(result->counts);
     free(result->error_message);
-    free(result->raw_data);
+    free(result->backend_data);
     free(result);
 }
 
@@ -774,13 +843,13 @@ bool test_connection(void* hardware) {
 
     switch (hw->type) {
         case HARDWARE_IBM:
-            success = test_ibm_connection(hw->backend.ibm);
+            success = internal_test_ibm_connection(hw->backend.ibm);
             break;
         case HARDWARE_RIGETTI:
-            success = test_rigetti_connection(hw->backend.rigetti);
+            success = internal_test_rigetti_connection(hw->backend.rigetti);
             break;
         case HARDWARE_DWAVE:
-            success = test_dwave_connection(hw->backend.dwave);
+            success = internal_test_dwave_connection(hw->backend.dwave);
             break;
         case HARDWARE_SIMULATOR:
             success = true;
@@ -1086,8 +1155,30 @@ static bool validate_annealing_schedule(const double* schedule, size_t points) {
     return true;
 }
 
+// Helper function to get gate name
+static const char* get_gate_name(gate_type_t type) {
+    switch (type) {
+        case GATE_I: return "I";
+        case GATE_X: return "X";
+        case GATE_Y: return "Y";
+        case GATE_Z: return "Z";
+        case GATE_H: return "H";
+        case GATE_S: return "S";
+        case GATE_T: return "T";
+        case GATE_RX: return "RX";
+        case GATE_RY: return "RY";
+        case GATE_RZ: return "RZ";
+        case GATE_CNOT: return "CNOT";
+        case GATE_CZ: return "CZ";
+        case GATE_SWAP: return "SWAP";
+        case GATE_TOFFOLI: return "CCX";
+        case GATE_PHASE: return "P";
+        default: return "UNKNOWN";
+    }
+}
+
 // Program validation and optimization implementations
-static bool validate_program(const struct QuantumProgram* program, const struct HardwareCapabilities* capabilities) {
+bool validate_program(const QuantumProgram* program, const HardwareCapabilities* capabilities) {
     if (!program || !capabilities) {
         return false;
     }
@@ -1206,7 +1297,7 @@ static struct QuantumProgram* optimize_for_hardware(const struct QuantumProgram*
         optimize_qubit_mapping(optimized, &hw->capabilities);
         
         if (hw->optimization_level > 1) {
-            optimize_circuit_depth(optimized);
+            internal_optimize_circuit_depth(optimized);
             optimize_gate_decomposition(optimized, &hw->capabilities);
         }
     }
@@ -1215,7 +1306,7 @@ static struct QuantumProgram* optimize_for_hardware(const struct QuantumProgram*
 }
 
 // Backend execution implementations
-static bool execute_on_ibm(struct IBMQuantumBackend* backend, const struct QuantumProgram* program, struct ExecutionResult* result) {
+static bool execute_on_ibm(struct IBMConfig* backend, const QuantumProgram* program, ExecutionResult* result) {
     if (!backend || !program || !result) {
         return false;
     }
@@ -1232,7 +1323,7 @@ static bool execute_on_ibm(struct IBMQuantumBackend* backend, const struct Quant
     return success;
 }
 
-static bool execute_on_rigetti(struct RigettiBackend* backend, const struct QuantumProgram* program, struct ExecutionResult* result) {
+static bool execute_on_rigetti(struct RigettiConfig* backend, const QuantumProgram* program, ExecutionResult* result) {
     if (!backend || !program || !result) {
         return false;
     }
@@ -1249,7 +1340,7 @@ static bool execute_on_rigetti(struct RigettiBackend* backend, const struct Quan
     return success;
 }
 
-static bool execute_on_dwave(struct DWaveBackend* backend, const struct QuantumProgram* program, struct ExecutionResult* result) {
+static bool execute_on_dwave(struct DWaveConfig* backend, const QuantumProgram* program, ExecutionResult* result) {
     if (!backend || !program || !result) {
         return false;
     }
@@ -1263,23 +1354,23 @@ static bool execute_on_dwave(struct DWaveBackend* backend, const struct QuantumP
     // Submit problem to D-Wave solver
     QUBOResult qubo_result;
     bool success = submit_dwave_problem(backend, qubo, &qubo_result);
-    
+
     if (success) {
         // Convert QUBO result to standard format
         convert_qubo_result(&qubo_result, result);
     }
-    
+
     cleanup_qubo(qubo);
     return success;
 }
 
-static bool execute_on_simulator(struct SimulatorBackend* backend, const struct QuantumProgram* program, struct ExecutionResult* result) {
+static bool execute_on_simulator(struct SimulatorConfig* backend, const QuantumProgram* program, ExecutionResult* result) {
     if (!backend || !program || !result) {
         return false;
     }
 
     // Initialize quantum state
-    QuantumState* state = init_quantum_state(program->num_qubits);
+    void* state = init_quantum_state(program->num_qubits);
     if (!state) {
         return false;
     }
@@ -1293,12 +1384,12 @@ static bool execute_on_simulator(struct SimulatorBackend* backend, const struct 
     if (success) {
         // Get measurement results
         get_measurement_results(state, result);
-        
+
         // Calculate state vector probabilities
         calculate_probabilities(state, result);
-        
+
         // Store raw state vector if requested
-        if (program->store_statevector) {
+        if (program->backend_specific) {  // Use backend_specific as a flag
             store_statevector(state, result);
         }
     }
@@ -1352,7 +1443,7 @@ int submit_quantum_circuit(struct QuantumHardware* hardware,
     if (!hardware || !circuit || !result) return -1;
     
     // Validate circuit against hardware constraints
-    ValidationResult validation = validate_circuit(
+    ValidationResult validation = internal_validate_circuit(
         circuit,
         hardware
     );
@@ -1437,8 +1528,8 @@ int submit_quantum_circuit(struct QuantumHardware* hardware,
     return status;
 }
 
-// Validate circuit against hardware constraints
-static struct ValidationResult validate_circuit(
+// Validate circuit against hardware constraints (internal helper)
+static struct ValidationResult internal_validate_circuit(
     const struct QuantumCircuit* circuit,
     const struct QuantumHardware* hardware) {
     
@@ -1524,4 +1615,913 @@ void cleanup_quantum_hardware(struct QuantumHardware* hardware) {
     }
     
     free(hardware);
+}
+
+// ============================================================================
+// Backend Initialization Implementations
+// ============================================================================
+
+// Gate name lookup
+static const char* get_gate_name(gate_type_t type) {
+    switch (type) {
+        case GATE_I: return "i";
+        case GATE_X: return "x";
+        case GATE_Y: return "y";
+        case GATE_Z: return "z";
+        case GATE_H: return "h";
+        case GATE_S: return "s";
+        case GATE_T: return "t";
+        case GATE_RX: return "rx";
+        case GATE_RY: return "ry";
+        case GATE_RZ: return "rz";
+        case GATE_CNOT: return "cx";
+        case GATE_CZ: return "cz";
+        case GATE_SWAP: return "swap";
+        case GATE_TOFFOLI: return "ccx";
+        case GATE_PHASE: return "p";
+        default: return "unknown";
+    }
+}
+
+// Initialize IBM backend capabilities
+bool init_ibm_capabilities(HardwareCapabilities* caps, const struct IBMConfig* config) {
+    if (!caps || !config) {
+        return false;
+    }
+
+    // Set IBM-specific capabilities
+    caps->max_qubits = config->max_qubits > 0 ? config->max_qubits : 127;
+    caps->max_shots = config->max_shots > 0 ? config->max_shots : 8192;
+    caps->supports_gates = true;
+    caps->supports_annealing = false;
+    caps->supports_measurement = true;
+    caps->supports_reset = true;
+    caps->supports_conditional = true;
+    caps->supports_parallel = true;
+    caps->supports_error_correction = false;
+    caps->coherence_time = 100.0;  // microseconds (typical T1)
+    caps->gate_time = 0.1;         // microseconds
+    caps->readout_time = 1.0;      // microseconds
+
+    // Set up connectivity from config
+    size_t conn_size = caps->max_qubits * caps->max_qubits;
+    caps->connectivity = malloc(conn_size * sizeof(double));
+    if (caps->connectivity) {
+        memcpy(caps->connectivity, config->coupling_map,
+               64 * 64 * sizeof(double));  // Copy what fits
+        caps->connectivity_size = conn_size;
+    }
+
+    // Standard IBM gate set
+    const char* ibm_gates[] = {
+        "id", "x", "y", "z", "h", "s", "sdg", "t", "tdg",
+        "rx", "ry", "rz", "cx", "cz", "swap", "ecr", "reset"
+    };
+    caps->num_gates = sizeof(ibm_gates) / sizeof(ibm_gates[0]);
+    caps->available_gates = malloc(caps->num_gates * sizeof(char*));
+    if (caps->available_gates) {
+        for (size_t i = 0; i < caps->num_gates; i++) {
+            caps->available_gates[i] = strdup(ibm_gates[i]);
+        }
+    }
+
+    return true;
+}
+
+// Initialize IBM backend configuration (internal helper)
+static struct IBMConfig* internal_init_ibm_config(const struct IBMConfig* config) {
+    if (!config) {
+        return NULL;
+    }
+
+    struct IBMConfig* backend = malloc(sizeof(struct IBMConfig));
+    if (!backend) {
+        return NULL;
+    }
+
+    memset(backend, 0, sizeof(struct IBMConfig));
+
+    // Copy configuration
+    if (config->api_key) {
+        backend->api_key = strdup(config->api_key);
+    }
+    if (config->url) {
+        backend->url = strdup(config->url);
+    } else {
+        backend->url = strdup("https://quantum-computing.ibm.com");
+    }
+    if (config->backend_name) {
+        backend->backend_name = strdup(config->backend_name);
+    } else {
+        backend->backend_name = strdup("ibmq_qasm_simulator");
+    }
+    if (config->hub) {
+        backend->hub = strdup(config->hub);
+    }
+    if (config->group) {
+        backend->group = strdup(config->group);
+    }
+    if (config->project) {
+        backend->project = strdup(config->project);
+    }
+
+    backend->max_shots = config->max_shots > 0 ? config->max_shots : 8192;
+    backend->max_qubits = config->max_qubits > 0 ? config->max_qubits : 127;
+    backend->optimize_mapping = config->optimize_mapping;
+    backend->optimization_level = config->optimization_level;
+
+    // Copy coupling map
+    memcpy(backend->coupling_map, config->coupling_map, sizeof(backend->coupling_map));
+
+    return backend;
+}
+
+// Cleanup IBM backend
+void cleanup_ibm_backend(struct IBMConfig* backend) {
+    if (!backend) {
+        return;
+    }
+
+    free(backend->api_key);
+    free(backend->url);
+    free(backend->backend_name);
+    free(backend->hub);
+    free(backend->group);
+    free(backend->project);
+    free(backend->noise_model);
+    free(backend->backend_specific_config);
+    free(backend);
+}
+
+// Initialize Rigetti backend capabilities
+bool init_rigetti_capabilities(HardwareCapabilities* caps, const struct RigettiConfig* config) {
+    if (!caps || !config) {
+        return false;
+    }
+
+    // Set Rigetti-specific capabilities
+    caps->max_qubits = config->max_qubits > 0 ? config->max_qubits : 80;
+    caps->max_shots = config->max_shots > 0 ? config->max_shots : 10000;
+    caps->supports_gates = true;
+    caps->supports_annealing = false;
+    caps->supports_measurement = true;
+    caps->supports_reset = true;
+    caps->supports_conditional = true;
+    caps->supports_parallel = true;
+    caps->supports_error_correction = false;
+    caps->coherence_time = config->t1_time > 0 ? config->t1_time : 50.0;
+    caps->gate_time = 0.05;
+    caps->readout_time = 0.5;
+
+    // Set up connectivity
+    size_t conn_size = caps->max_qubits * caps->max_qubits;
+    caps->connectivity = malloc(conn_size * sizeof(double));
+    if (caps->connectivity) {
+        memcpy(caps->connectivity, config->coupling_map,
+               64 * 64 * sizeof(double));
+        caps->connectivity_size = conn_size;
+    }
+
+    // Rigetti native gate set (Quil)
+    const char* rigetti_gates[] = {
+        "I", "X", "Y", "Z", "H", "S", "T",
+        "RX", "RY", "RZ", "CNOT", "CZ", "SWAP", "ISWAP",
+        "XY", "CPHASE", "CCNOT", "MEASURE", "RESET"
+    };
+    caps->num_gates = sizeof(rigetti_gates) / sizeof(rigetti_gates[0]);
+    caps->available_gates = malloc(caps->num_gates * sizeof(char*));
+    if (caps->available_gates) {
+        for (size_t i = 0; i < caps->num_gates; i++) {
+            caps->available_gates[i] = strdup(rigetti_gates[i]);
+        }
+    }
+
+    return true;
+}
+
+// Initialize Rigetti backend configuration (internal helper)
+static struct RigettiConfig* internal_init_rigetti_config(const struct RigettiConfig* config) {
+    if (!config) {
+        return NULL;
+    }
+
+    struct RigettiConfig* backend = malloc(sizeof(struct RigettiConfig));
+    if (!backend) {
+        return NULL;
+    }
+
+    memset(backend, 0, sizeof(struct RigettiConfig));
+
+    // Copy configuration
+    if (config->api_key) {
+        backend->api_key = strdup(config->api_key);
+    }
+    if (config->url) {
+        backend->url = strdup(config->url);
+    } else {
+        backend->url = strdup("https://forest-server.qcs.rigetti.com");
+    }
+
+    if (config->backend_name) {
+        backend->backend_name = strdup(config->backend_name);
+    } else {
+        backend->backend_name = strdup("qvm");  // Default to QVM simulator
+    }
+
+    backend->max_shots = config->max_shots > 0 ? config->max_shots : 10000;
+    backend->max_qubits = config->max_qubits > 0 ? config->max_qubits : 80;
+    backend->optimize_mapping = config->optimize_mapping;
+    backend->use_pulse_control = config->use_pulse_control;
+    backend->t1_time = config->t1_time > 0 ? config->t1_time : 50.0;
+    backend->t2_time = config->t2_time > 0 ? config->t2_time : 30.0;
+
+    // Copy coupling map
+    memcpy(backend->coupling_map, config->coupling_map, sizeof(backend->coupling_map));
+
+    return backend;
+}
+
+// Cleanup Rigetti backend
+void cleanup_rigetti_backend(struct RigettiConfig* backend) {
+    if (!backend) {
+        return;
+    }
+
+    free(backend->api_key);
+    free(backend->url);
+    free(backend->backend_name);
+    free(backend->noise_model);
+    free(backend->backend_specific_config);
+    free(backend);
+}
+
+// Initialize D-Wave backend capabilities
+bool init_dwave_capabilities(HardwareCapabilities* caps, const struct DWaveConfig* config) {
+    if (!caps || !config) {
+        return false;
+    }
+
+    // Set D-Wave-specific capabilities (quantum annealer)
+    caps->max_qubits = config->max_qubits > 0 ? config->max_qubits : 5000;
+    caps->max_shots = config->max_shots > 0 ? config->max_shots : 10000;
+    caps->supports_gates = false;  // D-Wave doesn't support gates
+    caps->supports_annealing = true;
+    caps->supports_measurement = true;
+    caps->supports_reset = true;
+    caps->supports_conditional = false;
+    caps->supports_parallel = true;
+    caps->supports_error_correction = false;
+    caps->coherence_time = 20.0;  // Annealing time in microseconds
+    caps->gate_time = 0.0;        // Not applicable
+    caps->readout_time = 0.1;     // microseconds
+
+    // Set up Pegasus graph connectivity
+    size_t conn_size = caps->max_qubits * caps->max_qubits;
+    caps->connectivity = malloc(conn_size * sizeof(double));
+    if (caps->connectivity) {
+        // D-Wave has sparse Pegasus/Chimera connectivity
+        memset(caps->connectivity, 0, conn_size * sizeof(double));
+        // Copy provided connectivity
+        memcpy(caps->connectivity, config->coupling_map,
+               64 * 64 * sizeof(double));
+        caps->connectivity_size = conn_size;
+    }
+
+    // D-Wave operations
+    const char* dwave_ops[] = {
+        "qubo", "ising", "sample", "sample_qubo", "sample_ising"
+    };
+    caps->num_gates = sizeof(dwave_ops) / sizeof(dwave_ops[0]);
+    caps->available_gates = malloc(caps->num_gates * sizeof(char*));
+    if (caps->available_gates) {
+        for (size_t i = 0; i < caps->num_gates; i++) {
+            caps->available_gates[i] = strdup(dwave_ops[i]);
+        }
+    }
+
+    return true;
+}
+
+// Initialize D-Wave backend configuration (internal helper)
+static struct DWaveConfig* internal_init_dwave_config(const struct DWaveConfig* config) {
+    if (!config) {
+        return NULL;
+    }
+
+    struct DWaveConfig* backend = malloc(sizeof(struct DWaveConfig));
+    if (!backend) {
+        return NULL;
+    }
+
+    memset(backend, 0, sizeof(struct DWaveConfig));
+
+    // Copy configuration
+    if (config->api_key) {
+        backend->api_key = strdup(config->api_key);
+    }
+    if (config->url) {
+        backend->url = strdup(config->url);
+    } else {
+        backend->url = strdup("https://cloud.dwavesys.com/sapi/v2");
+    }
+    if (config->backend_name) {
+        backend->backend_name = strdup(config->backend_name);
+    } else {
+        backend->backend_name = strdup("Advantage_system6.3");
+    }
+
+    backend->max_shots = config->max_shots > 0 ? config->max_shots : 10000;
+    backend->max_qubits = config->max_qubits > 0 ? config->max_qubits : 5000;
+    backend->optimize_mapping = config->optimize_mapping;
+    backend->annealing_time = config->annealing_time > 0 ? config->annealing_time : 20;
+    backend->chain_strength = config->chain_strength > 0 ? config->chain_strength : 1.0;
+    backend->energy_scale = config->energy_scale > 0 ? config->energy_scale : 1.0;
+
+    // Copy coupling map
+    memcpy(backend->coupling_map, config->coupling_map, sizeof(backend->coupling_map));
+
+    return backend;
+}
+
+// Cleanup D-Wave backend
+void cleanup_dwave_backend(struct DWaveConfig* backend) {
+    if (!backend) {
+        return;
+    }
+
+    free(backend->api_key);
+    free(backend->url);
+    free(backend->backend_name);
+    free(backend->noise_model);
+    free(backend->backend_specific_config);
+    free(backend);
+}
+
+// Initialize simulator capabilities
+bool init_simulator_capabilities(HardwareCapabilities* caps, const struct SimulatorConfig* config) {
+    if (!caps || !config) {
+        return false;
+    }
+
+    // Simulator can support many qubits depending on memory
+    caps->max_qubits = config->max_qubits > 0 ? config->max_qubits : 32;
+    caps->max_shots = config->max_shots > 0 ? config->max_shots : 100000;
+    caps->supports_gates = true;
+    caps->supports_annealing = true;  // Can simulate annealing
+    caps->supports_measurement = true;
+    caps->supports_reset = true;
+    caps->supports_conditional = true;
+    caps->supports_parallel = true;
+    caps->supports_error_correction = true;  // Can simulate QEC
+    caps->coherence_time = 0.0;  // Perfect coherence (ideal simulator)
+    caps->gate_time = 0.0;       // Instantaneous
+    caps->readout_time = 0.0;    // Instantaneous
+
+    // Full connectivity in simulator
+    size_t conn_size = caps->max_qubits * caps->max_qubits;
+    caps->connectivity = malloc(conn_size * sizeof(double));
+    if (caps->connectivity) {
+        // Full connectivity - all qubits can interact
+        for (size_t i = 0; i < caps->max_qubits; i++) {
+            for (size_t j = 0; j < caps->max_qubits; j++) {
+                caps->connectivity[i * caps->max_qubits + j] = (i != j) ? 1.0 : 0.0;
+            }
+        }
+        caps->connectivity_size = conn_size;
+    }
+
+    // All gates supported
+    const char* sim_gates[] = {
+        "id", "x", "y", "z", "h", "s", "sdg", "t", "tdg",
+        "rx", "ry", "rz", "u1", "u2", "u3",
+        "cx", "cy", "cz", "ch", "swap", "iswap",
+        "ccx", "cswap", "crx", "cry", "crz",
+        "reset", "measure", "barrier"
+    };
+    caps->num_gates = sizeof(sim_gates) / sizeof(sim_gates[0]);
+    caps->available_gates = malloc(caps->num_gates * sizeof(char*));
+    if (caps->available_gates) {
+        for (size_t i = 0; i < caps->num_gates; i++) {
+            caps->available_gates[i] = strdup(sim_gates[i]);
+        }
+    }
+
+    return true;
+}
+
+// Initialize simulator backend configuration (internal helper)
+static struct SimulatorConfig* internal_init_simulator_config(const struct SimulatorConfig* config) {
+    if (!config) {
+        // Create default config if none provided
+        struct SimulatorConfig* backend = malloc(sizeof(struct SimulatorConfig));
+        if (!backend) {
+            return NULL;
+        }
+
+        memset(backend, 0, sizeof(struct SimulatorConfig));
+        backend->backend_name = strdup("qasm_simulator");
+        backend->max_shots = 8192;
+        backend->max_qubits = 32;
+        backend->use_gpu = false;
+        backend->memory_limit = 4UL * 1024 * 1024 * 1024;  // 4 GB
+
+        return backend;
+    }
+
+    struct SimulatorConfig* backend = malloc(sizeof(struct SimulatorConfig));
+    if (!backend) {
+        return NULL;
+    }
+
+    memset(backend, 0, sizeof(struct SimulatorConfig));
+
+    // Copy configuration
+    if (config->backend_name) {
+        backend->backend_name = strdup(config->backend_name);
+    } else {
+        backend->backend_name = strdup("qasm_simulator");
+    }
+
+    backend->max_shots = config->max_shots > 0 ? config->max_shots : 8192;
+    backend->max_qubits = config->max_qubits > 0 ? config->max_qubits : 32;
+    backend->use_gpu = config->use_gpu;
+    backend->memory_limit = config->memory_limit > 0 ? config->memory_limit : 4UL * 1024 * 1024 * 1024;
+    backend->optimize_mapping = config->optimize_mapping;
+
+    // Copy coupling map
+    memcpy(backend->coupling_map, config->coupling_map, sizeof(backend->coupling_map));
+
+    return backend;
+}
+
+// Cleanup simulator backend
+void cleanup_simulator(struct SimulatorConfig* backend) {
+    if (!backend) {
+        return;
+    }
+
+    free(backend->backend_name);
+    free(backend->noise_model);
+    free(backend->backend_specific_config);
+    free(backend);
+}
+
+// ============================================================================
+// Error Mitigation Implementations
+// ============================================================================
+
+// Richardson extrapolation for ZNE
+static double richardson_extrapolate(double value, const double* scale_factors, size_t num_factors) {
+    if (!scale_factors || num_factors == 0) {
+        return value;
+    }
+
+    // Richardson extrapolation using polynomial fitting
+    // For scale factors λ₁, λ₂, ..., λₙ, extrapolate to λ=0
+    double result = 0.0;
+
+    for (size_t i = 0; i < num_factors; i++) {
+        double coeff = 1.0;
+        for (size_t j = 0; j < num_factors; j++) {
+            if (i != j) {
+                coeff *= -scale_factors[j] / (scale_factors[i] - scale_factors[j]);
+            }
+        }
+        // Apply coefficient to scaled measurement
+        result += coeff * value * pow(1.0 + scale_factors[i], -1);
+    }
+
+    return result;
+}
+
+// Zero-noise extrapolation
+static bool apply_zne_mitigation(struct ExecutionResult* result, const struct MitigationParams* params) {
+    if (!result || !params) {
+        return false;
+    }
+
+    // Apply ZNE to probability distributions
+    if (result->probabilities && result->num_results > 0) {
+        double* mitigated = malloc(result->num_results * sizeof(double));
+        if (!mitigated) {
+            return false;
+        }
+
+        for (size_t i = 0; i < result->num_results; i++) {
+            mitigated[i] = richardson_extrapolate(
+                result->probabilities[i],
+                params->scale_factors,
+                4  // Use 4 scale factors
+            );
+            // Clamp to valid probability range
+            if (mitigated[i] < 0.0) mitigated[i] = 0.0;
+            if (mitigated[i] > 1.0) mitigated[i] = 1.0;
+        }
+
+        // Renormalize
+        double sum = 0.0;
+        for (size_t i = 0; i < result->num_results; i++) {
+            sum += mitigated[i];
+        }
+        if (sum > 0.0) {
+            for (size_t i = 0; i < result->num_results; i++) {
+                mitigated[i] /= sum;
+            }
+        }
+
+        memcpy(result->probabilities, mitigated, result->num_results * sizeof(double));
+        free(mitigated);
+    }
+
+    return true;
+}
+
+// Probabilistic error cancellation
+static bool apply_probabilistic_mitigation(struct ExecutionResult* result, const struct MitigationParams* params) {
+    if (!result || !params) {
+        return false;
+    }
+
+    // Probabilistic error cancellation applies quasi-probability distributions
+    // to cancel out noise effects
+
+    double gamma = params->mitigation_factor;  // Sampling overhead factor
+
+    if (result->probabilities && result->num_results > 0) {
+        for (size_t i = 0; i < result->num_results; i++) {
+            // Apply quasi-probability weighting
+            double p = result->probabilities[i];
+            double corrected = p + gamma * (p - 1.0 / result->num_results);
+
+            // Clamp to valid range
+            if (corrected < 0.0) corrected = 0.0;
+            if (corrected > 1.0) corrected = 1.0;
+
+            result->probabilities[i] = corrected;
+        }
+
+        // Renormalize
+        double sum = 0.0;
+        for (size_t i = 0; i < result->num_results; i++) {
+            sum += result->probabilities[i];
+        }
+        if (sum > 0.0) {
+            for (size_t i = 0; i < result->num_results; i++) {
+                result->probabilities[i] /= sum;
+            }
+        }
+    }
+
+    return true;
+}
+
+// Custom error mitigation
+static bool apply_custom_mitigation(struct ExecutionResult* result, const void* custom_params) {
+    if (!result || !custom_params) {
+        return false;
+    }
+
+    // Custom mitigation strategies can be implemented here
+    // For now, just return success
+    return true;
+}
+
+// Apply simulator-specific error mitigation
+bool apply_simulator_error_mitigation(struct SimulatorState* state, const struct MitigationParams* params) {
+    if (!state || !params) {
+        return false;
+    }
+
+    // For simulator, adjust noise based on mitigation parameters
+    if (params->type != MITIGATION_NONE) {
+        state->error_rate *= (1.0 - params->mitigation_factor);
+        state->fidelity = 1.0 - state->error_rate;
+    }
+
+    return true;
+}
+
+// ============================================================================
+// Backend Status and Control Functions
+// ============================================================================
+
+// Get IBM job status
+static char* get_ibm_status(struct IBMConfig* config, const char* job_id) {
+    (void)config;
+    (void)job_id;
+    // In a real implementation, this would query the IBM API
+    return strdup("COMPLETED");
+}
+
+// Get Rigetti job status
+static char* get_rigetti_status(struct RigettiConfig* config, const char* job_id) {
+    (void)config;
+    (void)job_id;
+    return strdup("COMPLETED");
+}
+
+// Get D-Wave job status
+static char* get_dwave_status(struct DWaveConfig* config, const char* job_id) {
+    (void)config;
+    (void)job_id;
+    return strdup("COMPLETED");
+}
+
+// Cancel D-Wave job (internal helper)
+static bool internal_cancel_dwave_job(struct DWaveConfig* config, const char* job_id) {
+    (void)config;
+    (void)job_id;
+    return true;
+}
+
+// Get available IBM backends
+static char** get_available_ibm_backends(size_t* num_backends) {
+    *num_backends = 3;
+    char** backends = malloc(3 * sizeof(char*));
+    if (backends) {
+        backends[0] = strdup("ibmq_qasm_simulator");
+        backends[1] = strdup("ibmq_manila");
+        backends[2] = strdup("ibmq_quito");
+    }
+    return backends;
+}
+
+// Get available Rigetti backends
+static char** get_available_rigetti_backends(size_t* num_backends) {
+    *num_backends = 2;
+    char** backends = malloc(2 * sizeof(char*));
+    if (backends) {
+        backends[0] = strdup("qvm");
+        backends[1] = strdup("Aspen-M-3");
+    }
+    return backends;
+}
+
+// Get available D-Wave backends
+static char** get_available_dwave_backends(size_t* num_backends) {
+    *num_backends = 2;
+    char** backends = malloc(2 * sizeof(char*));
+    if (backends) {
+        backends[0] = strdup("Advantage_system6.3");
+        backends[1] = strdup("DW_2000Q_6");
+    }
+    return backends;
+}
+
+// Test IBM connection (internal helper)
+static bool internal_test_ibm_connection(struct IBMConfig* config) {
+    if (!config || !config->api_key) {
+        return false;
+    }
+    // In a real implementation, this would test the API connection
+    return true;
+}
+
+// Test Rigetti connection (internal helper)
+static bool internal_test_rigetti_connection(struct RigettiConfig* config) {
+    if (!config || !config->api_key) {
+        return false;
+    }
+    return true;
+}
+
+// Test D-Wave connection (internal helper)
+static bool internal_test_dwave_connection(struct DWaveConfig* config) {
+    if (!config || !config->api_key) {
+        return false;
+    }
+    return true;
+}
+
+// Set IBM options
+static bool set_ibm_options(struct IBMConfig* config, const void* options) {
+    (void)config;
+    (void)options;
+    return true;
+}
+
+// Set Rigetti options
+static bool set_rigetti_options(struct RigettiConfig* config, const void* options) {
+    (void)config;
+    (void)options;
+    return true;
+}
+
+// Set D-Wave options
+static bool set_dwave_options(struct DWaveConfig* config, const void* options) {
+    (void)config;
+    (void)options;
+    return true;
+}
+
+// Set simulator options
+static bool set_simulator_options(struct SimulatorConfig* config, const void* options) {
+    (void)config;
+    (void)options;
+    return true;
+}
+
+// ============================================================================
+// Circuit Optimization Functions
+// ============================================================================
+
+// Optimize for IBM backend
+static void optimize_for_ibm(QuantumProgram* program, int level) {
+    if (!program || level <= 0) {
+        return;
+    }
+
+    // Level 1: Basic optimizations
+    if (level >= 1) {
+        optimize_gate_cancellation(program);
+    }
+
+    // Level 2: Intermediate optimizations
+    if (level >= 2) {
+        optimize_gate_fusion(program);
+    }
+
+    // Level 3: Aggressive optimizations
+    if (level >= 3) {
+        // IBM-specific: decompose to native gates (CNOT, RZ, SX, X)
+        decompose_to_native_gates(program, HARDWARE_IBM);
+    }
+}
+
+// Optimize for Rigetti backend
+static void optimize_for_rigetti(QuantumProgram* program, int level) {
+    if (!program || level <= 0) {
+        return;
+    }
+
+    if (level >= 1) {
+        optimize_gate_cancellation(program);
+    }
+
+    if (level >= 2) {
+        optimize_gate_fusion(program);
+    }
+
+    if (level >= 3) {
+        // Rigetti-specific: decompose to native gates (CZ, RX, RZ)
+        decompose_to_native_gates(program, HARDWARE_RIGETTI);
+    }
+}
+
+// Optimize for D-Wave backend
+static void optimize_for_dwave(QuantumProgram* program, int level) {
+    if (!program || level <= 0) {
+        return;
+    }
+
+    // D-Wave optimization: convert to QUBO form and optimize embedding
+    if (level >= 1) {
+        // Simplify problem Hamiltonian
+        simplify_hamiltonian(program);
+    }
+
+    if (level >= 2) {
+        // Optimize chain embedding
+        optimize_chain_embedding(program);
+    }
+}
+
+// Gate cancellation optimization
+static void optimize_gate_cancellation(QuantumProgram* program) {
+    if (!program || program->num_operations < 2) {
+        return;
+    }
+
+    // Look for consecutive inverse gates (e.g., X X = I, H H = I)
+    size_t write_idx = 0;
+    for (size_t i = 0; i < program->num_operations; i++) {
+        bool cancelled = false;
+
+        if (i + 1 < program->num_operations) {
+            QuantumOperation* op1 = &program->operations[i];
+            QuantumOperation* op2 = &program->operations[i + 1];
+
+            if (op1->type == OPERATION_GATE && op2->type == OPERATION_GATE) {
+                // Check if gates are self-inverse and on same qubit
+                if (op1->op.gate.type == op2->op.gate.type &&
+                    op1->op.gate.qubit == op2->op.gate.qubit) {
+                    // X, Y, Z, H are self-inverse
+                    gate_type_t type = op1->op.gate.type;
+                    if (type == GATE_X || type == GATE_Y ||
+                        type == GATE_Z || type == GATE_H) {
+                        cancelled = true;
+                        i++;  // Skip both gates
+                    }
+                }
+            }
+        }
+
+        if (!cancelled) {
+            if (write_idx != i) {
+                program->operations[write_idx] = program->operations[i];
+            }
+            write_idx++;
+        }
+    }
+
+    program->num_operations = write_idx;
+}
+
+// Gate fusion optimization
+static void optimize_gate_fusion(QuantumProgram* program) {
+    if (!program || program->num_operations < 2) {
+        return;
+    }
+
+    // Look for consecutive single-qubit rotations that can be fused
+    for (size_t i = 0; i + 1 < program->num_operations; i++) {
+        QuantumOperation* op1 = &program->operations[i];
+        QuantumOperation* op2 = &program->operations[i + 1];
+
+        if (op1->type == OPERATION_GATE && op2->type == OPERATION_GATE &&
+            op1->op.gate.qubit == op2->op.gate.qubit) {
+
+            // Fuse consecutive RZ gates
+            if (op1->op.gate.type == GATE_RZ && op2->op.gate.type == GATE_RZ) {
+                op1->op.gate.parameter += op2->op.gate.parameter;
+                // Remove second operation
+                memmove(&program->operations[i + 1],
+                        &program->operations[i + 2],
+                        (program->num_operations - i - 2) * sizeof(QuantumOperation));
+                program->num_operations--;
+                i--;  // Check the fused gate again
+            }
+        }
+    }
+}
+
+// Gate reordering optimization
+static void optimize_gate_reordering(QuantumProgram* program) {
+    if (!program) {
+        return;
+    }
+
+    // Commutation-aware gate reordering for parallelism
+    // Gates on different qubits can be executed in parallel
+    // This is a simplified implementation
+    (void)program;
+}
+
+// Qubit mapping optimization
+static void optimize_qubit_mapping(QuantumProgram* program, const HardwareCapabilities* caps) {
+    if (!program || !caps) {
+        return;
+    }
+
+    // Map logical qubits to physical qubits based on connectivity
+    // This is a simplified implementation
+    (void)program;
+    (void)caps;
+}
+
+// Circuit depth optimization (internal helper for QuantumProgram)
+static void internal_optimize_circuit_depth(QuantumProgram* program) {
+    if (!program) {
+        return;
+    }
+
+    // Minimize circuit depth through gate parallelization
+    (void)program;
+}
+
+// Gate decomposition for native gate set
+static void optimize_gate_decomposition(QuantumProgram* program, const HardwareCapabilities* caps) {
+    if (!program || !caps) {
+        return;
+    }
+
+    // Decompose non-native gates into native gate sequences
+    (void)program;
+    (void)caps;
+}
+
+// Decompose to native gates
+static void decompose_to_native_gates(QuantumProgram* program, HardwareBackendType type) {
+    if (!program) {
+        return;
+    }
+
+    // Decompose based on backend native gate set
+    (void)type;
+}
+
+// Simplify Hamiltonian for D-Wave
+static void simplify_hamiltonian(QuantumProgram* program) {
+    if (!program) {
+        return;
+    }
+    // Simplify QUBO Hamiltonian
+}
+
+// Optimize chain embedding for D-Wave
+static void optimize_chain_embedding(QuantumProgram* program) {
+    if (!program) {
+        return;
+    }
+    // Optimize minor embedding chains
 }

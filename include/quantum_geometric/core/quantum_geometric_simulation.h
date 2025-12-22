@@ -20,6 +20,22 @@ typedef struct {
     float energy;
 } simulation_observables_t;
 
+// Default time step for simulation
+#ifndef QGT_DEFAULT_TIME_STEP
+#define QGT_DEFAULT_TIME_STEP 0.01
+#endif
+
+// Quantum geometric simulation structure
+typedef struct quantum_geometric_simulation_t {
+    ComplexFloat* state;                 // State amplitude array
+    geometric_simulation_type_t type;    // Type of simulation
+    size_t dimension;                    // Dimension of the system
+    float time;                          // Current simulation time
+    float dt;                            // Time step
+    double* hamiltonian;                 // Hamiltonian matrix (if applicable)
+    void* auxiliary_data;                // Additional simulation data
+} quantum_geometric_simulation_t;
+
 // Create geometric simulation
 qgt_error_t geometric_create_simulation(quantum_geometric_simulation_t** simulation,
                                       geometric_simulation_type_t type,

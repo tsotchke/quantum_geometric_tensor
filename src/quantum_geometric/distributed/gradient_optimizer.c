@@ -1,7 +1,17 @@
 #include "quantum_geometric/distributed/gradient_optimizer.h"
 #include "quantum_geometric/core/geometric_processor.h"
 #include "quantum_geometric/core/quantum_geometric_interface.h"
-#include <immintrin.h>
+#include <string.h>
+#include <math.h>
+
+// Platform-specific SIMD includes
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    #include <immintrin.h>
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    #if defined(__ARM_NEON) || defined(__ARM_NEON__)
+        #include <arm_neon.h>
+    #endif
+#endif
 
 // Optimization parameters
 #define MAX_GRADIENT_DIM 1048576
@@ -9,30 +19,32 @@
 #define QUANTUM_BATCH_SIZE 1024
 #define GEOMETRIC_THRESHOLD 1e-6
 
-// Gradient buffer
-typedef struct {
-    double* data;
-    size_t size;
-    bool is_compressed;
-    CompressionType compression;
-} GradientBuffer;
+// Min macro for size_t
+#ifndef MIN
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#endif
 
-// Optimizer state
-typedef struct {
+// Optimizer state - named struct matching header forward declaration
+struct OptimizerState {
     double* momentum;
     double* velocity;
     double* geometric_metrics;
     size_t step_count;
     OptimizationConfig config;
-} OptimizerState;
+};
 
-// Quantum gradient state
-typedef struct {
-    QuantumCircuit* gradient_circuit;
-    QuantumState* gradient_state;
+// Quantum gradient state - named struct matching header forward declaration
+struct QuantumGradientState {
+    struct QuantumCircuit* gradient_circuit;
+    struct QuantumState* gradient_state;
     size_t num_qubits;
     bool is_initialized;
-} QuantumGradientState;
+};
+
+// Forward declarations for static functions
+static void process_quantum_gradients(GradientOptimizer* optimizer, double* gradients, size_t size);
+static void process_geometric_gradients(GradientOptimizer* optimizer, double* gradients, size_t size);
+static void apply_optimization(GradientOptimizer* optimizer, double* gradients, size_t size);
 
 // Initialize gradient optimizer
 GradientOptimizer* init_gradient_optimizer(
@@ -108,7 +120,7 @@ static void process_quantum_gradients(
     
     // Process in batches
     for (size_t i = 0; i < size; i += QUANTUM_BATCH_SIZE) {
-        size_t batch_size = min(QUANTUM_BATCH_SIZE, size - i);
+        size_t batch_size = MIN(QUANTUM_BATCH_SIZE, size - i);
         
         // Execute quantum circuit
         execute_gradient_circuit(qstate->gradient_circuit,
@@ -207,7 +219,7 @@ void compress_gradients(
 // Decompress gradients after communication
 void decompress_gradients(
     GradientOptimizer* optimizer,
-    const GradientBuffer* compressed,
+    const GradOptGradientBuffer* compressed,
     double* gradients,
     size_t size) {
     

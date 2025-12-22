@@ -61,6 +61,83 @@ bool shift_gate_parameters(
     double shift_amount);
 
 /**
+ * @brief Create an RX rotation gate
+ * 
+ * @param qubit Target qubit index
+ * @param angle Rotation angle
+ * @return quantum_gate_t* Pointer to created gate, NULL on failure
+ */
+quantum_gate_t* create_rx_gate(size_t qubit, double angle);
+
+/**
+ * @brief Create an RY rotation gate
+ * 
+ * @param qubit Target qubit index
+ * @param angle Rotation angle
+ * @return quantum_gate_t* Pointer to created gate, NULL on failure
+ */
+quantum_gate_t* create_ry_gate(size_t qubit, double angle);
+
+/**
+ * @brief Create an RZ rotation gate
+ * 
+ * @param qubit Target qubit index
+ * @param angle Rotation angle
+ * @return quantum_gate_t* Pointer to created gate, NULL on failure
+ */
+quantum_gate_t* create_rz_gate(size_t qubit, double angle);
+
+/**
+ * @brief Create a Hadamard gate
+ * 
+ * @param qubit Target qubit index
+ * @return quantum_gate_t* Pointer to created gate, NULL on failure
+ */
+quantum_gate_t* create_h_gate(size_t qubit);
+
+/**
+ * @brief Create a Pauli-X gate
+ * 
+ * @param qubit Target qubit index
+ * @return quantum_gate_t* Pointer to created gate, NULL on failure
+ */
+quantum_gate_t* create_x_gate(size_t qubit);
+
+/**
+ * @brief Create a Pauli-Y gate
+ * 
+ * @param qubit Target qubit index
+ * @return quantum_gate_t* Pointer to created gate, NULL on failure
+ */
+quantum_gate_t* create_y_gate(size_t qubit);
+
+/**
+ * @brief Create a Pauli-Z gate
+ * 
+ * @param qubit Target qubit index
+ * @return quantum_gate_t* Pointer to created gate, NULL on failure
+ */
+quantum_gate_t* create_z_gate(size_t qubit);
+
+/**
+ * @brief Create a CNOT gate
+ * 
+ * @param control Control qubit index
+ * @param target Target qubit index
+ * @return quantum_gate_t* Pointer to created gate, NULL on failure
+ */
+quantum_gate_t* create_cnot_gate(size_t control, size_t target);
+
+/**
+ * @brief Create a CZ gate
+ * 
+ * @param control Control qubit index
+ * @param target Target qubit index
+ * @return quantum_gate_t* Pointer to created gate, NULL on failure
+ */
+quantum_gate_t* create_cz_gate(size_t control, size_t target);
+
+/**
  * @brief Destroy a quantum gate and free resources
  * 
  * @param gate Gate to destroy

@@ -140,6 +140,7 @@ bool get_network_complexity(const tensor_network_t* network,
                           size_t* time_complexity);
 
 // Error handling functions
+void set_error(tensor_network_t* network, tensor_network_error_t error);
 const char* get_tensor_network_error_string(tensor_network_error_t error);
 tensor_network_error_t get_last_tensor_network_error(void);
 

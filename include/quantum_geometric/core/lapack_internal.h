@@ -3,7 +3,31 @@
 
 #include "quantum_geometric/core/quantum_complex.h"
 
-// LAPACK function declarations
+#ifdef __APPLE__
+// On Apple, use the Accelerate framework which provides all LAPACK functions
+#include <Accelerate/Accelerate.h>
+
+// Helper inline functions to bridge ComplexFloat to Apple's complex types
+static inline void apple_cgemm(const char* transa, const char* transb,
+                               int m, int n, int k,
+                               const ComplexFloat* alpha,
+                               const ComplexFloat* a, int lda,
+                               const ComplexFloat* b, int ldb,
+                               const ComplexFloat* beta,
+                               ComplexFloat* c, int ldc) {
+    cblas_cgemm(CblasColMajor,
+                *transa == 'N' ? CblasNoTrans : (*transa == 'T' ? CblasTrans : CblasConjTrans),
+                *transb == 'N' ? CblasNoTrans : (*transb == 'T' ? CblasTrans : CblasConjTrans),
+                m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+#else
+// Non-Apple platforms: declare LAPACK Fortran functions
+
+// Forward declaration for __CLPK_integer
+typedef int __CLPK_integer;
+
+// LAPACK function declarations (Fortran interface)
 extern void cgemm_(const char* transa, const char* transb,
                   const int* m, const int* n, const int* k,
                   const ComplexFloat* alpha,
@@ -63,5 +87,7 @@ extern void cgesv_(const int* n, const int* nrhs,
                    int* ipiv,
                    ComplexFloat* b, const int* ldb,
                    int* info);
+
+#endif // __APPLE__
 
 #endif // LAPACK_INTERNAL_H

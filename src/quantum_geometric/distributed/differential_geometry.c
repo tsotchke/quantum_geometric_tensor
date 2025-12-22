@@ -1,6 +1,16 @@
 #include "quantum_geometric/distributed/differential_geometry.h"
 #include "quantum_geometric/core/geometric_processor.h"
+
+#ifdef __APPLE__
+#include <Accelerate/Accelerate.h>
+#else
 #include <cblas.h>
+#endif
+
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+#include <math.h>
 
 // Geometry parameters
 #define MAX_DIMENSION 4

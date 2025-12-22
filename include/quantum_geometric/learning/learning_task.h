@@ -123,4 +123,14 @@ bool quantum_get_error_rates(learning_task_handle_t task,
                            double* error_rates,
                            size_t* num_rates);
 
+// Model persistence functions
+bool quantum_get_task_parameters(learning_task_handle_t task,
+                                float** parameters,
+                                size_t* num_parameters);
+bool quantum_set_task_parameters(learning_task_handle_t task,
+                                const float* parameters,
+                                size_t num_parameters);
+bool quantum_get_task_config(learning_task_handle_t task,
+                            task_config_t* config);
+
 #endif // LEARNING_TASK_H

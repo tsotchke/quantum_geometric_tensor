@@ -50,8 +50,21 @@ typedef struct {
     verification_level_t level;    // Verification level
     bool enable_profiling;         // Enable profiling
     bool enable_assertions;        // Enable assertions
-    double tolerance;              // Verification tolerance
-    void* config_data;           // Additional config data
+    double tolerance;              // General verification tolerance
+
+    // Specific thresholds for different verification types
+    double correctness_threshold;   // Minimum correctness score (default: 0.99)
+    double performance_threshold;   // Minimum performance gain ratio (default: 0.0)
+    double efficiency_threshold;    // Minimum resource efficiency (default: 0.5)
+    double fidelity_threshold;      // Minimum quantum fidelity (default: 0.99)
+    double stability_threshold;     // Minimum numerical stability (default: 0.9)
+
+    // Workload parameters for verification tests
+    size_t resource_test_size;      // Elements for resource efficiency test (default: 10000)
+    size_t quantum_test_qubits;     // Qubits for fidelity test (default: 4)
+    size_t stability_matrix_size;   // Matrix size for stability test (default: 16)
+
+    void* config_data;             // Additional config data
 } verification_config_t;
 
 // Verification results

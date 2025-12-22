@@ -6,8 +6,15 @@
 #include "quantum_geometric/core/memory_optimization.h"
 #include "quantum_geometric/core/memory_optimization_impl.h"
 #include "quantum_geometric/core/quantum_geometric_logging.h"
+#include "quantum_geometric/core/error_codes.h"
 #include <stdlib.h>
 #include <string.h>
+
+// Convenience logging macros
+#define log_error(...) geometric_log_error(__VA_ARGS__)
+#define log_warning(...) geometric_log_warning(__VA_ARGS__)
+#define log_info(...) geometric_log_info(__VA_ARGS__)
+#define log_debug(...) geometric_log_debug(__VA_ARGS__)
 
 #ifdef __linux__
 #include <numa.h>
@@ -85,7 +92,10 @@ qgt_error_t analyze_memory_pattern(memory_region_t* region) {
     }
 
     // Get current stats from platform-specific implementation
-    region->stats = get_memory_stats(g_memory_manager);
+    const memory_stats_t* manager_stats = get_memory_stats(g_memory_manager);
+    if (manager_stats) {
+        region->stats = *manager_stats;
+    }
 
     // Analyze access pattern based on stats
     if (region->stats.cache_misses < region->stats.total_allocations / 10) {
@@ -129,12 +139,15 @@ qgt_error_t update_memory_stats(memory_region_t* region) {
         return QGT_ERROR_INVALID_ARGUMENT;
     }
 
-    region->stats = get_memory_stats(g_memory_manager);
+    const memory_stats_t* updated_stats = get_memory_stats(g_memory_manager);
+    if (updated_stats) {
+        region->stats = *updated_stats;
+    }
     return QGT_SUCCESS;
 }
 
-// Get memory statistics
-const memory_stats_t* get_memory_stats(const memory_region_t* region) {
+// Get memory statistics for a region (different from get_memory_stats in impl.h)
+const memory_stats_t* get_region_memory_stats(const memory_region_t* region) {
     if (!region) {
         return NULL;
     }
@@ -276,7 +289,12 @@ qgt_error_t get_monitoring_results(const memory_region_t* region, memory_stats_t
         return QGT_ERROR_INVALID_ARGUMENT;
     }
 
-    *stats = get_memory_stats(g_memory_manager);
+    const memory_stats_t* mgr_stats = get_memory_stats(g_memory_manager);
+    if (mgr_stats) {
+        *stats = *mgr_stats;
+    } else {
+        memset(stats, 0, sizeof(memory_stats_t));
+    }
     return QGT_SUCCESS;
 }
 
@@ -288,7 +306,11 @@ qgt_error_t get_optimization_suggestions(const memory_region_t* region,
         return QGT_ERROR_INVALID_ARGUMENT;
     }
 
-    memory_stats_t stats = get_memory_stats(g_memory_manager);
+    const memory_stats_t* mgr_stats = get_memory_stats(g_memory_manager);
+    memory_stats_t stats = {0};
+    if (mgr_stats) {
+        stats = *mgr_stats;
+    }
     *count = 0;
 
     // Suggest based on fragmentation

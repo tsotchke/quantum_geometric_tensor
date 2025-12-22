@@ -13,7 +13,7 @@
 // Internal processor state
 struct geometric_processor_t {
     processor_config_t config;
-    geometric_state_t* current_state;
+    proc_geometric_state_t* current_state;
     transform_params_t* current_transform;
     processing_metrics_t metrics;
     void* processor_data;
@@ -86,42 +86,12 @@ static void compute_hierarchical_metric(HierarchicalMatrix* tensor,
 static void compute_leaf_metric(double complex* tensor,
                               const double complex* state,
                               size_t n) {
-#ifdef __APPLE__
-    // Use Accelerate framework on macOS
-    DSPDoubleComplex* dsp_state = malloc(n * sizeof(DSPDoubleComplex));
-    DSPDoubleComplex* dsp_tensor = malloc(n * sizeof(DSPDoubleComplex));
-    
-    if (!dsp_state || !dsp_tensor) {
-        free(dsp_state);
-        free(dsp_tensor);
-        return;
-    }
-    
-    // Convert input to DSPDoubleComplex
-    for (size_t i = 0; i < n; i++) {
-        dsp_state[i].real = creal(state[i]);
-        dsp_state[i].imag = cimag(state[i]);
-    }
-    
-    // Use vDSP for complex multiplication
-    vDSP_zvmul((const DSPComplex*)dsp_state, 1, 
-               (const DSPComplex*)dsp_state, 1,
-               (DSPComplex*)dsp_tensor, 1, n, 1);
-    
-    // Convert back to double complex
-    for (size_t i = 0; i < n; i++) {
-        tensor[i] = dsp_tensor[i].real + I * dsp_tensor[i].imag;
-    }
-    
-    free(dsp_state);
-    free(dsp_tensor);
-#else
-    // Fallback to direct computation on other platforms
+    // Direct SIMD computation - efficient on all platforms
+    // This computes |psi|^2 for quantum metric tensor diagonal
     #pragma omp simd
     for (size_t i = 0; i < n; i++) {
         tensor[i] = state[i] * conj(state[i]);
     }
-#endif
 }
 
 // Optimized geometric transform using platform-specific acceleration
@@ -130,48 +100,24 @@ static void geometric_transform(double complex* result,
                               const transform_params_t* transform,
                               size_t n) {
 #ifdef __APPLE__
-    // Use Accelerate framework on macOS
-    DSPDoubleComplex* dsp_state = malloc(n * sizeof(DSPDoubleComplex));
-    DSPDoubleComplex* dsp_result = malloc(n * sizeof(DSPDoubleComplex));
-    DSPDoubleComplex* dsp_matrix = malloc(n * n * sizeof(DSPDoubleComplex));
-    
-    if (!dsp_state || !dsp_result || !dsp_matrix) {
-        free(dsp_state);
-        free(dsp_result);
-        free(dsp_matrix);
-        return;
-    }
-    
-    // Convert input state to DSPDoubleComplex
-    for (size_t i = 0; i < n; i++) {
-        dsp_state[i].real = creal(state[i]);
-        dsp_state[i].imag = cimag(state[i]);
-    }
-    
-    // Convert transform matrix to DSPDoubleComplex
-    for (size_t i = 0; i < n * n; i++) {
-        dsp_matrix[i].real = creal(transform->matrix[i]);
-        dsp_matrix[i].imag = cimag(transform->matrix[i]);
-    }
-    
-    // Use vDSP for matrix-vector multiplication
-    vDSP_zmmul((const DSPComplex*)dsp_matrix, 1,
-               (const DSPComplex*)dsp_state, 1,
-               (DSPComplex*)dsp_result, 1,
-               n, 1, n);
-    
-    // Convert result back to double complex
-    for (size_t i = 0; i < n; i++) {
-        result[i] = dsp_result[i].real + I * dsp_result[i].imag;
-    }
-    
-    free(dsp_state);
-    free(dsp_result);
-    free(dsp_matrix);
+    // Use CBLAS for complex matrix-vector multiplication
+    // cblas_zgemv works with interleaved complex format
+    double complex alpha = 1.0;
+    double complex beta = 0.0;
+
+    cblas_zgemv(CblasRowMajor, CblasNoTrans,
+                (int)n, (int)n,
+                &alpha,
+                transform->matrix, (int)n,
+                state, 1,
+                &beta,
+                result, 1);
 #else
     // Fallback to direct computation on other platforms
+    #pragma omp parallel for
     for (size_t i = 0; i < n; i++) {
         result[i] = 0;
+        #pragma omp simd
         for (size_t j = 0; j < n; j++) {
             result[i] += transform->matrix[i * n + j] * state[j];
         }
@@ -207,7 +153,7 @@ geometric_processor_t* create_geometric_processor(const processor_config_t* conf
         // Default configuration
         processor->config.type = PROC_GEOMETRIC;
         processor->config.mode = MODE_SEQUENTIAL;
-        processor->config.geometry = GEOM_EUCLIDEAN;
+        processor->config.geometry = PROC_GEOM_EUCLIDEAN;
         processor->config.num_dimensions = 2;
         processor->config.enable_optimization = true;
         processor->config.use_quantum_acceleration = false;
@@ -220,7 +166,7 @@ void destroy_geometric_processor(geometric_processor_t* processor) {
     if (!processor) return;
     
     if (processor->current_state) {
-        free_geometric_state(processor->current_state);
+        processor_free_state(processor->current_state);
     }
     
     if (processor->current_transform) {
@@ -234,7 +180,7 @@ void destroy_geometric_processor(geometric_processor_t* processor) {
 }
 
 bool compute_metric(geometric_processor_t* processor,
-                   const geometric_state_t* state,
+                   const proc_geometric_state_t* state,
                    double* metric) {
     if (!processor || !state || !metric) return false;
     
@@ -255,7 +201,7 @@ bool compute_metric(geometric_processor_t* processor,
 }
 
 bool compute_connection(geometric_processor_t* processor,
-                       const geometric_state_t* state,
+                       const proc_geometric_state_t* state,
                        double* connection) {
     if (!processor || !state || !connection) return false;
     
@@ -290,7 +236,7 @@ bool compute_connection(geometric_processor_t* processor,
 }
 
 bool compute_curvature(geometric_processor_t* processor,
-                      const geometric_state_t* state,
+                      const proc_geometric_state_t* state,
                       double* curvature) {
     if (!processor || !state || !curvature) return false;
     
@@ -363,7 +309,7 @@ bool validate_initialization(geometric_processor_t* processor) {
     return true;
 }
 
-void free_geometric_state(geometric_state_t* state) {
+void processor_free_state(proc_geometric_state_t* state) {
     if (!state) return;
     free(state->metric_tensor);
     free(state->connection_coeffs);

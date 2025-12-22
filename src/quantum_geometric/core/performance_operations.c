@@ -7,10 +7,33 @@
 #include <sys/resource.h>
 #include <sys/time.h>
 #include <unistd.h>
-#include <x86intrin.h>
-#include <papi.h>
 #include <pthread.h>
-#include <immintrin.h>
+#include <stdatomic.h>
+#include <sys/stat.h>
+
+// Platform-specific includes
+#ifdef __APPLE__
+    #include <mach/mach.h>
+    #include <mach/mach_time.h>
+    #include <sys/sysctl.h>
+#endif
+
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    #include <x86intrin.h>
+    #include <immintrin.h>
+    #define QGT_USE_X86_PERF 1
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    #if defined(__ARM_NEON) || defined(__ARM_NEON__)
+        #include <arm_neon.h>
+    #endif
+    #define QGT_USE_ARM_PERF 1
+#endif
+
+// PAPI - ideal for HPC clusters, supercomputers, Linux systems
+// Provides detailed hardware performance counters
+#ifdef HAVE_PAPI
+#include <papi.h>
+#endif
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -22,6 +45,8 @@
 
 // Enhanced hardware performance counters
 #define NUM_PAPI_EVENTS 12
+
+#ifdef HAVE_PAPI
 static int papi_events[NUM_PAPI_EVENTS] = {
     PAPI_TOT_CYC,    // Total cycles
     PAPI_TOT_INS,    // Total instructions
@@ -36,6 +61,8 @@ static int papi_events[NUM_PAPI_EVENTS] = {
     PAPI_MEM_SCY,    // Memory access cycles
     PAPI_SR_INS      // Store instructions
 };
+static long long papi_values[NUM_PAPI_EVENTS];
+#endif
 
 // Advanced performance metrics
 typedef struct {
@@ -57,13 +84,6 @@ typedef struct {
     advanced_metrics_t advanced;
     char padding[24];  // Align to cache line
 } __attribute__((aligned(64))) monitor_entry_t;
-
-static struct {
-    monitor_entry_t buffer[MONITOR_BUFFER_SIZE];
-    atomic_size_t head;
-    atomic_size_t tail;
-    char padding[48];  // Prevent false sharing
-} __attribute__((aligned(64))) monitor_buffer;
 
 // Performance optimization suggestions
 typedef struct {
@@ -129,14 +149,40 @@ static roofline_model_t roofline_data = {0};
 // Mutex for thread-safe operations
 static pthread_mutex_t perf_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-// High-precision timing using TSC
+// High-precision timing - cross-platform TSC/timer counter
 static inline uint64_t read_tsc(void) {
+#if defined(QGT_USE_X86_PERF) && defined(__GNUC__)
+    // x86: Use RDTSC instruction
     unsigned int aux;
     return __rdtscp(&aux);
+#elif defined(QGT_USE_ARM_PERF)
+    // ARM64: Use cycle counter (CNTVCT_EL0)
+    uint64_t val;
+    __asm__ volatile("mrs %0, cntvct_el0" : "=r" (val));
+    return val;
+#elif defined(__APPLE__)
+    // macOS fallback: Use mach_absolute_time
+    return mach_absolute_time();
+#else
+    // POSIX fallback: Use clock_gettime
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+#endif
 }
 
-// Cache line size detection
-static size_t get_cache_line_size(void) {
+// Cache line size detection - cross-platform
+static size_t detect_cache_line_size(void) {
+#ifdef __APPLE__
+    // macOS: Use sysctl
+    size_t line_size = 0;
+    size_t size = sizeof(line_size);
+    if (sysctlbyname("hw.cachelinesize", &line_size, &size, NULL, 0) == 0) {
+        return line_size;
+    }
+    return 64;  // Default for Apple Silicon
+#else
+    // Linux: Read from sysfs
     size_t line_size = 0;
     FILE* p = fopen("/sys/devices/system/cpu/cpu0/cache/index0/coherency_line_size", "r");
     if (p) {
@@ -144,6 +190,7 @@ static size_t get_cache_line_size(void) {
         fclose(p);
     }
     return line_size ? line_size : 64;  // Default to 64 bytes
+#endif
 }
 
 #define MAX_SECTIONS 100
@@ -173,6 +220,16 @@ static struct {
     char padding[40];  // Align to cache line
 } __attribute__((aligned(64))) global_state = {0};
 
+// Forward declarations for helper functions
+static void generate_visualization_data(const char* event_name, const performance_metrics_t* metrics);
+static void generate_html_report(FILE* report, const performance_section_t* sections, int num_sections);
+static void generate_csv_report(FILE* report, const performance_section_t* sections, int num_sections);
+static void generate_timeline_plot(FILE* report, const performance_section_t* sections, int num_sections);
+static void generate_metrics_plots(FILE* report, const performance_section_t* sections, int num_sections);
+static void write_json_metrics(FILE* file, const char* event_name, const performance_metrics_t* metrics);
+static void add_derived_events(int event_set);
+static void generate_memory_plot(FILE* report, const performance_section_t* sections, int num_sections);
+
 // Circular buffer for real-time monitoring
 #define MONITOR_BUFFER_SIZE 1024
 static struct {
@@ -192,14 +249,12 @@ int qg_performance_init(const performance_config_t* config) {
 
     pthread_mutex_lock(&perf_mutex);
 
-    // Initialize PAPI with advanced events
+#ifdef HAVE_PAPI
+    // Initialize PAPI with advanced events (HPC/supercomputer platforms)
     if (PAPI_library_init(PAPI_VER_CURRENT) != PAPI_VER_CURRENT) {
         pthread_mutex_unlock(&perf_mutex);
         return QG_PERFORMANCE_ERROR_NOT_INITIALIZED;
     }
-
-    // Initialize consolidated performance monitor
-    init_performance_monitor(DEFAULT_NUM_RESOURCES, DEFAULT_HISTORY_CAPACITY);
 
     // Detect hardware capabilities
     const PAPI_hw_info_t* hwinfo = PAPI_get_hardware_info();
@@ -208,43 +263,55 @@ int qg_performance_init(const performance_config_t* config) {
         roofline_data.peak_flops = hwinfo->cpu_max_mhz * 1e6 *  // Clock frequency
                                   hwinfo->cores *                // Core count
                                   (hwinfo->vendor == PAPI_VENDOR_INTEL ? 32 : 16); // FMA units
-        
+
         // Estimate peak memory bandwidth (assuming DDR4-3200)
         roofline_data.peak_bandwidth = 3200e6 * 8 * // DDR4-3200 speed
                                      hwinfo->memory_channels * // Memory channels
                                      (hwinfo->vendor == PAPI_VENDOR_AMD ? 2 : 1); // Dual vs single rank
     }
 
-    // Initialize real-time monitoring
-    atomic_store(&monitor_buffer.head, 0);
-    atomic_store(&monitor_buffer.tail, 0);
-
     // Create enhanced event set for each thread
+    #ifdef _OPENMP
     #pragma omp parallel
     {
         thread_local_data.event_set = PAPI_NULL;
         if (PAPI_create_eventset(&thread_local_data.event_set) != PAPI_OK) {
-            return;
+            // Continue without PAPI for this thread
+        } else {
+            // Add standard events
+            PAPI_add_events(thread_local_data.event_set, papi_events, NUM_PAPI_EVENTS);
+
+            // Add derived events if available
+            const PAPI_component_info_t* cmp_info = PAPI_get_component_info(0);
+            if (cmp_info && cmp_info->num_native_events > 0) {
+                add_derived_events(thread_local_data.event_set);
+            }
         }
-        
-        // Add standard events
-        PAPI_add_events(thread_local_data.event_set, papi_events, NUM_PAPI_EVENTS);
-        
-        // Add derived events if available
-        const PAPI_component_info_t* cmp_info = PAPI_get_component_info(0);
-        if (cmp_info && cmp_info->num_native_events > 0) {
-            add_derived_events(thread_local_data.event_set);
-        }
-        
+
         // Initialize detailed statistics
         memset(&thread_local_data.detailed_stats, 0,
                sizeof(thread_local_data.detailed_stats));
     }
+    #else
+    // Single-threaded PAPI init
+    thread_local_data.event_set = PAPI_NULL;
+    if (PAPI_create_eventset(&thread_local_data.event_set) == PAPI_OK) {
+        PAPI_add_events(thread_local_data.event_set, papi_events, NUM_PAPI_EVENTS);
+    }
+    #endif
+#endif // HAVE_PAPI
+
+    // Initialize consolidated performance monitor
+    init_performance_monitor();
+
+    // Initialize real-time monitoring
+    atomic_store(&monitor_buffer.head, 0);
+    atomic_store(&monitor_buffer.tail, 0);
 
     // Initialize global state
     global_state.current_config = *config;
     global_state.is_initialized = 1;
-    global_state.cache_line_size = get_cache_line_size();
+    global_state.cache_line_size = detect_cache_line_size();
 
     if (config->log_file) {
         global_state.log_file = fopen(config->log_file, "w");
@@ -262,13 +329,20 @@ int qg_performance_init(const performance_config_t* config) {
 void qg_performance_cleanup(void) {
     pthread_mutex_lock(&perf_mutex);
 
-    // Cleanup PAPI
+#ifdef HAVE_PAPI
+    // Cleanup PAPI (HPC/supercomputer platforms)
+    #ifdef _OPENMP
     #pragma omp parallel
     {
         PAPI_cleanup_eventset(thread_local_data.event_set);
         PAPI_destroy_eventset(&thread_local_data.event_set);
     }
+    #else
+    PAPI_cleanup_eventset(thread_local_data.event_set);
+    PAPI_destroy_eventset(&thread_local_data.event_set);
+    #endif
     PAPI_shutdown();
+#endif
 
     if (global_state.log_file) {
         fclose(global_state.log_file);
@@ -294,19 +368,26 @@ int qg_timer_start(performance_timer_t* timer, const char* label) {
         return QG_PERFORMANCE_ERROR_ALREADY_RUNNING;
     }
 
-    // Start hardware counters
+#ifdef HAVE_PAPI
+    // Start hardware counters (HPC/supercomputer platforms)
     if (PAPI_start(thread_local_data.event_set) != PAPI_OK) {
-        return QG_PERFORMANCE_ERROR_NOT_INITIALIZED;
+        // Continue without PAPI - fall back to basic timing
+    } else {
+        PAPI_read(thread_local_data.event_set, thread_local_data.counters);
     }
+#endif
 
     // Record start time and counters
     timer->label = label;
     timer->is_running = 1;
     thread_local_data.start_tsc = read_tsc();
-    PAPI_read(thread_local_data.event_set, thread_local_data.counters);
 
-    // Get high-precision time
+    // Get high-precision time (cross-platform)
+#ifdef __APPLE__
+    clock_gettime(CLOCK_MONOTONIC, &timer->start_time);
+#else
     clock_gettime(CLOCK_MONOTONIC_RAW, &timer->start_time);
+#endif
 
     return QG_PERFORMANCE_SUCCESS;
 }
@@ -321,32 +402,42 @@ int qg_timer_stop(performance_timer_t* timer) {
         return QG_PERFORMANCE_ERROR_NOT_RUNNING;
     }
 
-    // Record end time and counters
+    // Record end time (cross-platform)
+#ifdef __APPLE__
+    clock_gettime(CLOCK_MONOTONIC, &timer->end_time);
+#else
     clock_gettime(CLOCK_MONOTONIC_RAW, &timer->end_time);
+#endif
     thread_local_data.end_tsc = read_tsc();
-    
-    long long end_counters[NUM_PAPI_EVENTS];
-    PAPI_read(thread_local_data.event_set, end_counters);
-    PAPI_stop(thread_local_data.event_set, end_counters);
 
     // Calculate metrics
     timer->is_running = 0;
     timer->elapsed_time = (timer->end_time.tv_sec - timer->start_time.tv_sec) +
                          (timer->end_time.tv_nsec - timer->start_time.tv_nsec) * 1e-9;
-    
-    // Calculate CPU cycles and instructions
+
+    // Calculate CPU cycles
     uint64_t cycles = thread_local_data.end_tsc - thread_local_data.start_tsc;
-    uint64_t instructions = end_counters[1] - thread_local_data.counters[1];
-    
+    uint64_t instructions = 0;
+    size_t cache_misses = 0;
+
+#ifdef HAVE_PAPI
+    // Read hardware counters (HPC/supercomputer platforms)
+    long long end_counters[NUM_PAPI_EVENTS];
+    if (PAPI_read(thread_local_data.event_set, end_counters) == PAPI_OK) {
+        PAPI_stop(thread_local_data.event_set, end_counters);
+        instructions = end_counters[1] - thread_local_data.counters[1];
+        cache_misses = (end_counters[2] - thread_local_data.counters[2]) +  // L1 misses
+                      (end_counters[3] - thread_local_data.counters[3]);    // L2 misses
+    }
+#endif
+
     // Update real-time monitoring buffer
     size_t idx = atomic_fetch_add(&monitor_buffer.head, 1) % MONITOR_BUFFER_SIZE;
     monitor_buffer.buffer[idx].timestamp = thread_local_data.end_tsc;
     monitor_buffer.buffer[idx].metrics.execution_time = timer->elapsed_time;
     monitor_buffer.buffer[idx].metrics.cpu_cycles = cycles;
     monitor_buffer.buffer[idx].metrics.instructions = instructions;
-    monitor_buffer.buffer[idx].metrics.cache_misses = 
-        (end_counters[2] - thread_local_data.counters[2]) +  // L1 misses
-        (end_counters[3] - thread_local_data.counters[3]);   // L2 misses
+    monitor_buffer.buffer[idx].metrics.cache_misses = cache_misses;
 
     return QG_PERFORMANCE_SUCCESS;
 }
@@ -368,25 +459,25 @@ int qg_timer_reset(performance_timer_t* timer) {
 
 // Performance monitoring
 static performance_section_t* find_section(const char* name) {
-    for (int i = 0; i < num_sections; i++) {
-        if (strcmp(sections[i].name, name) == 0) {
-            return &sections[i];
+    for (int i = 0; i < global_state.num_sections; i++) {
+        if (strcmp(global_state.sections[i].name, name) == 0) {
+            return &global_state.sections[i];
         }
     }
     return NULL;
 }
 
 int qg_start_monitoring(const char* section_name) {
-    if (!is_initialized || !section_name) {
+    if (!global_state.is_initialized || !section_name) {
         return QG_PERFORMANCE_ERROR_NOT_INITIALIZED;
     }
 
     performance_section_t* section = find_section(section_name);
     if (!section) {
-        if (num_sections >= MAX_SECTIONS) {
+        if (global_state.num_sections >= MAX_SECTIONS) {
             return QG_PERFORMANCE_ERROR_INVALID_PARAMETER;
         }
-        section = &sections[num_sections++];
+        section = &global_state.sections[global_state.num_sections++];
         section->name = section_name;
         memset(&section->metrics, 0, sizeof(performance_metrics_t));
     }
@@ -400,7 +491,7 @@ int qg_start_monitoring(const char* section_name) {
 }
 
 int qg_stop_monitoring(const char* section_name) {
-    if (!is_initialized) {
+    if (!global_state.is_initialized) {
         return QG_PERFORMANCE_ERROR_NOT_INITIALIZED;
     }
 
@@ -417,7 +508,7 @@ int qg_stop_monitoring(const char* section_name) {
     section->is_active = 0;
     section->metrics.execution_time = section->timer.elapsed_time;
 
-    if (current_config.collect_memory_stats) {
+    if (global_state.current_config.collect_memory_stats) {
         section->metrics.memory_usage = qg_get_current_memory_usage();
         section->metrics.peak_memory = qg_get_peak_memory_usage();
     }
@@ -426,7 +517,7 @@ int qg_stop_monitoring(const char* section_name) {
 }
 
 int qg_get_performance_metrics(const char* section_name, performance_metrics_t* metrics) {
-    if (!is_initialized || !metrics) {
+    if (!global_state.is_initialized || !metrics) {
         return QG_PERFORMANCE_ERROR_NOT_INITIALIZED;
     }
 
@@ -916,7 +1007,7 @@ int qg_performance_set_log_level(int level) {
     if (level < 0) {
         return QG_PERFORMANCE_ERROR_INVALID_PARAMETER;
     }
-    current_config.log_level = level;
+    global_state.current_config.log_level = level;
     return QG_PERFORMANCE_SUCCESS;
 }
 
@@ -926,13 +1017,13 @@ int qg_performance_enable_feature(const char* feature_name) {
     }
 
     if (strcmp(feature_name, "profiling") == 0) {
-        current_config.enable_profiling = 1;
+        global_state.current_config.enable_profiling = 1;
     } else if (strcmp(feature_name, "memory_stats") == 0) {
-        current_config.collect_memory_stats = 1;
+        global_state.current_config.collect_memory_stats = 1;
     } else if (strcmp(feature_name, "cache_stats") == 0) {
-        current_config.collect_cache_stats = 1;
+        global_state.current_config.collect_cache_stats = 1;
     } else if (strcmp(feature_name, "flops") == 0) {
-        current_config.collect_flops = 1;
+        global_state.current_config.collect_flops = 1;
     } else {
         return QG_PERFORMANCE_ERROR_INVALID_PARAMETER;
     }
@@ -946,16 +1037,38 @@ int qg_performance_disable_feature(const char* feature_name) {
     }
 
     if (strcmp(feature_name, "profiling") == 0) {
-        current_config.enable_profiling = 0;
+        global_state.current_config.enable_profiling = 0;
     } else if (strcmp(feature_name, "memory_stats") == 0) {
-        current_config.collect_memory_stats = 0;
+        global_state.current_config.collect_memory_stats = 0;
     } else if (strcmp(feature_name, "cache_stats") == 0) {
-        current_config.collect_cache_stats = 0;
+        global_state.current_config.collect_cache_stats = 0;
     } else if (strcmp(feature_name, "flops") == 0) {
-        current_config.collect_flops = 0;
+        global_state.current_config.collect_flops = 0;
     } else {
         return QG_PERFORMANCE_ERROR_INVALID_PARAMETER;
     }
 
     return QG_PERFORMANCE_SUCCESS;
+}
+
+// Add derived performance events for PAPI
+static void add_derived_events(int event_set) {
+#ifdef HAVE_PAPI
+    // Try to add commonly available derived events
+    // These are computed from hardware counters
+    int derived_events[] = {
+        PAPI_L1_TCM,    // L1 total cache misses
+        PAPI_L2_TCM,    // L2 total cache misses
+        PAPI_BR_TKN,    // Branches taken
+        PAPI_STL_ICY,   // Stall cycles
+        PAPI_FUL_ICY    // Full issue cycles
+    };
+
+    for (int i = 0; i < 5; i++) {
+        // Ignore errors - some events may not be available
+        PAPI_add_event(event_set, derived_events[i]);
+    }
+#else
+    (void)event_set;  // Suppress unused parameter warning
+#endif
 }

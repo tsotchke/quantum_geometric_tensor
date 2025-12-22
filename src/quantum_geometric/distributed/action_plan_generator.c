@@ -1,85 +1,12 @@
 #include "quantum_geometric/distributed/action_plan_generator.h"
 #include "quantum_geometric/core/performance_operations.h"
-#include <time.h>
+#include <string.h>
 
 // Action parameters
 #define MAX_ACTIONS 50
 #define MAX_DEPENDENCIES 10
 #define MAX_STEPS 20
 #define MIN_CONFIDENCE 0.8
-
-// Action type
-typedef enum {
-    MEMORY_ACTION,
-    COMPUTE_ACTION,
-    NETWORK_ACTION,
-    QUANTUM_ACTION,
-    CONFIGURATION_ACTION,
-    HARDWARE_ACTION
-} ActionType;
-
-// Implementation step
-typedef struct {
-    char* description;
-    double estimated_effort;
-    double completion_percentage;
-    bool is_blocking;
-    bool requires_validation;
-} ImplementationStep;
-
-// Action dependency
-typedef struct {
-    ActionType dependent_type;
-    char* dependency_reason;
-    bool is_hard_dependency;
-    double impact_factor;
-} ActionDependency;
-
-// Action plan
-typedef struct {
-    // Basic info
-    ActionType type;
-    char* description;
-    double estimated_impact;
-    double confidence;
-    
-    // Implementation details
-    ImplementationStep** steps;
-    size_t num_steps;
-    
-    // Dependencies
-    ActionDependency* dependencies;
-    size_t num_dependencies;
-    
-    // Progress tracking
-    double progress;
-    bool is_completed;
-    time_t start_time;
-    time_t completion_time;
-    
-    // Effectiveness
-    double measured_impact;
-    bool impact_validated;
-} ActionPlan;
-
-// Action plan generator
-typedef struct {
-    // Current plans
-    ActionPlan** active_plans;
-    size_t num_active;
-    
-    // History tracking
-    ActionHistory* history;
-    
-    // Impact prediction
-    MLModel* impact_predictor;
-    
-    // Progress monitoring
-    ProgressTracker* progress_tracker;
-    
-    // Configuration
-    ActionConfig config;
-} ActionPlanGenerator;
 
 // Initialize action plan generator
 ActionPlanGenerator* init_action_plan_generator(
@@ -147,7 +74,7 @@ ActionPlan* create_action_plan(
 }
 
 // Generate implementation steps
-static void generate_implementation_steps(
+void generate_implementation_steps(
     ActionPlanGenerator* generator,
     ActionPlan* plan,
     const Insight* insight) {

@@ -1,5 +1,40 @@
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <time.h>
+
+#ifdef __linux__
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#endif
+
 #include "quantum_geometric/distributed/communication_optimization.h"
+
+#ifdef HAVE_LZ4
 #include <lz4.h>
+#else
+// LZ4 fallback stubs - no compression when LZ4 not available
+static inline int LZ4_compress_default(const char* src, char* dst, int srcSize, int dstCapacity) {
+    if (srcSize > dstCapacity) return 0;
+    memcpy(dst, src, srcSize);
+    return srcSize;
+}
+static inline int LZ4_decompress_safe(const char* src, char* dst, int compressedSize, int dstCapacity) {
+    if (compressedSize > dstCapacity) return -1;
+    memcpy(dst, src, compressedSize);
+    return compressedSize;
+}
+static inline int LZ4_compressBound(int inputSize) { return inputSize; }
+#endif
+
+// Define NO_MPI by default since MPI is optional
+#ifndef HAS_MPI
+#define NO_MPI
+#endif
 
 #ifndef NO_MPI
 #include <mpi.h>
@@ -12,9 +47,16 @@
 #define AGGREGATION_TIMEOUT 100  // ms
 #define MAX_AGGREGATION_SIZE (1024 * 1024)  // 1MB
 
-#ifndef NO_MPI
+// Forward declarations for helper functions
+static double get_time_ms(void);
+static void flush_aggregated_message_at(CommunicationManager* manager, size_t index);
+static bool should_aggregate(CommunicationManager* manager, size_t size, int dest, MessageType type);
+static int aggregate_message(CommunicationManager* manager, const void* data, size_t size, int dest, MessageType type);
+static void* handle_aggregation(void* arg);
+static void wait_for_pending(CommunicationManager* manager);
+static int process_aggregated_message(CommunicationManager* manager, const void* data, size_t size, int source, MessageType type);
 
-// Full MPI implementation structures
+// Message header for communication
 typedef struct {
     size_t original_size;
     size_t compressed_size;
@@ -25,6 +67,7 @@ typedef struct {
     uint64_t sequence_number;
 } MessageHeader;
 
+// Aggregated message structure
 typedef struct {
     void* data;
     size_t size;
@@ -33,12 +76,12 @@ typedef struct {
     MessageType type;
 } AggregatedMessage;
 
-typedef struct {
+// Communication manager implementation
+struct CommunicationManager {
     void* send_buffer;
     void* recv_buffer;
     void* compression_buffer;
     size_t buffer_size;
-    MPI_Request pending_requests[MAX_PENDING_REQUESTS];
     size_t num_pending;
     pthread_mutex_t mutex;
     pthread_t aggregation_thread;
@@ -48,30 +91,19 @@ typedef struct {
     uint64_t next_sequence;
     bool use_zero_copy;
     CommunicationStats stats;
-} MPICommunicationManager;
-
-#else
-
-// Stub implementation structures
-typedef struct {
-    void* send_buffer;
-    void* recv_buffer;
-    void* compression_buffer;
-    size_t buffer_size;
-    CommunicationStats stats;
     bool initialized;
-} StubCommunicationManager;
-
-#endif
-
-// Common type definition
-typedef struct {
+    int rank;
+    int world_size;
+    // Single-process mode tracking (used when NO_MPI defined)
+    size_t pending_message_size;
+    MessageType pending_message_type;
+    bool has_pending_message;
 #ifndef NO_MPI
-    MPICommunicationManager mpi;
+    MPI_Request pending_requests[MAX_PENDING_REQUESTS];
 #else
-    StubCommunicationManager stub;
+    int pending_requests[MAX_PENDING_REQUESTS];
 #endif
-} CommunicationManager;
+};
 
 // Initialize communication manager
 CommunicationManager* init_communication_manager(void) {
@@ -134,17 +166,31 @@ CommunicationManager* init_communication_manager(void) {
     
     return manager;
 #else
-    // Stub implementation
+    // Stub implementation (no MPI)
     CommunicationManager* manager = malloc(sizeof(CommunicationManager));
     if (!manager) return NULL;
-    
-    manager->stub.send_buffer = NULL;
-    manager->stub.recv_buffer = NULL;
-    manager->stub.compression_buffer = NULL;
-    manager->stub.buffer_size = 0;
-    manager->stub.initialized = false;
-    memset(&manager->stub.stats, 0, sizeof(CommunicationStats));
-    
+
+    manager->send_buffer = aligned_alloc(64, MAX_BUFFER_SIZE);
+    manager->recv_buffer = aligned_alloc(64, MAX_BUFFER_SIZE);
+    manager->compression_buffer = aligned_alloc(64, MAX_BUFFER_SIZE);
+    manager->buffer_size = MAX_BUFFER_SIZE;
+    manager->num_pending = 0;
+    manager->running = true;
+    manager->next_sequence = 0;
+    manager->use_zero_copy = false;
+    manager->initialized = true;
+    manager->rank = 0;
+    manager->world_size = 1;
+    manager->aggregation_buffers = NULL;
+    manager->num_aggregation_buffers = 0;
+    memset(&manager->stats, 0, sizeof(CommunicationStats));
+    pthread_mutex_init(&manager->mutex, NULL);
+
+    if (!manager->send_buffer || !manager->recv_buffer || !manager->compression_buffer) {
+        cleanup_communication_manager(manager);
+        return NULL;
+    }
+
     return manager;
 #endif
 }
@@ -235,8 +281,27 @@ int send_optimized(CommunicationManager* manager,
     pthread_mutex_unlock(&manager->mutex);
     return 0;
 #else
-    // Stub implementation - return error when MPI is disabled
-    return -1;
+    // Single-process fallback: store data in send buffer for later receive
+    if (!manager || !data || size == 0) return -1;
+    (void)dest;  // In single-process mode, destination is always self
+
+    pthread_mutex_lock(&manager->mutex);
+
+    // Copy data to send buffer (simulates sending to self)
+    if (size <= manager->buffer_size) {
+        memcpy(manager->send_buffer, data, size);
+        manager->pending_message_size = size;
+        manager->pending_message_type = type;
+        manager->has_pending_message = true;
+        manager->stats.bytes_sent += size;
+        manager->stats.messages_sent++;
+    } else {
+        pthread_mutex_unlock(&manager->mutex);
+        return -1;  // Message too large for buffer
+    }
+
+    pthread_mutex_unlock(&manager->mutex);
+    return 0;
 #endif
 }
 
@@ -258,11 +323,11 @@ int receive_optimized(CommunicationManager* manager,
     
     // Check for aggregated message
     if (header.type == MESSAGE_AGGREGATED) {
-        int status = handle_aggregated_message(manager,
-                                             data,
-                                             size,
-                                             source,
-                                             type);
+        int status = process_aggregated_message(manager,
+                                                data,
+                                                *size,
+                                                source,
+                                                *type);
         pthread_mutex_unlock(&manager->mutex);
         return status;
     }
@@ -305,8 +370,38 @@ int receive_optimized(CommunicationManager* manager,
     pthread_mutex_unlock(&manager->mutex);
     return 0;
 #else
-    // Stub implementation - return error when MPI is disabled
-    return -1;
+    // Single-process fallback: retrieve data from send buffer
+    if (!manager || !data || !size || !type) return -1;
+    (void)source;  // In single-process mode, source is always self
+
+    pthread_mutex_lock(&manager->mutex);
+
+    // Check if there's a pending message to receive
+    if (!manager->has_pending_message) {
+        pthread_mutex_unlock(&manager->mutex);
+        return -1;  // No message available
+    }
+
+    // Check if output buffer is large enough
+    if (*size < manager->pending_message_size) {
+        // Return required size so caller can reallocate
+        *size = manager->pending_message_size;
+        pthread_mutex_unlock(&manager->mutex);
+        return -1;  // Buffer too small
+    }
+
+    // Copy data from send buffer to output
+    memcpy(data, manager->send_buffer, manager->pending_message_size);
+    *size = manager->pending_message_size;
+    *type = manager->pending_message_type;
+    manager->has_pending_message = false;
+
+    // Update stats
+    manager->stats.bytes_received += manager->pending_message_size;
+    manager->stats.messages_received++;
+
+    pthread_mutex_unlock(&manager->mutex);
+    return 0;
 #endif
 }
 
@@ -325,7 +420,7 @@ static void* handle_aggregation(void* arg) {
             
             if (now - msg->timeout >= AGGREGATION_TIMEOUT) {
                 // Send aggregated message
-                flush_aggregated_message(manager, i);
+                flush_aggregated_message_at(manager, i);
                 
                 // Remove from list
                 if (i < manager->num_aggregation_buffers - 1) {
@@ -401,52 +496,160 @@ static int aggregate_message(CommunicationManager* manager,
     
     // Flush if full
     if (msg->size >= MAX_AGGREGATION_SIZE) {
-        flush_aggregated_message(manager,
-            msg - manager->aggregation_buffers);
+        flush_aggregated_message_at(manager,
+            (size_t)(msg - manager->aggregation_buffers));
     }
     
     return 0;
 }
 
-static void flush_aggregated_message(CommunicationManager* manager,
-                                   size_t index) {
+static void flush_aggregated_message_at(CommunicationManager* manager,
+                                         size_t index) {
+#ifndef NO_MPI
     AggregatedMessage* msg = &manager->aggregation_buffers[index];
-    
+
     // Send as single message
     MessageHeader header = {
         .original_size = msg->size,
         .compressed_size = 0,
         .is_compressed = false,
-        .type = MESSAGE_AGGREGATED,
+        .type = msg->type,
         .source_rank = manager->rank,
         .dest_rank = msg->dest_rank,
         .sequence_number = manager->next_sequence++
     };
-    
+
     MPI_Send(&header, sizeof(MessageHeader), MPI_BYTE,
              msg->dest_rank, 0, MPI_COMM_WORLD);
-    
+
     MPI_Send(msg->data, msg->size, MPI_BYTE,
              msg->dest_rank, 1, MPI_COMM_WORLD);
-    
+
     // Update stats
-    manager->stats.messages_aggregated++;
-    manager->stats.bytes_saved += sizeof(MessageHeader) *
-        (msg->size / COMPRESSION_THRESHOLD - 1);
-    
+    manager->stats.messages_sent++;
+    manager->stats.bytes_sent += msg->size;
+
     // Free buffer
     free(msg->data);
+#else
+    (void)manager;
+    (void)index;
+#endif
 }
 
 // Helper functions
-static bool check_zero_copy_support(void) {
-    // Check for RDMA support
-    return false;  // Placeholder
+bool check_zero_copy_support(void) {
+    // Check for RDMA/InfiniBand support through environment and runtime detection
+
+    // Method 1: Check for RDMA environment variables
+    const char* rdma_env = getenv("OMPI_MCA_btl_openib_want_cuda_gdr");
+    const char* ucx_env = getenv("UCX_TLS");
+
+    if (rdma_env && strcmp(rdma_env, "1") == 0) {
+        return true;
+    }
+
+    if (ucx_env && strstr(ucx_env, "rc") != NULL) {
+        return true;  // UCX with reliable connection (InfiniBand)
+    }
+
+    // Method 2: Check for InfiniBand device presence
+#ifdef __linux__
+    struct stat st;
+    if (stat("/sys/class/infiniband", &st) == 0 && S_ISDIR(st.st_mode)) {
+        // InfiniBand subsystem exists, check for devices
+        DIR* dir = opendir("/sys/class/infiniband");
+        if (dir) {
+            struct dirent* entry;
+            while ((entry = readdir(dir)) != NULL) {
+                if (entry->d_name[0] != '.') {
+                    closedir(dir);
+                    return true;  // Found InfiniBand device
+                }
+            }
+            closedir(dir);
+        }
+    }
+#endif
+
+#ifndef NO_MPI
+    // Method 3: Query MPI for RDMA capability
+    int flag = 0;
+    void* attr_val;
+    MPI_Comm_get_attr(MPI_COMM_WORLD, MPI_TAG_UB, &attr_val, &flag);
+    if (flag) {
+        // Large tag range often indicates high-performance interconnect
+        int max_tag = *(int*)attr_val;
+        if (max_tag > 1000000) {
+            return true;  // Likely high-performance interconnect
+        }
+    }
+#endif
+
+    return false;
 }
 
-static void* allocate_rdma_buffer(size_t size) {
-    // Allocate RDMA-capable memory
-    return NULL;  // Placeholder
+void* allocate_rdma_buffer(size_t size) {
+    // Allocate memory suitable for RDMA operations
+    // Requirements: Page-aligned, locked in physical memory, registered
+
+    void* buffer = NULL;
+
+    // Use mmap for page-aligned allocation with MAP_LOCKED if available
+#ifdef __linux__
+    buffer = mmap(NULL, size, PROT_READ | PROT_WRITE,
+                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+
+    if (buffer == MAP_FAILED) {
+        // Fall back to regular mmap without huge pages
+        buffer = mmap(NULL, size, PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    }
+
+    if (buffer != MAP_FAILED) {
+        // Lock memory to prevent paging
+        if (mlock(buffer, size) != 0) {
+            // mlock failed but continue with warning
+            // The buffer is still usable, just may not be optimal for RDMA
+        }
+        return buffer;
+    }
+#endif
+
+    // Fallback: use posix_memalign for page-aligned allocation
+    size_t page_size = sysconf(_SC_PAGESIZE);
+    if (page_size == 0) page_size = 4096;
+
+    if (posix_memalign(&buffer, page_size, size) == 0) {
+        // Try to lock memory
+#ifdef __linux__
+        mlock(buffer, size);
+#endif
+        return buffer;
+    }
+
+    // Last resort: regular aligned allocation
+    return aligned_alloc(64, size);
+}
+
+void free_rdma_buffer(void* buffer) {
+    if (!buffer) return;
+
+    // For mmap'd buffers, we need munmap. For malloc'd, we use free.
+    // Since we can't easily tell which was used, we use a simple heuristic:
+    // If the pointer is page-aligned and we have RDMA support, assume mmap
+    size_t page_size = sysconf(_SC_PAGESIZE);
+    if (page_size == 0) page_size = 4096;
+
+    if (((uintptr_t)buffer % page_size) == 0 && check_zero_copy_support()) {
+#ifdef __linux__
+        munlock(buffer, MAX_BUFFER_SIZE);  // Unlock first
+        munmap(buffer, MAX_BUFFER_SIZE);   // Then unmap
+        return;
+#endif
+    }
+
+    free(buffer);
 }
 
 static double get_time_ms(void) {
@@ -457,35 +660,35 @@ static double get_time_ms(void) {
 
 // Wait for pending requests
 static void wait_for_pending(CommunicationManager* manager) {
+#ifndef NO_MPI
     if (manager->num_pending > 0) {
         MPI_Waitall(manager->num_pending,
                    manager->pending_requests,
                    MPI_STATUSES_IGNORE);
         manager->num_pending = 0;
     }
+#else
+    (void)manager;
+#endif
 }
 
 // Get communication statistics
 CommunicationStats get_communication_stats(
     const CommunicationManager* manager) {
-#ifndef NO_MPI
-    return manager->mpi.stats;
-#else
-    return manager->stub.stats;
-#endif
+    return manager->stats;
 }
 
 // Clean up
 void cleanup_communication_manager(CommunicationManager* manager) {
 #ifndef NO_MPI
     if (!manager) return;
-    
+
     manager->running = false;
     pthread_join(manager->aggregation_thread, NULL);
-    
+
     wait_for_pending(manager);
     pthread_mutex_destroy(&manager->mutex);
-    
+
     if (manager->use_zero_copy) {
         // Free RDMA buffers
         free_rdma_buffer(manager->send_buffer);
@@ -494,22 +697,126 @@ void cleanup_communication_manager(CommunicationManager* manager) {
         free(manager->send_buffer);
         free(manager->recv_buffer);
     }
-    
+
     free(manager->compression_buffer);
-    
+
     for (size_t i = 0; i < manager->num_aggregation_buffers; i++) {
         free(manager->aggregation_buffers[i].data);
     }
     free(manager->aggregation_buffers);
-    
+
     free(manager);
 #else
     // Stub implementation cleanup
     if (manager) {
-        free(manager->stub.send_buffer);
-        free(manager->stub.recv_buffer);
-        free(manager->stub.compression_buffer);
+        pthread_mutex_destroy(&manager->mutex);
+        free(manager->send_buffer);
+        free(manager->recv_buffer);
+        free(manager->compression_buffer);
         free(manager);
     }
+#endif
+}
+
+// Process aggregated message (internal helper for receive)
+static int process_aggregated_message(CommunicationManager* manager,
+                                       const void* data, size_t size,
+                                       int source, MessageType type) {
+    if (!manager || !data) return -1;
+
+    // Aggregated messages contain multiple sub-messages
+    // Process each sub-message by extracting and handling individually
+    (void)size;
+    (void)source;
+    (void)type;
+
+    // In production, this would parse the aggregated buffer and
+    // dispatch each sub-message to appropriate handlers
+    manager->stats.messages_received++;
+
+    return 0;
+}
+
+// Handle aggregated message (public API - matches header)
+int handle_aggregated_message(CommunicationManager* manager,
+                               const void* data, size_t size) {
+    if (!manager || !data || size == 0) return -1;
+
+    pthread_mutex_lock(&manager->mutex);
+
+    // Store aggregated data for later processing
+    // Find an available aggregation slot
+    if (manager->num_aggregation_buffers < MAX_PENDING_REQUESTS) {
+        AggregatedMessage* msg = &manager->aggregation_buffers[
+            manager->num_aggregation_buffers++];
+
+        msg->data = malloc(size);
+        if (msg->data) {
+            memcpy(msg->data, data, size);
+            msg->size = size;
+            msg->timeout = get_time_ms();
+            msg->type = MESSAGE_AGGREGATED;
+            msg->dest_rank = manager->rank;  // Local processing
+        }
+    }
+
+    manager->stats.messages_received++;
+
+    pthread_mutex_unlock(&manager->mutex);
+    return 0;
+}
+
+// Flush all aggregated messages (public API - matches header)
+int flush_aggregated_message(CommunicationManager* manager) {
+    if (!manager) return -1;
+
+    pthread_mutex_lock(&manager->mutex);
+
+    // Flush all pending aggregated messages
+    for (size_t i = 0; i < manager->num_aggregation_buffers; i++) {
+        flush_aggregated_message_at(manager, i);
+    }
+
+    // Clear the aggregation buffers after flushing
+    for (size_t i = 0; i < manager->num_aggregation_buffers; i++) {
+        free(manager->aggregation_buffers[i].data);
+        manager->aggregation_buffers[i].data = NULL;
+        manager->aggregation_buffers[i].size = 0;
+    }
+    manager->num_aggregation_buffers = 0;
+
+    pthread_mutex_unlock(&manager->mutex);
+    return 0;
+}
+
+// Reset communication statistics
+void reset_communication_stats(CommunicationManager* manager) {
+    if (!manager) return;
+
+    pthread_mutex_lock(&manager->mutex);
+    memset(&manager->stats, 0, sizeof(CommunicationStats));
+    pthread_mutex_unlock(&manager->mutex);
+}
+
+// Get local rank
+int get_rank(const CommunicationManager* manager) {
+    if (!manager) return -1;
+    return manager->rank;
+}
+
+// Get world size
+int get_world_size(const CommunicationManager* manager) {
+    if (!manager) return -1;
+    return manager->world_size;
+}
+
+// Barrier synchronization
+void barrier(CommunicationManager* manager) {
+    if (!manager) return;
+
+#ifndef NO_MPI
+    MPI_Barrier(MPI_COMM_WORLD);
+#else
+    (void)manager;
 #endif
 }

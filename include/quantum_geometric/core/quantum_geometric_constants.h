@@ -8,6 +8,12 @@
 #define QGT_SQRT3              1.73205080756887729352
 #define QGT_GOLDEN_RATIO       1.61803398874989484820
 
+// Derived mathematical constants (QG_ prefix for quantum-geometric operations)
+#define QG_TWO_PI              (2.0 * QGT_PI)
+#define QG_SQRT2_INV           (1.0 / QGT_SQRT2)    // 1/sqrt(2) = sqrt(2)/2
+#define QG_PI_HALF             (QGT_PI / 2.0)
+#define QG_PI_QUARTER          (QGT_PI / 4.0)
+
 // Physical constants (SI units)
 #define QGT_PLANCK             6.62607015e-34    // Planck constant (J⋅s)
 #define QGT_GATE_DELAY         1e-7              // Gate delay time (s)
@@ -27,6 +33,11 @@
 #define QGT_MAX_DEPTH          256               // Maximum circuit depth
 #define QGT_MAX_MEASUREMENTS   128               // Maximum measurements
 #define QGT_MAX_CLASSICAL_BITS 256               // Maximum classical bits
+
+// Quantum phase estimation and amplitude constants
+#define QG_PHASE_PRECISION             1e-6     // Phase estimation precision
+#define QG_QUANTUM_ESTIMATION_PRECISION 1e-8    // Quantum amplitude estimation precision
+#define QG_SUCCESS_PROBABILITY         0.99     // Success probability for quantum algorithms
 
 // Geometric constants
 #define QGT_MAX_DIMENSIONS     16                // Maximum geometric dimensions
@@ -89,6 +100,13 @@
 #define QGT_MAX_CONNECTIONS   8192              // Maximum connections
 #define QGT_MAX_MESSAGE_SIZE  (1 << 20)         // Maximum message size (1MB)
 #define QGT_MAX_BUFFER_SIZE   (1 << 24)         // Maximum buffer size (16MB)
+
+// Quantum attention constants
+#define QG_QUANTUM_ATTENTION_INITIAL_BLOCKS 256        // Initial blocks for attention pool
+#define QG_ATTENTION_CACHE_LINE_SIZE        64         // Cache line size for attention
+#define QG_ATTENTION_NORM_THRESHOLD         1e-10      // Normalization threshold
+#define QG_QUANTUM_ATTENTION_MAX_HEADS      64         // Maximum attention heads
+#define QG_QUANTUM_ATTENTION_DROPOUT_RATE   0.1        // Attention dropout rate
 
 // Version information
 #define QGT_VERSION_MAJOR     1                 // Major version number

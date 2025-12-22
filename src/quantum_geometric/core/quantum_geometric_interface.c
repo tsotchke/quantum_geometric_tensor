@@ -1,243 +1,781 @@
+/**
+ * @file quantum_geometric_interface.c
+ * @brief Implementation of quantum-geometric interface operations
+ *
+ * This file provides the interface between quantum computing operations
+ * and geometric transformations, using the existing library infrastructure
+ * for metrics, connections, curvature, and quantum state operations.
+ */
+
 #include "quantum_geometric/core/quantum_geometric_interface.h"
-#include "quantum_geometric/hardware/quantum_error_correction.h"
+#include "quantum_geometric/core/quantum_geometric_types.h"
 #include "quantum_geometric/core/quantum_geometric_constants.h"
-#include <immintrin.h>
+#include "quantum_geometric/core/quantum_geometric_metric.h"
+#include "quantum_geometric/core/quantum_geometric_connection.h"
+#include "quantum_geometric/core/quantum_geometric_curvature.h"
+#include "quantum_geometric/core/quantum_state.h"
+#include "quantum_geometric/core/quantum_types.h"
+#include "quantum_geometric/core/quantum_complex.h"
+#include "quantum_geometric/hardware/quantum_hardware_types.h"
+#include <stddef.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
 
-// Quantum circuit structure
-typedef struct {
-    QuantumGate* gates;
-    size_t num_gates;
-    size_t depth;
-    double fidelity;
-    bool error_mitigated;
-} QuantumCircuit;
+#ifdef __APPLE__
+#include <sys/sysctl.h>
+#endif
 
-// Quantum state encoding
-typedef struct {
-    double* amplitudes;
-    size_t num_qubits;
-    bool is_geometric;
-    StateProperties properties;
-} QuantumState;
+// Platform-specific SIMD includes
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    #ifdef __AVX2__
+    #include <immintrin.h>
+    #endif
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    #if defined(__ARM_NEON) || defined(__ARM_NEON__)
+    #include <arm_neon.h>
+    #endif
+#endif
+
+// Internal state for the interface
+typedef struct interface_internal_state {
+    quantum_geometric_metric_t* metric;
+    quantum_geometric_connection_t* connection;
+    quantum_geometric_curvature_t* curvature;
+    quantum_state_t* state;
+    size_t dimension;
+    bool initialized;
+} interface_internal_state_t;
+
+// Helper function: Calculate number of qubits needed for dimension
+static size_t calculate_required_qubits(size_t dimension) {
+    if (dimension == 0) return 0;
+    size_t qubits = 0;
+    size_t power = 1;
+    while (power < dimension) {
+        power *= 2;
+        qubits++;
+    }
+    return qubits;
+}
+
+// Helper function: Detect available hardware
+HardwareType detect_quantum_hardware(void) {
+    // Check for GPU availability on macOS
+#ifdef __APPLE__
+    // Check for Metal support on Apple Silicon
+    #if defined(__aarch64__) || defined(__arm64__)
+    return HARDWARE_TYPE_METAL;
+    #else
+    return HARDWARE_TYPE_CPU;
+    #endif
+#elif defined(ENABLE_CUDA)
+    // CUDA available on Linux/Windows
+    return HARDWARE_TYPE_CUDA;
+#else
+    return HARDWARE_TYPE_CPU;
+#endif
+}
+
+// ============================================================================
+// Quantum State Manipulation Helpers
+// ============================================================================
+
+// Reset quantum state to |0...0⟩
+static void quantum_state_reset(quantum_state_t* state) {
+    if (!state || !state->coordinates) return;
+    size_t dim = 1UL << state->num_qubits;
+    memset(state->coordinates, 0, dim * sizeof(ComplexFloat));
+    state->coordinates[0] = (ComplexFloat){1.0f, 0.0f};
+}
+
+// Apply RX gate to single qubit: RX(θ) = exp(-iθX/2)
+static void quantum_state_apply_rx(quantum_state_t* state, size_t qubit, double theta) {
+    if (!state || !state->coordinates || qubit >= state->num_qubits) return;
+
+    size_t dim = 1UL << state->num_qubits;
+    float cos_half = cosf((float)theta / 2.0f);
+    float sin_half = sinf((float)theta / 2.0f);
+
+    // RX = [[cos(θ/2), -i*sin(θ/2)], [-i*sin(θ/2), cos(θ/2)]]
+    for (size_t i = 0; i < dim; i++) {
+        if (i & (1UL << qubit)) continue; // Only process pairs once
+
+        size_t j = i | (1UL << qubit);
+        ComplexFloat a0 = state->coordinates[i];
+        ComplexFloat a1 = state->coordinates[j];
+
+        // a0' = cos*a0 - i*sin*a1
+        state->coordinates[i].real = cos_half * a0.real + sin_half * a1.imag;
+        state->coordinates[i].imag = cos_half * a0.imag - sin_half * a1.real;
+
+        // a1' = -i*sin*a0 + cos*a1
+        state->coordinates[j].real = sin_half * a0.imag + cos_half * a1.real;
+        state->coordinates[j].imag = -sin_half * a0.real + cos_half * a1.imag;
+    }
+}
+
+// Apply RY gate to single qubit: RY(θ) = exp(-iθY/2)
+static void quantum_state_apply_ry(quantum_state_t* state, size_t qubit, double theta) {
+    if (!state || !state->coordinates || qubit >= state->num_qubits) return;
+
+    size_t dim = 1UL << state->num_qubits;
+    float cos_half = cosf((float)theta / 2.0f);
+    float sin_half = sinf((float)theta / 2.0f);
+
+    // RY = [[cos(θ/2), -sin(θ/2)], [sin(θ/2), cos(θ/2)]]
+    for (size_t i = 0; i < dim; i++) {
+        if (i & (1UL << qubit)) continue;
+
+        size_t j = i | (1UL << qubit);
+        ComplexFloat a0 = state->coordinates[i];
+        ComplexFloat a1 = state->coordinates[j];
+
+        state->coordinates[i].real = cos_half * a0.real - sin_half * a1.real;
+        state->coordinates[i].imag = cos_half * a0.imag - sin_half * a1.imag;
+
+        state->coordinates[j].real = sin_half * a0.real + cos_half * a1.real;
+        state->coordinates[j].imag = sin_half * a0.imag + cos_half * a1.imag;
+    }
+}
+
+// Apply RZ gate to single qubit: RZ(θ) = exp(-iθZ/2)
+static void quantum_state_apply_rz(quantum_state_t* state, size_t qubit, double theta) {
+    if (!state || !state->coordinates || qubit >= state->num_qubits) return;
+
+    size_t dim = 1UL << state->num_qubits;
+    float cos_half = cosf((float)theta / 2.0f);
+    float sin_half = sinf((float)theta / 2.0f);
+
+    // RZ = [[e^(-iθ/2), 0], [0, e^(iθ/2)]]
+    for (size_t i = 0; i < dim; i++) {
+        ComplexFloat a = state->coordinates[i];
+        if (i & (1UL << qubit)) {
+            // |1⟩ state: multiply by e^(iθ/2)
+            state->coordinates[i].real = cos_half * a.real - sin_half * a.imag;
+            state->coordinates[i].imag = cos_half * a.imag + sin_half * a.real;
+        } else {
+            // |0⟩ state: multiply by e^(-iθ/2)
+            state->coordinates[i].real = cos_half * a.real + sin_half * a.imag;
+            state->coordinates[i].imag = cos_half * a.imag - sin_half * a.real;
+        }
+    }
+}
+
+// Apply CNOT gate with control and target qubits
+static void quantum_state_apply_cnot(quantum_state_t* state, size_t control, size_t target) {
+    if (!state || !state->coordinates) return;
+    if (control >= state->num_qubits || target >= state->num_qubits) return;
+    if (control == target) return;
+
+    size_t dim = 1UL << state->num_qubits;
+
+    for (size_t i = 0; i < dim; i++) {
+        // Only swap if control bit is 1 and we haven't processed this pair
+        if ((i & (1UL << control)) && !(i & (1UL << target))) {
+            size_t j = i | (1UL << target);
+            ComplexFloat temp = state->coordinates[i];
+            state->coordinates[i] = state->coordinates[j];
+            state->coordinates[j] = temp;
+        }
+    }
+}
+
+// Compute expectation value of Z operator on single qubit
+static double quantum_state_expectation_z(quantum_state_t* state, size_t qubit) {
+    if (!state || !state->coordinates || qubit >= state->num_qubits) return 0.0;
+
+    size_t dim = 1UL << state->num_qubits;
+    double expectation = 0.0;
+
+    for (size_t i = 0; i < dim; i++) {
+        double prob = state->coordinates[i].real * state->coordinates[i].real +
+                      state->coordinates[i].imag * state->coordinates[i].imag;
+
+        // Z eigenvalue is +1 for |0⟩ and -1 for |1⟩
+        if (i & (1UL << qubit)) {
+            expectation -= prob;
+        } else {
+            expectation += prob;
+        }
+    }
+
+    return expectation;
+}
 
 // Initialize quantum-geometric interface
 QuantumGeometricInterface* init_quantum_interface(void) {
-    QuantumGeometricInterface* interface = aligned_alloc(QG_VECTOR_SIZE,
+    QuantumGeometricInterface* interface = aligned_alloc(QGT_POOL_ALIGNMENT,
         sizeof(QuantumGeometricInterface));
     if (!interface) return NULL;
-    
-    // Check quantum hardware availability
+
+    memset(interface, 0, sizeof(QuantumGeometricInterface));
+
+    // Detect and set hardware type
     interface->hardware_type = detect_quantum_hardware();
-    interface->is_available = (interface->hardware_type != HARDWARE_NONE);
-    
-    // Initialize error correction
-    interface->error_correction = init_error_correction(
-        interface->hardware_type);
-    
-    // Setup quantum memory
-    interface->quantum_memory = create_quantum_memory_pool();
-    
-    // Initialize circuit optimizer
-    interface->circuit_optimizer = create_circuit_optimizer();
-    
+    interface->is_available = (interface->hardware_type != HARDWARE_TYPE_CPU) ||
+                              (interface->hardware_type == HARDWARE_TYPE_CPU);  // CPU always available
+
+    // Set default number of qubits based on hardware
+    switch (interface->hardware_type) {
+        case HARDWARE_TYPE_METAL:
+            interface->num_qubits = 32;  // Practical limit for simulation
+            break;
+        case HARDWARE_TYPE_CUDA:
+            interface->num_qubits = 32;  // Practical limit for simulation
+            break;
+        case HARDWARE_TYPE_QPU:
+            interface->num_qubits = QG_MAX_IBM_QUBITS;  // Real QPU limit
+            break;
+        default:
+            interface->num_qubits = 24;  // CPU simulation limit
+            break;
+    }
+
+    // Initialize error rate based on hardware
+    interface->error_rate = (interface->hardware_type == HARDWARE_TYPE_QPU) ?
+                           0.01 : QGT_EPSILON;  // Real QPU vs simulator
+
+    // Initialize state properties
+    interface->state_props.fidelity = 1.0;
+    interface->state_props.purity = 1.0;
+    interface->state_props.entropy = 0.0;
+    interface->state_props.is_entangled = false;
+    interface->state_props.is_geometric = true;
+
+    // Allocate internal state for geometric operations
+    interface_internal_state_t* internal = calloc(1, sizeof(interface_internal_state_t));
+    if (!internal) {
+        free(interface);
+        return NULL;
+    }
+    internal->initialized = true;
+    interface->backend_handle = internal;
+
     return interface;
 }
 
-// Prepare quantum state from geometric data
-QuantumState* prepare_quantum_state(
-    QuantumGeometricInterface* interface,
-    const double* classical_data,
-    size_t dimension,
-    StateProperties props) {
-    
-    if (!interface || !classical_data) return NULL;
-    
-    QuantumState* state = aligned_alloc(QG_VECTOR_SIZE, sizeof(QuantumState));
-    if (!state) return NULL;
-    
-    // Calculate required qubits
-    state->num_qubits = calculate_required_qubits(dimension);
-    if (state->num_qubits > QG_MAX_IBM_QUBITS) {
-        free(state);
+// Create quantum state with geometric properties
+StateProperties* create_quantum_state(QuantumGeometricInterface* interface, size_t num_qubits) {
+    if (!interface || num_qubits == 0 || num_qubits > QG_MAX_IBM_QUBITS) {
         return NULL;
     }
-    
-    // Allocate quantum state
-    state->amplitudes = aligned_alloc(QG_VECTOR_SIZE,
-        (1ULL << state->num_qubits) * sizeof(double));
-    if (!state->amplitudes) {
-        free(state);
+
+    StateProperties* props = aligned_alloc(QGT_POOL_ALIGNMENT, sizeof(StateProperties));
+    if (!props) return NULL;
+
+    interface_internal_state_t* internal = (interface_internal_state_t*)interface->backend_handle;
+    if (!internal) {
+        free(props);
         return NULL;
     }
-    
-    // Encode geometric data into quantum state
-    if (props.is_holographic) {
-        encode_holographic_state(state, classical_data, dimension);
-    } else {
-        encode_direct_state(state, classical_data, dimension);
+
+    // Create quantum state using library function
+    size_t dimension = (size_t)1 << num_qubits;
+    qgt_error_t err = quantum_state_create(&internal->state, QUANTUM_STATE_PURE, dimension);
+    if (err != QGT_SUCCESS) {
+        free(props);
+        return NULL;
     }
-    
-    state->is_geometric = true;
-    state->properties = props;
-    
-    // Apply error mitigation
-    if (interface->error_correction) {
-        apply_error_mitigation(interface->error_correction, state);
+
+    // Initialize to |0⟩ state (basis state 0)
+    err = quantum_state_initialize_basis(internal->state, 0);
+    if (err != QGT_SUCCESS) {
+        quantum_state_destroy(internal->state);
+        internal->state = NULL;
+        free(props);
+        return NULL;
     }
-    
-    return state;
+
+    internal->dimension = dimension;
+
+    // Initialize properties
+    props->fidelity = 1.0;
+    props->purity = 1.0;
+    props->entropy = 0.0;
+    props->is_entangled = false;
+    props->is_geometric = true;
+
+    // Update interface properties
+    interface->state_props = *props;
+    interface->num_qubits = num_qubits;
+
+    return props;
 }
 
-// Generate quantum circuit for geometric operation
-QuantumCircuit* generate_geometric_circuit(
-    QuantumGeometricInterface* interface,
-    const Manifold* manifold,
-    OperationType operation) {
-    
+// Destroy quantum state
+void destroy_quantum_state(StateProperties* state) {
+    if (state) {
+        free(state);
+    }
+}
+
+// Apply geometric operation using existing library functions
+double* apply_geometric_operation(QuantumGeometricInterface* interface,
+                                  Manifold* manifold,
+                                  OperationType op_type) {
     if (!interface || !manifold) return NULL;
-    
-    QuantumCircuit* circuit = aligned_alloc(QG_VECTOR_SIZE, sizeof(QuantumCircuit));
-    if (!circuit) return NULL;
-    
-    // Allocate gates
-    circuit->gates = aligned_alloc(QG_VECTOR_SIZE,
-        QG_MAX_CIRCUIT_DEPTH * sizeof(QuantumGate));
-    if (!circuit->gates) {
-        free(circuit);
+
+    interface_internal_state_t* internal = (interface_internal_state_t*)interface->backend_handle;
+    if (!internal || !internal->state) return NULL;
+
+    size_t dim = manifold->dimension;
+    qgt_error_t err;
+
+    // Allocate result buffer
+    double* result = aligned_alloc(QGT_POOL_ALIGNMENT, dim * dim * sizeof(double));
+    if (!result) return NULL;
+
+    switch (op_type) {
+        case PARALLEL_TRANSPORT:
+        case GEODESIC_EVOLUTION: {
+            // Create connection for parallel transport / geodesic evolution
+            if (!internal->connection) {
+                err = geometric_create_connection(&internal->connection,
+                                                   GEOMETRIC_CONNECTION_LEVI_CIVITA,
+                                                   dim);
+                if (err != QGT_SUCCESS) {
+                    free(result);
+                    return NULL;
+                }
+            }
+
+            // Create metric if not exists
+            if (!internal->metric) {
+                err = geometric_create_metric(&internal->metric,
+                                              GEOMETRIC_METRIC_FUBINI_STUDY,
+                                              dim);
+                if (err != QGT_SUCCESS) {
+                    free(result);
+                    return NULL;
+                }
+            }
+
+            // Set manifold metric if provided
+            if (manifold->metric) {
+                for (size_t i = 0; i < dim * dim; i++) {
+                    internal->metric->components[i].real = (float)manifold->metric[i];
+                    internal->metric->components[i].imag = 0.0f;
+                }
+            }
+
+            // Compute connection from metric
+            err = geometric_compute_connection(internal->connection, internal->metric);
+            if (err != QGT_SUCCESS) {
+                free(result);
+                return NULL;
+            }
+
+            // Extract connection coefficients to result
+            for (size_t i = 0; i < dim * dim && i < dim * dim * dim; i++) {
+                size_t idx = i % (dim * dim);
+                result[idx] = (double)internal->connection->coefficients[i].real;
+            }
+            break;
+        }
+
+        case CURVATURE_ESTIMATION: {
+            // Create curvature tensor
+            if (!internal->curvature) {
+                err = geometric_create_curvature(&internal->curvature,
+                                                  GEOMETRIC_CURVATURE_RIEMANN,
+                                                  dim);
+                if (err != QGT_SUCCESS) {
+                    free(result);
+                    return NULL;
+                }
+            }
+
+            // Need connection for curvature computation
+            if (!internal->connection) {
+                err = geometric_create_connection(&internal->connection,
+                                                   GEOMETRIC_CONNECTION_LEVI_CIVITA,
+                                                   dim);
+                if (err != QGT_SUCCESS) {
+                    free(result);
+                    return NULL;
+                }
+
+                // Need metric for connection
+                if (!internal->metric) {
+                    err = geometric_create_metric(&internal->metric,
+                                                  GEOMETRIC_METRIC_FUBINI_STUDY,
+                                                  dim);
+                    if (err != QGT_SUCCESS) {
+                        free(result);
+                        return NULL;
+                    }
+                }
+
+                // Set manifold metric if provided
+                if (manifold->metric) {
+                    for (size_t i = 0; i < dim * dim; i++) {
+                        internal->metric->components[i].real = (float)manifold->metric[i];
+                        internal->metric->components[i].imag = 0.0f;
+                    }
+                }
+
+                err = geometric_compute_connection(internal->connection, internal->metric);
+                if (err != QGT_SUCCESS) {
+                    free(result);
+                    return NULL;
+                }
+            }
+
+            // Compute curvature from connection
+            err = geometric_compute_curvature(internal->curvature, internal->connection);
+            if (err != QGT_SUCCESS) {
+                free(result);
+                return NULL;
+            }
+
+            // Extract curvature to result (contract to Ricci tensor)
+            memset(result, 0, dim * dim * sizeof(double));
+            for (size_t i = 0; i < dim; i++) {
+                for (size_t j = 0; j < dim; j++) {
+                    double ricci = 0.0;
+                    for (size_t k = 0; k < dim; k++) {
+                        // R_{ij} = R^k_{ikj}
+                        size_t idx = ((k * dim + i) * dim + k) * dim + j;
+                        if (idx < dim * dim * dim * dim) {
+                            ricci += (double)internal->curvature->components[idx].real;
+                        }
+                    }
+                    result[i * dim + j] = ricci;
+                }
+            }
+            break;
+        }
+
+        case HOLONOMY_COMPUTATION: {
+            // Holonomy is the parallel transport around a closed loop
+            // Use connection to compute holonomy matrix
+            if (!internal->connection) {
+                err = geometric_create_connection(&internal->connection,
+                                                   GEOMETRIC_CONNECTION_LEVI_CIVITA,
+                                                   dim);
+                if (err != QGT_SUCCESS) {
+                    free(result);
+                    return NULL;
+                }
+            }
+
+            // Compute holonomy as exponential of integrated connection
+            // For small loops: H ≈ I + A (connection 1-form integrated)
+            // Initialize to identity
+            for (size_t i = 0; i < dim; i++) {
+                for (size_t j = 0; j < dim; j++) {
+                    result[i * dim + j] = (i == j) ? 1.0 : 0.0;
+                }
+            }
+
+            // Add connection contribution (first-order approximation)
+            if (internal->connection->coefficients) {
+                for (size_t i = 0; i < dim; i++) {
+                    for (size_t j = 0; j < dim; j++) {
+                        for (size_t k = 0; k < dim; k++) {
+                            size_t idx = (i * dim + k) * dim + j;
+                            if (idx < dim * dim * dim) {
+                                result[i * dim + j] += 0.01 *
+                                    (double)internal->connection->coefficients[idx].real;
+                            }
+                        }
+                    }
+                }
+            }
+            break;
+        }
+
+        case METRIC_TENSOR_EVAL: {
+            // Create or use existing metric
+            if (!internal->metric) {
+                err = geometric_create_metric(&internal->metric,
+                                              GEOMETRIC_METRIC_FUBINI_STUDY,
+                                              dim);
+                if (err != QGT_SUCCESS) {
+                    free(result);
+                    return NULL;
+                }
+            }
+
+            // Use manifold metric if provided, otherwise compute from state
+            if (manifold->metric) {
+                memcpy(result, manifold->metric, dim * dim * sizeof(double));
+            } else if (internal->state) {
+                // Compute Fubini-Study metric from quantum state
+                err = geometric_compute_metric(internal->metric, internal->state);
+                if (err != QGT_SUCCESS) {
+                    free(result);
+                    return NULL;
+                }
+
+                for (size_t i = 0; i < dim * dim; i++) {
+                    result[i] = (double)internal->metric->components[i].real;
+                }
+            } else {
+                // Default to identity metric
+                for (size_t i = 0; i < dim; i++) {
+                    for (size_t j = 0; j < dim; j++) {
+                        result[i * dim + j] = (i == j) ? 1.0 : 0.0;
+                    }
+                }
+            }
+            break;
+        }
+
+        case CONNECTION_EVAL: {
+            // Evaluate connection coefficients
+            if (!internal->connection) {
+                err = geometric_create_connection(&internal->connection,
+                                                   GEOMETRIC_CONNECTION_LEVI_CIVITA,
+                                                   dim);
+                if (err != QGT_SUCCESS) {
+                    free(result);
+                    return NULL;
+                }
+            }
+
+            if (manifold->christoffel) {
+                // Use provided Christoffel symbols (connection coefficients)
+                for (size_t i = 0; i < dim * dim; i++) {
+                    result[i] = manifold->christoffel[i];
+                }
+            } else if (internal->connection->coefficients) {
+                // Extract from computed connection
+                for (size_t i = 0; i < dim * dim; i++) {
+                    result[i] = (double)internal->connection->coefficients[i].real;
+                }
+            } else {
+                // Zero connection (flat space)
+                memset(result, 0, dim * dim * sizeof(double));
+            }
+            break;
+        }
+
+        default:
+            free(result);
+            return NULL;
+    }
+
+    // Update manifold with computed results
+    if (op_type == CURVATURE_ESTIMATION) {
+        // Store scalar curvature (trace of Ricci tensor approximation)
+        manifold->curvature = result[0];
+        // If riemann_tensor is available, store full curvature tensor
+        if (manifold->riemann_tensor) {
+            memcpy(manifold->riemann_tensor, result, dim * dim * sizeof(double));
+        }
+    }
+
+    return result;
+}
+
+// Measure expectation value
+double* measure_expectation_value(QuantumGeometricInterface* interface) {
+    if (!interface) return NULL;
+
+    interface_internal_state_t* internal = (interface_internal_state_t*)interface->backend_handle;
+    if (!internal || !internal->state) return NULL;
+
+    size_t dim = internal->state->dimension;
+
+    // Allocate result for expectation values of Pauli operators
+    double* result = aligned_alloc(QGT_POOL_ALIGNMENT, 3 * sizeof(double));
+    if (!result) return NULL;
+
+    // For a pure state |ψ⟩, compute ⟨ψ|σ_i|ψ⟩ for each Pauli matrix
+    // This is done through the state amplitudes
+    const ComplexFloat* amplitudes = internal->state->coordinates;
+    if (!amplitudes) {
+        // Fall back to measurement probabilities
+        result[0] = 0.0;  // <X>
+        result[1] = 0.0;  // <Y>
+        result[2] = 1.0;  // <Z> (ground state default)
+        return result;
+    }
+
+    // For 2-level system (single qubit):
+    // <Z> = |α|² - |β|²
+    // <X> = 2 Re(α* β)
+    // <Y> = 2 Im(α* β)
+    if (dim >= 2) {
+        ComplexFloat alpha = amplitudes[0];
+        ComplexFloat beta = amplitudes[1];
+
+        float alpha_mag_sq = alpha.real * alpha.real + alpha.imag * alpha.imag;
+        float beta_mag_sq = beta.real * beta.real + beta.imag * beta.imag;
+
+        // α* β = (α.real - i*α.imag)(β.real + i*β.imag)
+        ComplexFloat alpha_conj = complex_float_conjugate(alpha);
+        ComplexFloat alpha_beta = complex_float_multiply(alpha_conj, beta);
+
+        result[0] = 2.0 * alpha_beta.real;  // <X>
+        result[1] = 2.0 * alpha_beta.imag;  // <Y>
+        result[2] = alpha_mag_sq - beta_mag_sq;  // <Z>
+    } else {
+        result[0] = 0.0;
+        result[1] = 0.0;
+        result[2] = 1.0;
+    }
+
+    return result;
+}
+
+// Run variational optimization
+double* run_variational_optimization(QuantumGeometricInterface* interface) {
+    if (!interface) return NULL;
+
+    interface_internal_state_t* internal = (interface_internal_state_t*)interface->backend_handle;
+    if (!internal) return NULL;
+
+    // Number of variational parameters (default for a simple ansatz)
+    size_t num_params = interface->num_qubits * 3;  // 3 rotation angles per qubit
+
+    double* params = aligned_alloc(QGT_POOL_ALIGNMENT, num_params * sizeof(double));
+    if (!params) return NULL;
+
+    // Initialize parameters
+    for (size_t i = 0; i < num_params; i++) {
+        params[i] = 0.0;
+    }
+
+    // Simple gradient descent optimization
+    double learning_rate = QGT_LEARNING_RATE;
+    double* gradients = aligned_alloc(QGT_POOL_ALIGNMENT, num_params * sizeof(double));
+    if (!gradients) {
+        free(params);
         return NULL;
     }
-    
-    // Generate circuit based on operation type
-    switch (operation) {
-        case PARALLEL_TRANSPORT:
-            generate_parallel_transport_circuit(circuit, manifold);
-            break;
-            
-        case GEODESIC_EVOLUTION:
-            generate_geodesic_circuit(circuit, manifold);
-            break;
-            
-        case CURVATURE_ESTIMATION:
-            generate_curvature_circuit(circuit, manifold);
-            break;
-            
-        case HOLONOMY_COMPUTATION:
-            generate_holonomy_circuit(circuit, manifold);
-            break;
-    }
-    
-    // Optimize circuit
-    if (interface->circuit_optimizer) {
-        optimize_quantum_circuit(interface->circuit_optimizer, circuit);
-    }
-    
-    // Estimate circuit fidelity
-    circuit->fidelity = estimate_circuit_fidelity(circuit,
-        interface->hardware_type);
-    
-    // Apply error mitigation if needed
-    if (circuit->fidelity < QG_INTERFACE_ERROR_THRESHOLD) {
-        apply_circuit_error_mitigation(interface->error_correction,
-                                     circuit);
-        circuit->error_mitigated = true;
-    }
-    
-    return circuit;
-}
 
-// Execute quantum geometric operation
-void execute_quantum_geometric(
-    QuantumGeometricInterface* interface,
-    QuantumCircuit* circuit,
-    QuantumState* input_state,
-    QuantumState* output_state) {
-    
-    // Prepare hardware
-    prepare_quantum_hardware(interface->hardware_type);
-    
-    // Load input state
-    load_quantum_state(input_state);
-    
-    // Execute circuit with error mitigation
-    if (circuit->error_mitigated) {
-        execute_error_mitigated_circuit(circuit);
-    } else {
-        execute_quantum_circuit(circuit);
-    }
-    
-    // Measure output state
-    measure_quantum_state(output_state, QG_MAX_MEASUREMENT_SHOTS);
-    
-    // Post-process results
-    if (interface->error_correction) {
-        post_process_results(interface->error_correction,
-                           output_state);
-    }
-}
+    // Run optimization iterations
+    size_t max_iterations = QGT_MAX_OPTIMIZATION_STEPS;
+    double prev_cost = 1e10;
 
-// Quantum-classical hybrid optimization
-void optimize_hybrid_operation(
-    QuantumGeometricInterface* interface,
-    QuantumCircuit* circuit,
-    const double* classical_params,
-    size_t num_params) {
-    
-    double best_fidelity = 0.0;
-    double* best_params = aligned_alloc(QG_VECTOR_SIZE,
-        num_params * sizeof(double));
-    
-    // Hybrid optimization loop
-    for (size_t iter = 0; iter < QG_MAX_OPTIMIZATION_ITERATIONS; iter++) {
-        // Update quantum circuit parameters
-        update_circuit_parameters(circuit, classical_params);
-        
-        // Execute quantum part
-        QuantumState* test_state = create_test_state();
-        execute_quantum_geometric(interface, circuit,
-                                test_state, test_state);
-        
-        // Classical optimization step
-        double fidelity = compute_operation_fidelity(test_state);
-        if (fidelity > best_fidelity) {
-            best_fidelity = fidelity;
-            memcpy(best_params, classical_params,
-                   num_params * sizeof(double));
+    for (size_t iter = 0; iter < max_iterations; iter++) {
+        // Compute gradients using parameter-shift rule
+        for (size_t p = 0; p < num_params; p++) {
+            double original = params[p];
+
+            // Forward shift: θ + π/2
+            params[p] = original + M_PI / 2.0;
+
+            // Apply parameterized ansatz with shifted parameter
+            // Build ansatz: for each qubit, apply RX(θ_3i), RY(θ_3i+1), RZ(θ_3i+2)
+            quantum_state_reset(internal->state);
+            for (size_t q = 0; q < interface->num_qubits; q++) {
+                size_t param_base = q * 3;
+                // Apply rotation gates
+                if (param_base < num_params) {
+                    quantum_state_apply_rx(internal->state, q, params[param_base]);
+                }
+                if (param_base + 1 < num_params) {
+                    quantum_state_apply_ry(internal->state, q, params[param_base + 1]);
+                }
+                if (param_base + 2 < num_params) {
+                    quantum_state_apply_rz(internal->state, q, params[param_base + 2]);
+                }
+            }
+            // Add entangling layers between adjacent qubits
+            for (size_t q = 0; q + 1 < interface->num_qubits; q++) {
+                quantum_state_apply_cnot(internal->state, q, q + 1);
+            }
+
+            // Evaluate cost function: expectation value of Z on first qubit
+            double cost_plus = quantum_state_expectation_z(internal->state, 0);
+
+            // Backward shift: θ - π/2
+            params[p] = original - M_PI / 2.0;
+
+            quantum_state_reset(internal->state);
+            for (size_t q = 0; q < interface->num_qubits; q++) {
+                size_t param_base = q * 3;
+                if (param_base < num_params) {
+                    quantum_state_apply_rx(internal->state, q, params[param_base]);
+                }
+                if (param_base + 1 < num_params) {
+                    quantum_state_apply_ry(internal->state, q, params[param_base + 1]);
+                }
+                if (param_base + 2 < num_params) {
+                    quantum_state_apply_rz(internal->state, q, params[param_base + 2]);
+                }
+            }
+            for (size_t q = 0; q + 1 < interface->num_qubits; q++) {
+                quantum_state_apply_cnot(internal->state, q, q + 1);
+            }
+
+            double cost_minus = quantum_state_expectation_z(internal->state, 0);
+
+            // Restore and compute gradient using parameter-shift rule
+            params[p] = original;
+            gradients[p] = (cost_plus - cost_minus) / 2.0;
         }
-        
-        // Update classical parameters
-        update_classical_parameters(classical_params,
-                                  test_state,
-                                  num_params);
-        
-        cleanup_quantum_state(test_state);
+
+        // Evaluate current cost with original parameters
+        quantum_state_reset(internal->state);
+        for (size_t q = 0; q < interface->num_qubits; q++) {
+            size_t param_base = q * 3;
+            if (param_base < num_params) {
+                quantum_state_apply_rx(internal->state, q, params[param_base]);
+            }
+            if (param_base + 1 < num_params) {
+                quantum_state_apply_ry(internal->state, q, params[param_base + 1]);
+            }
+            if (param_base + 2 < num_params) {
+                quantum_state_apply_rz(internal->state, q, params[param_base + 2]);
+            }
+        }
+        for (size_t q = 0; q + 1 < interface->num_qubits; q++) {
+            quantum_state_apply_cnot(internal->state, q, q + 1);
+        }
+
+        double cost = quantum_state_expectation_z(internal->state, 0);
+
+        // Update parameters with gradient descent
+        for (size_t p = 0; p < num_params; p++) {
+            params[p] -= learning_rate * gradients[p];
+        }
+
+        // Check convergence
+        if (fabs(prev_cost - cost) < QGT_CONVERGENCE_TOL) {
+            break;
+        }
+        prev_cost = cost;
+
+        // Adaptive learning rate
+        if (iter > 0 && iter % 100 == 0) {
+            learning_rate *= 0.9;
+        }
     }
-    
-    // Apply best parameters
-    update_circuit_parameters(circuit, best_params);
-    free(best_params);
+
+    free(gradients);
+
+    // Update interface state properties
+    interface->state_props.fidelity = exp(-prev_cost);
+
+    return params;
 }
 
-// Clean up
+// Clean up interface
 void cleanup_quantum_interface(QuantumGeometricInterface* interface) {
     if (!interface) return;
-    
-    cleanup_error_correction(interface->error_correction);
-    cleanup_quantum_memory(interface->quantum_memory);
-    cleanup_circuit_optimizer(interface->circuit_optimizer);
-    
+
+    interface_internal_state_t* internal = (interface_internal_state_t*)interface->backend_handle;
+    if (internal) {
+        if (internal->metric) {
+            geometric_destroy_metric(internal->metric);
+        }
+        if (internal->connection) {
+            geometric_destroy_connection(internal->connection);
+        }
+        if (internal->curvature) {
+            geometric_destroy_curvature(internal->curvature);
+        }
+        if (internal->state) {
+            quantum_state_destroy(internal->state);
+        }
+        free(internal);
+    }
+
     free(interface);
-}
-
-static void cleanup_quantum_state(QuantumState* state) {
-    if (!state) return;
-    
-    free(state->amplitudes);
-    free(state);
-}
-
-static void cleanup_quantum_circuit(QuantumCircuit* circuit) {
-    if (!circuit) return;
-    
-    free(circuit->gates);
-    free(circuit);
 }

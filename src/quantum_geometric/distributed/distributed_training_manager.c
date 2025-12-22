@@ -5,7 +5,51 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+
+// MPI guard
+#ifndef HAS_MPI
+#ifndef NO_MPI
+#define NO_MPI
+#endif
+#endif
+
+#ifndef NO_MPI
 #include <mpi.h>
+#else
+// MPI type stubs for non-MPI builds
+typedef int MPI_Comm;
+typedef int MPI_Status;
+typedef int MPI_Datatype;
+typedef int MPI_Info;
+#define MPI_COMM_WORLD 0
+#define MPI_COMM_NULL 0
+#define MPI_SUCCESS 0
+#define MPI_IN_PLACE ((void*)1)
+#define MPI_DOUBLE 0
+#define MPI_BYTE 0
+#define MPI_UNSIGNED_LONG 0
+#define MPI_INT 0
+#define MPI_SUM 0
+#define MPI_INFO_NULL 0
+#define MPI_COMM_TYPE_SHARED 0
+#define MPI_UNDEFINED (-1)
+#define MPI_MAX 0
+
+// Stub MPI functions
+static inline int MPI_Initialized(int* flag) { *flag = 1; return 0; }
+static inline int MPI_Init(int* argc, char*** argv) { return 0; }
+static inline int MPI_Comm_rank(MPI_Comm comm, int* rank) { *rank = 0; return 0; }
+static inline int MPI_Comm_size(MPI_Comm comm, int* size) { *size = 1; return 0; }
+static inline int MPI_Comm_split_type(MPI_Comm comm, int type, int key, MPI_Info info, MPI_Comm* newcomm) { *newcomm = 0; return 0; }
+static inline int MPI_Comm_split(MPI_Comm comm, int color, int key, MPI_Comm* newcomm) { *newcomm = 0; return 0; }
+static inline int MPI_Comm_free(MPI_Comm* comm) { *comm = 0; return 0; }
+static inline int MPI_Allreduce(const void* sendbuf, void* recvbuf, int count, MPI_Datatype datatype, int op, MPI_Comm comm) { return 0; }
+static inline int MPI_Bcast(void* buffer, int count, MPI_Datatype datatype, int root, MPI_Comm comm) { return 0; }
+static inline int MPI_Send(const void* buf, int count, MPI_Datatype datatype, int dest, int tag, MPI_Comm comm) { return 0; }
+static inline int MPI_Barrier(MPI_Comm comm) { return 0; }
+#endif
+
 #include "quantum_geometric/distributed/distributed_training_manager.h"
 #include "quantum_geometric/core/quantum_geometric_core.h"
 #include "quantum_geometric/core/memory_pool.h"
@@ -26,6 +70,13 @@ typedef struct {
     char* checkpoint_path;         // Path to latest checkpoint
     quantum_pipeline_t* pipeline;  // Reference to active pipeline
 } distributed_state_t;
+
+// Forward declaration of wrapper functions
+workload_manager_t* workload_manager_create(void);
+void workload_manager_destroy(workload_manager_t* manager);
+int workload_manager_configure(workload_manager_t* manager, const workload_config_t* config);
+communication_optimizer_t* communication_optimizer_create(void);
+void communication_optimizer_destroy(communication_optimizer_t* optimizer);
 
 distributed_manager_t* distributed_manager_create(const distributed_config_t* config) {
     if (!config) return NULL;
@@ -161,7 +212,6 @@ int distributed_manager_prepare_training(distributed_manager_t* manager,
     }
     
     // Allocate gradient buffer
-    distributed_state_t* state = manager->internal_state;
     size_t model_size = quantum_pipeline_get_parameter_count(pipeline);
     state->buffer_size = model_size * sizeof(double);
     state->gradient_buffer = malloc(state->buffer_size);

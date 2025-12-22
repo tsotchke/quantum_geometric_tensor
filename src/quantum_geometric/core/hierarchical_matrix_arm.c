@@ -9,6 +9,10 @@
 static bool should_use_optimized_path(size_t rows, size_t cols);
 static HierarchicalMatrix* hmatrix_create_standard(size_t n, double tolerance);
 static HierarchicalMatrix* hmatrix_create_optimized(size_t n, double tolerance);
+// External functions declared in hierarchical_matrix.h
+extern bool validate_hierarchical_matrix(const HierarchicalMatrix* matrix);
+extern bool compute_qr_decomposition(double complex* A, size_t rows, size_t cols, 
+                             double complex* Q, double complex* R);
 
 // Helper macros
 #define min(a,b) ((a) < (b) ? (a) : (b))
@@ -403,57 +407,609 @@ void hmatrix_transpose(HierarchicalMatrix* dst, const HierarchicalMatrix* src) {
     }
 }
 
-// Helper function for non-square matrices
-static HierarchicalMatrix* hmatrix_create(size_t rows, size_t cols, double tolerance) {
-    if (rows == 0 || cols == 0) {
-        printf("Invalid matrix dimensions: %zu x %zu\n", rows, cols);
-        return NULL;
+// Initialize matrix properties
+bool init_matrix_properties(HierarchicalMatrix* matrix, const matrix_properties_t* props) {
+    if (!matrix || !props) {
+        return false;
     }
     
-    HierarchicalMatrix* mat = safe_aligned_alloc(sizeof(HierarchicalMatrix));
-    CHECK_ALLOC(mat, );
+    // Set basic properties
+    matrix->n = props->dimension;
+    matrix->rows = props->dimension;
+    matrix->cols = props->dimension;
+    matrix->tolerance = props->tolerance;
     
-    mat->rows = rows;
-    mat->cols = cols;
-    mat->tolerance = tolerance;
-    mat->rank = 0;
-    
-    // Adaptive leaf size based on dimensions
-    mat->is_leaf = (rows <= OPT_MIN_MATRIX_SIZE || cols <= OPT_MIN_MATRIX_SIZE || 
-                   (rows <= OPT_MIN_MATRIX_SIZE * 2 && cols <= OPT_MIN_MATRIX_SIZE * 2));
-    
-    if (mat->is_leaf) {
-        mat->data = safe_aligned_alloc(rows * cols * sizeof(double complex));
-        if (!mat->data) {
-            free(mat);
-            printf("Failed to allocate matrix data\n");
-            return NULL;
+    // Initialize data if not already allocated
+    if (!matrix->data && matrix->is_leaf) {
+        matrix->data = safe_aligned_alloc(matrix->n * matrix->n * sizeof(double complex));
+        if (!matrix->data) {
+            return false;
         }
-        mat->U = NULL;
-        mat->V = NULL;
-        memset(mat->data, 0, rows * cols * sizeof(double complex));
+        memset(matrix->data, 0, matrix->n * matrix->n * sizeof(double complex));
+    }
+    
+    // Set matrix type based on properties
+    if (props->symmetric) {
+        matrix->type = MATRIX_HIERARCHICAL;
     } else {
-        mat->data = NULL;
-        mat->U = NULL;
-        mat->V = NULL;
-        
-        // Split into quadrants
-        size_t mid_row = rows / 2;
-        size_t mid_col = cols / 2;
-        
+        matrix->type = MATRIX_DENSE;
+    }
+    
+    // Set storage format
+    matrix->format = STORAGE_FULL;
+    
+    return true;
+}
+
+// Compress matrix using specified parameters
+bool compress_matrix(HierarchicalMatrix* matrix, const compression_params_t* params) {
+    if (!matrix || !params) {
+        return false;
+    }
+    
+    // If matrix is not a leaf node, recursively compress children
+    if (!matrix->is_leaf) {
+        bool success = true;
         for (int i = 0; i < 4; i++) {
-            size_t sub_rows = (i < 2) ? mid_row : (rows - mid_row);
-            size_t sub_cols = (i % 2 == 0) ? mid_col : (cols - mid_col);
-            mat->children[i] = hmatrix_create(sub_rows, sub_cols, tolerance);
-            if (!mat->children[i]) {
-                for (int j = 0; j < i; j++) {
-                    destroy_hierarchical_matrix(mat->children[j]);
-                }
-                free(mat);
-                return NULL;
+            if (matrix->children[i]) {
+                success &= compress_matrix(matrix->children[i], params);
             }
         }
+        return success;
     }
     
-    return mat;
+    // For leaf nodes, perform compression based on mode
+    switch (params->mode) {
+        case COMPRESS_SVD: {
+            // Allocate memory for SVD
+            size_t max_dim = (matrix->rows > matrix->cols) ? matrix->rows : matrix->cols;
+            double complex* U = safe_aligned_alloc(matrix->rows * max_dim * sizeof(double complex));
+            double complex* S = safe_aligned_alloc(max_dim * sizeof(double complex));
+            double complex* V = safe_aligned_alloc(matrix->cols * max_dim * sizeof(double complex));
+            
+            if (!U || !S || !V) {
+                free(U);
+                free(S);
+                free(V);
+                return false;
+            }
+            
+            // Compute SVD
+            compute_svd(matrix->data, matrix->rows, matrix->cols, U, S, V);
+            
+            // Truncate singular values
+            size_t rank = 0;
+            truncate_svd(U, S, V, matrix->rows, matrix->cols, &rank, params->tolerance);
+            
+            // Store rank-truncated matrices
+            matrix->rank = rank;
+            
+            // Allocate memory for low-rank representation
+            matrix->U = safe_aligned_alloc(matrix->rows * rank * sizeof(double complex));
+            matrix->V = safe_aligned_alloc(matrix->cols * rank * sizeof(double complex));
+            
+            if (!matrix->U || !matrix->V) {
+                free(U);
+                free(S);
+                free(V);
+                free(matrix->U);
+                free(matrix->V);
+                matrix->U = NULL;
+                matrix->V = NULL;
+                return false;
+            }
+            
+            // Copy truncated matrices
+            for (size_t i = 0; i < matrix->rows; i++) {
+                for (size_t j = 0; j < rank; j++) {
+                    matrix->U[i * rank + j] = U[i * max_dim + j] * sqrt(cabs(S[j]));
+                }
+            }
+            
+            for (size_t i = 0; i < matrix->cols; i++) {
+                for (size_t j = 0; j < rank; j++) {
+                    matrix->V[i * rank + j] = V[i * max_dim + j] * sqrt(cabs(S[j]));
+                }
+            }
+            
+            // Free original data and temporary arrays
+            free(matrix->data);
+            matrix->data = NULL;
+            free(U);
+            free(S);
+            free(V);
+            
+            // If recompression is enabled and rank is still high, apply additional compression
+            if (params->recompression && rank > params->max_rank) {
+                compression_params_t new_params = *params;
+                new_params.tolerance *= 2.0;  // Increase tolerance for more aggressive compression
+                return compress_matrix(matrix, &new_params);
+            }
+            
+            return true;
+        }
+        
+        case COMPRESS_QR: {
+            // QR compression implementation
+            // Allocate memory for QR decomposition
+            size_t min_dim = (matrix->rows < matrix->cols) ? matrix->rows : matrix->cols;
+            double complex* Q = safe_aligned_alloc(matrix->rows * min_dim * sizeof(double complex));
+            double complex* R = safe_aligned_alloc(min_dim * matrix->cols * sizeof(double complex));
+            
+            if (!Q || !R) {
+                free(Q);
+                free(R);
+                return false;
+            }
+            
+            // Perform QR decomposition
+            if (!compute_qr_decomposition(matrix->data, matrix->rows, matrix->cols, Q, R)) {
+                free(Q);
+                free(R);
+                return false;
+            }
+            
+            // Determine rank based on R matrix diagonal elements
+            size_t rank = 0;
+            double total = 0.0;
+            double* diag_values = malloc(min_dim * sizeof(double));
+            
+            if (!diag_values) {
+                free(Q);
+                free(R);
+                return false;
+            }
+            
+            // Extract diagonal elements
+            for (size_t i = 0; i < min_dim; i++) {
+                diag_values[i] = cabs(R[i * matrix->cols + i]);
+                total += diag_values[i];
+            }
+            
+            // Determine rank based on tolerance
+            double running_sum = 0.0;
+            for (rank = 0; rank < min_dim; rank++) {
+                running_sum += diag_values[rank];
+                if (running_sum / total >= 1.0 - params->tolerance) {
+                    break;
+                }
+            }
+            rank++; // Adjust rank to be 1-based
+            
+            if (rank > params->max_rank) {
+                rank = params->max_rank;
+            }
+            
+            // Store rank-truncated matrices
+            matrix->rank = rank;
+            
+            // Allocate memory for low-rank representation
+            matrix->U = safe_aligned_alloc(matrix->rows * rank * sizeof(double complex));
+            matrix->V = safe_aligned_alloc(matrix->cols * rank * sizeof(double complex));
+            
+            if (!matrix->U || !matrix->V) {
+                free(Q);
+                free(R);
+                free(diag_values);
+                free(matrix->U);
+                free(matrix->V);
+                matrix->U = NULL;
+                matrix->V = NULL;
+                return false;
+            }
+            
+            // Copy truncated Q to U
+            for (size_t i = 0; i < matrix->rows; i++) {
+                for (size_t j = 0; j < rank; j++) {
+                    matrix->U[i * rank + j] = Q[i * min_dim + j];
+                }
+            }
+            
+            // Compute V from R (transpose of R)
+            for (size_t i = 0; i < rank; i++) {
+                for (size_t j = 0; j < matrix->cols; j++) {
+                    matrix->V[j * rank + i] = R[i * matrix->cols + j];
+                }
+            }
+            
+            // Free original data and temporary arrays
+            free(matrix->data);
+            matrix->data = NULL;
+            free(Q);
+            free(R);
+            free(diag_values);
+            
+            return true;
+        }
+        
+        case COMPRESS_ACA: {
+            // Adaptive Cross Approximation implementation
+            // This is a matrix compression technique that works well for certain types of matrices
+            
+            // Initialize parameters
+            size_t max_rank = params->max_rank;
+            double tolerance = params->tolerance;
+            size_t rows = matrix->rows;
+            size_t cols = matrix->cols;
+            
+            // Allocate memory for low-rank representation
+            double complex* U = safe_aligned_alloc(rows * max_rank * sizeof(double complex));
+            double complex* V = safe_aligned_alloc(cols * max_rank * sizeof(double complex));
+            
+            if (!U || !V) {
+                free(U);
+                free(V);
+                return false;
+            }
+            
+            // Initialize variables for ACA algorithm
+            size_t rank = 0;
+            double error = 0.0;
+            double norm_A = 0.0;
+            
+            // Compute Frobenius norm of original matrix
+            for (size_t i = 0; i < rows * cols; i++) {
+                norm_A += cabs(matrix->data[i]) * cabs(matrix->data[i]);
+            }
+            norm_A = sqrt(norm_A);
+            
+            // Create residual matrix (initially equal to original matrix)
+            double complex* residual = safe_aligned_alloc(rows * cols * sizeof(double complex));
+            if (!residual) {
+                free(U);
+                free(V);
+                return false;
+            }
+            
+            memcpy(residual, matrix->data, rows * cols * sizeof(double complex));
+            
+            // Main ACA loop
+            size_t i_max = 0, j_max = 0;
+            double max_val = 0.0;
+            
+            while (rank < max_rank) {
+                // Find pivot (maximum absolute value in residual)
+                max_val = 0.0;
+                for (size_t i = 0; i < rows; i++) {
+                    for (size_t j = 0; j < cols; j++) {
+                        double abs_val = cabs(residual[i * cols + j]);
+                        if (abs_val > max_val) {
+                            max_val = abs_val;
+                            i_max = i;
+                            j_max = j;
+                        }
+                    }
+                }
+                
+                // Check convergence
+                if (max_val < tolerance * norm_A || max_val < 1e-15) {
+                    break;
+                }
+                
+                // Extract row and column from residual
+                double complex pivot = residual[i_max * cols + j_max];
+                double complex pivot_inv = 1.0 / pivot;
+                
+                for (size_t j = 0; j < cols; j++) {
+                    V[j * max_rank + rank] = residual[i_max * cols + j] * pivot_inv;
+                }
+                
+                for (size_t i = 0; i < rows; i++) {
+                    U[i * max_rank + rank] = residual[i * cols + j_max];
+                }
+                
+                // Update residual: R = R - u*v^T
+                for (size_t i = 0; i < rows; i++) {
+                    for (size_t j = 0; j < cols; j++) {
+                        residual[i * cols + j] -= U[i * max_rank + rank] * V[j * max_rank + rank];
+                    }
+                }
+                
+                // Update rank
+                rank++;
+                
+                // Compute error
+                error = 0.0;
+                for (size_t i = 0; i < rows * cols; i++) {
+                    error += cabs(residual[i]) * cabs(residual[i]);
+                }
+                error = sqrt(error) / norm_A;
+                
+                // Check if error is below tolerance
+                if (error < tolerance) {
+                    break;
+                }
+            }
+            
+            // Store final rank
+            matrix->rank = rank;
+            
+            // Allocate memory for final low-rank representation
+            matrix->U = safe_aligned_alloc(rows * rank * sizeof(double complex));
+            matrix->V = safe_aligned_alloc(cols * rank * sizeof(double complex));
+            
+            if (!matrix->U || !matrix->V) {
+                free(U);
+                free(V);
+                free(residual);
+                free(matrix->U);
+                free(matrix->V);
+                matrix->U = NULL;
+                matrix->V = NULL;
+                return false;
+            }
+            
+            // Copy final low-rank representation
+            for (size_t i = 0; i < rows; i++) {
+                for (size_t j = 0; j < rank; j++) {
+                    matrix->U[i * rank + j] = U[i * max_rank + j];
+                }
+            }
+            
+            for (size_t i = 0; i < cols; i++) {
+                for (size_t j = 0; j < rank; j++) {
+                    matrix->V[i * rank + j] = V[i * max_rank + j];
+                }
+            }
+            
+            // Free original data and temporary arrays
+            free(matrix->data);
+            matrix->data = NULL;
+            free(U);
+            free(V);
+            free(residual);
+            
+            return true;
+        }
+        
+        case COMPRESS_QUANTUM: {
+            // Quantum-inspired compression implementation
+            // This is a simplified version that simulates quantum compression
+            
+            // Initialize parameters
+            size_t max_rank = params->max_rank;
+            double tolerance = params->tolerance;
+            size_t rows = matrix->rows;
+            size_t cols = matrix->cols;
+            
+            // Allocate memory for quantum state representation
+            double complex* quantum_state = safe_aligned_alloc(rows * cols * sizeof(double complex));
+            if (!quantum_state) {
+                return false;
+            }
+            
+            // Normalize matrix to create quantum state
+            double norm = 0.0;
+            for (size_t i = 0; i < rows * cols; i++) {
+                norm += cabs(matrix->data[i]) * cabs(matrix->data[i]);
+            }
+            norm = sqrt(norm);
+            
+            for (size_t i = 0; i < rows * cols; i++) {
+                quantum_state[i] = matrix->data[i] / norm;
+            }
+            
+            // Simulate quantum phase estimation
+            size_t min_dim = (rows < cols) ? rows : cols;
+            double* eigenvalues = malloc(min_dim * sizeof(double));
+            double complex* eigenvectors = safe_aligned_alloc(rows * cols * min_dim * sizeof(double complex));
+            
+            if (!eigenvalues || !eigenvectors) {
+                free(quantum_state);
+                free(eigenvalues);
+                free(eigenvectors);
+                return false;
+            }
+            
+            // Simulate quantum eigenvalue estimation (simplified)
+            // In a real quantum implementation, this would use quantum phase estimation
+            for (size_t i = 0; i < min_dim; i++) {
+                eigenvalues[i] = 0.0;
+                for (size_t j = 0; j < rows * cols; j++) {
+                    double phase = 2.0 * M_PI * i * j / (rows * cols);
+                    eigenvectors[i * rows * cols + j] = cexp(I * phase) * quantum_state[j];
+                    eigenvalues[i] += cabs(eigenvectors[i * rows * cols + j]) * cabs(eigenvectors[i * rows * cols + j]);
+                }
+                eigenvalues[i] = sqrt(eigenvalues[i]);
+            }
+            
+            // Sort eigenvalues and eigenvectors
+            for (size_t i = 0; i < min_dim - 1; i++) {
+                for (size_t j = i + 1; j < min_dim; j++) {
+                    if (eigenvalues[j] > eigenvalues[i]) {
+                        // Swap eigenvalues
+                        double temp = eigenvalues[i];
+                        eigenvalues[i] = eigenvalues[j];
+                        eigenvalues[j] = temp;
+                        
+                        // Swap eigenvectors
+                        for (size_t k = 0; k < rows * cols; k++) {
+                            double complex temp_vec = eigenvectors[i * rows * cols + k];
+                            eigenvectors[i * rows * cols + k] = eigenvectors[j * rows * cols + k];
+                            eigenvectors[j * rows * cols + k] = temp_vec;
+                        }
+                    }
+                }
+            }
+            
+            // Determine rank based on eigenvalues
+            size_t rank = 0;
+            double total = 0.0;
+            for (size_t i = 0; i < min_dim; i++) {
+                total += eigenvalues[i];
+            }
+            
+            double running_sum = 0.0;
+            for (rank = 0; rank < min_dim; rank++) {
+                running_sum += eigenvalues[rank];
+                if (running_sum / total >= 1.0 - tolerance) {
+                    break;
+                }
+            }
+            rank++; // Adjust rank to be 1-based
+            
+            if (rank > max_rank) {
+                rank = max_rank;
+            }
+            
+            // Store final rank
+            matrix->rank = rank;
+            
+            // Allocate memory for low-rank representation
+            matrix->U = safe_aligned_alloc(rows * rank * sizeof(double complex));
+            matrix->V = safe_aligned_alloc(cols * rank * sizeof(double complex));
+            
+            if (!matrix->U || !matrix->V) {
+                free(quantum_state);
+                free(eigenvalues);
+                free(eigenvectors);
+                free(matrix->U);
+                free(matrix->V);
+                matrix->U = NULL;
+                matrix->V = NULL;
+                return false;
+            }
+            
+            // Reconstruct U and V from eigenvectors
+            for (size_t k = 0; k < rank; k++) {
+                double lambda = sqrt(eigenvalues[k]);
+                
+                for (size_t i = 0; i < rows; i++) {
+                    matrix->U[i * rank + k] = 0.0;
+                    for (size_t j = 0; j < cols; j++) {
+                        matrix->U[i * rank + k] += eigenvectors[k * rows * cols + i * cols + j] * lambda;
+                    }
+                }
+                
+                for (size_t j = 0; j < cols; j++) {
+                    matrix->V[j * rank + k] = 0.0;
+                    for (size_t i = 0; i < rows; i++) {
+                        matrix->V[j * rank + k] += conj(eigenvectors[k * rows * cols + i * cols + j]);
+                    }
+                }
+            }
+            
+            // Free original data and temporary arrays
+            free(matrix->data);
+            matrix->data = NULL;
+            free(quantum_state);
+            free(eigenvalues);
+            free(eigenvectors);
+            
+            return true;
+        }
+        
+        case COMPRESS_ADAPTIVE: {
+            // Adaptive compression implementation
+            // This method selects the best compression algorithm based on matrix properties
+            
+            // Analyze matrix properties
+            size_t rows = matrix->rows;
+            size_t cols = matrix->cols;
+            bool is_sparse = false;
+            bool is_low_rank = false;
+            bool is_structured = false;
+            
+            // Check sparsity
+            size_t non_zero_count = 0;
+            for (size_t i = 0; i < rows * cols; i++) {
+                if (cabs(matrix->data[i]) > 1e-10) {
+                    non_zero_count++;
+                }
+            }
+            double sparsity = (double)non_zero_count / (rows * cols);
+            is_sparse = (sparsity < 0.1); // Less than 10% non-zero elements
+            
+            // Check low-rank property using SVD on a sample
+            const size_t sample_size = 100;
+            size_t sample_rows = (rows < sample_size) ? rows : sample_size;
+            size_t sample_cols = (cols < sample_size) ? cols : sample_size;
+            
+            double complex* sample = safe_aligned_alloc(sample_rows * sample_cols * sizeof(double complex));
+            double complex* U_sample = safe_aligned_alloc(sample_rows * sample_rows * sizeof(double complex));
+            double complex* S_sample = safe_aligned_alloc(sample_rows * sizeof(double complex));
+            double complex* V_sample = safe_aligned_alloc(sample_cols * sample_cols * sizeof(double complex));
+            
+            if (!sample || !U_sample || !S_sample || !V_sample) {
+                free(sample);
+                free(U_sample);
+                free(S_sample);
+                free(V_sample);
+                return false;
+            }
+            
+            // Extract sample
+            for (size_t i = 0; i < sample_rows; i++) {
+                for (size_t j = 0; j < sample_cols; j++) {
+                    size_t row_idx = i * rows / sample_rows;
+                    size_t col_idx = j * cols / sample_cols;
+                    sample[i * sample_cols + j] = matrix->data[row_idx * cols + col_idx];
+                }
+            }
+            
+            // Compute SVD of sample
+            compute_svd(sample, sample_rows, sample_cols, U_sample, S_sample, V_sample);
+            
+            // Check singular value decay
+            double total_sv = 0.0;
+            for (size_t i = 0; i < sample_rows && i < sample_cols; i++) {
+                total_sv += cabs(S_sample[i]);
+            }
+            
+            double sv_ratio = 0.0;
+            if (sample_rows > 0 && sample_cols > 0 && total_sv > 0.0) {
+                sv_ratio = cabs(S_sample[0]) / total_sv;
+            }
+            
+            is_low_rank = (sv_ratio > 0.5); // First singular value contains more than 50% of energy
+            
+            // Check for structure (e.g., Toeplitz, Hankel)
+            is_structured = false;
+            if (rows == cols) {
+                bool is_toeplitz = true;
+                for (size_t i = 1; i < rows; i++) {
+                    for (size_t j = 1; j < cols; j++) {
+                        if (cabs(matrix->data[i * cols + j] - matrix->data[(i-1) * cols + (j-1)]) > 1e-10) {
+                            is_toeplitz = false;
+                            break;
+                        }
+                    }
+                    if (!is_toeplitz) break;
+                }
+                is_structured = is_toeplitz;
+            }
+            
+            // Select best compression method based on analysis
+            compression_params_t new_params = *params;
+            
+            if (is_sparse) {
+                // For sparse matrices, ACA often works well
+                new_params.mode = COMPRESS_ACA;
+            } else if (is_low_rank) {
+                // For low-rank matrices, SVD is usually best
+                new_params.mode = COMPRESS_SVD;
+            } else if (is_structured) {
+                // For structured matrices, QR can be efficient
+                new_params.mode = COMPRESS_QR;
+            } else {
+                // Default to SVD for general matrices
+                new_params.mode = COMPRESS_SVD;
+            }
+            
+            // Free temporary arrays
+            free(sample);
+            free(U_sample);
+            free(S_sample);
+            free(V_sample);
+            
+            // Apply selected compression method
+            return compress_matrix(matrix, &new_params);
+        }
+        
+        default:
+            return false;
+    }
 }
+
+// QR decomposition is now implemented in matrix_qr.c
+// to avoid duplicate symbol errors

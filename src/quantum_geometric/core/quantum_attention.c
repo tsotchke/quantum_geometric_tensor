@@ -1,11 +1,36 @@
 #include "quantum_geometric/core/quantum_attention.h"
 #include "quantum_geometric/core/hierarchical_matrix.h"
 #include "quantum_geometric/core/quantum_geometric_constants.h"
+#include "quantum_geometric/core/quantum_geometric_types.h"
+#include "quantum_geometric/core/quantum_circuit_operations.h"
 #include "quantum_geometric/core/differential_transformer.h"
+#include "quantum_geometric/core/memory_pool.h"
 #include "quantum_geometric/hardware/quantum_geometric_gpu.h"
 #include "quantum_geometric/distributed/workload_distribution.h"
 #include <complex.h>
 #include <math.h>
+#include <pthread.h>
+#include <stdlib.h>
+#include <string.h>
+
+#ifdef _OPENMP
+#include <omp.h>
+#else
+// Stub implementations when OpenMP is not available
+static inline int omp_get_thread_num(void) { return 0; }
+static inline int omp_get_num_threads(void) { return 1; }
+#endif
+
+// Min/max macros
+#ifndef MIN
+#define MIN(a,b) ((a) < (b) ? (a) : (b))
+#endif
+#ifndef MAX
+#define MAX(a,b) ((a) > (b) ? (a) : (b))
+#endif
+
+// GPU functions are declared in quantum_geometric_gpu.h (included above)
+// free_diff_transformer is declared in differential_transformer.h
 
 // Memory pool for attention matrices
 static MemoryPool* attention_memory_pool = NULL;
@@ -15,14 +40,142 @@ static pthread_mutex_t pool_mutex = PTHREAD_MUTEX_INITIALIZER;
 static void init_attention_memory_pool(void) {
     pthread_mutex_lock(&pool_mutex);
     if (!attention_memory_pool) {
-        attention_memory_pool = create_memory_pool(
-            QG_QUANTUM_ATTENTION_INITIAL_BLOCKS,
-            sizeof(double complex),
-            QG_ATTENTION_CACHE_LINE_SIZE,
-            true  // Enable GPU memory
-        );
+        struct PoolConfig config = {
+            .min_block_size = sizeof(double complex),
+            .alignment = QG_ATTENTION_CACHE_LINE_SIZE,
+            .num_size_classes = 8,
+            .growth_factor = 2.0f,
+            .prefetch_distance = 4,
+            .use_huge_pages = false,
+            .cache_local_free_lists = true,
+            .max_blocks_per_class = QG_QUANTUM_ATTENTION_INITIAL_BLOCKS,
+            .thread_cache_size = 64,
+            .enable_stats = true
+        };
+        attention_memory_pool = create_memory_pool(&config);
     }
     pthread_mutex_unlock(&pool_mutex);
+}
+
+// Initialize a single attention head
+static quantum_attention_head_t* create_attention_head(size_t head_dim, size_t hidden_dim) {
+    quantum_attention_head_t* head = calloc(1, sizeof(quantum_attention_head_t));
+    if (!head) return NULL;
+
+    head->head_dim = head_dim;
+    head->hidden_dim = hidden_dim;
+    head->cache_valid = false;
+
+    // Allocate weight matrices
+    size_t weight_size = head_dim * hidden_dim;
+    head->query_weights = calloc(weight_size, sizeof(ComplexFloat));
+    head->key_weights = calloc(weight_size, sizeof(ComplexFloat));
+    head->value_weights = calloc(weight_size, sizeof(ComplexFloat));
+    head->output_weights = calloc(weight_size, sizeof(ComplexFloat));
+    head->cached_attention = calloc(head_dim * head_dim, sizeof(double));
+
+    if (!head->query_weights || !head->key_weights ||
+        !head->value_weights || !head->output_weights) {
+        free(head->query_weights);
+        free(head->key_weights);
+        free(head->value_weights);
+        free(head->output_weights);
+        free(head->cached_attention);
+        free(head);
+        return NULL;
+    }
+
+    // Initialize weights with Xavier initialization
+    double scale = sqrt(2.0 / (double)(head_dim + hidden_dim));
+    for (size_t i = 0; i < weight_size; i++) {
+        double rand_val = ((double)rand() / RAND_MAX - 0.5) * 2.0 * scale;
+        head->query_weights[i] = (ComplexFloat){.real = (float)rand_val, .imag = 0.0f};
+        head->key_weights[i] = (ComplexFloat){.real = (float)rand_val, .imag = 0.0f};
+        head->value_weights[i] = (ComplexFloat){.real = (float)rand_val, .imag = 0.0f};
+        head->output_weights[i] = (ComplexFloat){.real = (float)rand_val, .imag = 0.0f};
+    }
+
+    return head;
+}
+
+// Initialize quantum attention mechanism
+quantum_attention_t* init_quantum_attention(
+    size_t num_heads,
+    size_t head_dim,
+    quantum_attention_config_t config) {
+
+    init_attention_memory_pool();
+
+    quantum_attention_t* attention = calloc(1, sizeof(quantum_attention_t));
+    if (!attention) return NULL;
+
+    attention->num_heads = num_heads;
+    attention->head_dim = head_dim;
+    attention->hidden_dim = num_heads * head_dim;
+    attention->config = config;
+    attention->total_operations = 0;
+    attention->average_sparsity = 0.0;
+
+    // Allocate heads array
+    attention->heads = calloc(num_heads, sizeof(quantum_attention_head_t*));
+    if (!attention->heads) {
+        free(attention);
+        return NULL;
+    }
+
+    // Create each attention head
+    for (size_t i = 0; i < num_heads; i++) {
+        attention->heads[i] = create_attention_head(head_dim, attention->hidden_dim);
+        if (!attention->heads[i]) {
+            // Cleanup already allocated heads
+            for (size_t j = 0; j < i; j++) {
+                free(attention->heads[j]->query_weights);
+                free(attention->heads[j]->key_weights);
+                free(attention->heads[j]->value_weights);
+                free(attention->heads[j]->output_weights);
+                free(attention->heads[j]->cached_attention);
+                free(attention->heads[j]);
+            }
+            free(attention->heads);
+            free(attention);
+            return NULL;
+        }
+    }
+
+    // Allocate output projection
+    size_t proj_size = attention->hidden_dim * attention->hidden_dim;
+    attention->output_projection = calloc(proj_size, sizeof(ComplexFloat));
+    attention->layer_norm_gamma = calloc(attention->hidden_dim, sizeof(ComplexFloat));
+    attention->layer_norm_beta = calloc(attention->hidden_dim, sizeof(ComplexFloat));
+
+    if (!attention->output_projection || !attention->layer_norm_gamma ||
+        !attention->layer_norm_beta) {
+        cleanup_quantum_attention(attention);
+        return NULL;
+    }
+
+    // Initialize layer norm with identity
+    for (size_t i = 0; i < attention->hidden_dim; i++) {
+        attention->layer_norm_gamma[i] = (ComplexFloat){.real = 1.0f, .imag = 0.0f};
+        attention->layer_norm_beta[i] = (ComplexFloat){.real = 0.0f, .imag = 0.0f};
+    }
+
+    // Initialize output projection as identity-like
+    for (size_t i = 0; i < attention->hidden_dim; i++) {
+        for (size_t j = 0; j < attention->hidden_dim; j++) {
+            float val = (i == j) ? 1.0f : 0.0f;
+            attention->output_projection[i * attention->hidden_dim + j] =
+                (ComplexFloat){.real = val, .imag = 0.0f};
+        }
+    }
+
+    return attention;
+}
+
+// Create quantum attention with full configuration
+quantum_attention_t* create_quantum_attention(const quantum_attention_config_t* config) {
+    if (!config) return NULL;
+    return init_quantum_attention(config->num_heads, config->head_dim, *config);
 }
 
 // Helper function for hierarchical attention computation with differential backprop
@@ -198,14 +351,14 @@ void compute_quantum_attention(double complex* output,
     }
     
     // Distribute computation across GPUs
-    size_t num_gpus = ctx->num_devices;
+    size_t num_gpus = ctx->num_contexts;
     size_t batch_per_gpu = (batch_size + num_gpus - 1) / num_gpus;
     
     #pragma omp parallel num_threads(num_gpus)
     {
         int gpu_id = omp_get_thread_num();
         size_t start_batch = gpu_id * batch_per_gpu;
-        size_t end_batch = min(start_batch + batch_per_gpu, batch_size);
+        size_t end_batch = MIN(start_batch + batch_per_gpu, batch_size);
         
         if (start_batch < end_batch) {
             // Get GPU context for this device
@@ -245,19 +398,19 @@ void compute_quantum_attention(double complex* output,
                         d_query,
                         query + offset,
                         head_size * sizeof(double complex),
-                        gpu_ctx->stream
+                        gpu_ctx->command_queue
                     );
                     gpu_memcpy_to_device_async(
                         d_key,
                         key + offset,
                         head_size * sizeof(double complex),
-                        gpu_ctx->stream
+                        gpu_ctx->command_queue
                     );
                     gpu_memcpy_to_device_async(
                         d_value,
                         value + offset,
                         head_size * sizeof(double complex),
-                        gpu_ctx->stream
+                        gpu_ctx->command_queue
                     );
                     
                     if (enable_checkpointing) {
@@ -269,16 +422,18 @@ void compute_quantum_attention(double complex* output,
                         );
                     }
                     
-                    // Convert to hierarchical representation
+                    // Convert to hierarchical representation for O(n log n) attention
+                    // Using H-matrix approximation with tolerance for efficient computation
+                    double h_tolerance = 1e-6;  // Hierarchical matrix approximation tolerance
                     HierarchicalMatrix* h_query = convert_to_hierarchical_gpu(
-                        d_query, head_dim, gpu_ctx);
+                        (const ComplexFloat*)d_query, head_dim, head_dim, h_tolerance, gpu_ctx);
                     HierarchicalMatrix* h_key = convert_to_hierarchical_gpu(
-                        d_key, head_dim, gpu_ctx);
+                        (const ComplexFloat*)d_key, head_dim, head_dim, h_tolerance, gpu_ctx);
                     HierarchicalMatrix* h_value = convert_to_hierarchical_gpu(
-                        d_value, head_dim, gpu_ctx);
+                        (const ComplexFloat*)d_value, head_dim, head_dim, h_tolerance, gpu_ctx);
                     HierarchicalMatrix* h_output = create_hierarchical_matrix_gpu(
-                        head_dim, gpu_ctx);
-                    
+                        head_dim, head_dim, h_tolerance, gpu_ctx);
+
                     // Compute attention with differential backprop
                     compute_hierarchical_attention_differential(
                         state,
@@ -290,11 +445,12 @@ void compute_quantum_attention(double complex* output,
                         head_dim,
                         head_dim
                     );
-                    
-                    // Convert back and apply dropout
+
+                    // Convert back and apply dropout for regularization
                     convert_from_hierarchical_with_dropout_gpu(
-                        d_output,
+                        (ComplexFloat*)d_output,
                         h_output,
+                        head_size,
                         QG_QUANTUM_ATTENTION_DROPOUT_RATE,
                         gpu_ctx
                     );
@@ -304,7 +460,7 @@ void compute_quantum_attention(double complex* output,
                         output + offset,
                         d_output,
                         head_size * sizeof(double complex),
-                        gpu_ctx->stream
+                        gpu_ctx->command_queue
                     );
                     
                     // Cleanup hierarchical matrices
@@ -330,8 +486,44 @@ void compute_quantum_attention(double complex* output,
     free_diff_transformer(state);
 }
 
-// Cleanup attention resources
-void cleanup_quantum_attention(void) {
+// Cleanup attention resources (global cleanup for backward compatibility)
+static void cleanup_quantum_attention_global(void) {
     cleanup_attention_cache();
     cleanup_attention_buffers();
+}
+
+// Cleanup individual quantum attention instance
+void cleanup_quantum_attention(quantum_attention_t* attention) {
+    if (!attention) return;
+
+    // Free each attention head
+    if (attention->heads) {
+        for (size_t i = 0; i < attention->num_heads; i++) {
+            if (attention->heads[i]) {
+                free(attention->heads[i]->query_weights);
+                free(attention->heads[i]->key_weights);
+                free(attention->heads[i]->value_weights);
+                free(attention->heads[i]->output_weights);
+                free(attention->heads[i]->cached_attention);
+                free(attention->heads[i]);
+            }
+        }
+        free(attention->heads);
+    }
+
+    free(attention->output_projection);
+    free(attention->layer_norm_gamma);
+    free(attention->layer_norm_beta);
+    free(attention->sparse_indices);
+
+    if (attention->attention_circuit) {
+        quantum_circuit_destroy(attention->attention_circuit);
+    }
+
+    free(attention);
+}
+
+// Alias for destroy
+void destroy_quantum_attention(quantum_attention_t* attention) {
+    cleanup_quantum_attention(attention);
 }

@@ -44,8 +44,10 @@ typedef struct {
     void* raw_data;
 } IBMJobResult;
 
-// IBM backend configuration
-typedef struct {
+// IBM backend configuration - may be defined in quantum_hardware_types.h
+#ifndef IBM_BACKEND_CONFIG_DEFINED
+#define IBM_BACKEND_CONFIG_DEFINED
+typedef struct IBMBackendConfig {
     char* backend_name;
     char* hub;
     char* group;
@@ -57,26 +59,33 @@ typedef struct {
     bool readout_error_mitigation;
     bool measurement_error_mitigation;
 } IBMBackendConfig;
+#endif
 
 // Error correction graph structures
-typedef struct {
+#ifndef MATCHING_VERTEX_DEFINED
+#define MATCHING_VERTEX_DEFINED
+typedef struct MatchingVertex {
     size_t id;
     double weight;
     size_t* neighbors;
     size_t num_neighbors;
 } MatchingVertex;
+#endif
 
-typedef struct {
+#ifndef MATCHING_GRAPH_DEFINED
+#define MATCHING_GRAPH_DEFINED
+typedef struct MatchingGraph {
     MatchingVertex* vertices;
     size_t num_vertices;
 } MatchingGraph;
+#endif
 
-// Syndrome configuration
-typedef struct {
+// IBM-specific syndrome configuration (different from stabilizer_types.h SyndromeConfig)
+typedef struct IBMSyndromeConfig {
     size_t num_qubits;
     size_t num_stabilizers;
     double threshold;
-} SyndromeConfig;
+} IBMSyndromeConfig;
 
 // IBM calibration data
 typedef struct {
@@ -85,13 +94,26 @@ typedef struct {
 } IBMCalibrationData;
 
 // Function declarations
+
+// API initialization and connection
 void* ibm_api_init(const char* token);
 bool ibm_api_connect_backend(void* api_handle, const char* backend_name);
 bool ibm_api_get_calibration(void* api_handle, IBMCalibrationData* cal_data);
 bool ibm_api_init_job_queue(void* api_handle);
+
+// Job management
 char* ibm_api_submit_job(void* api_handle, const char* qasm);
 IBMJobStatus ibm_api_get_job_status(void* api_handle, const char* job_id);
 char* ibm_api_get_job_error(void* api_handle, const char* job_id);
 IBMJobResult* ibm_api_get_job_result(void* api_handle, const char* job_id);
+void ibm_api_cancel_pending_jobs(void* api_handle);
+
+// Session management
+void ibm_api_close_session(void* api_handle);
+void ibm_api_clear_credentials(void* api_handle);
+void ibm_api_destroy(void* api_handle);
+
+// Result cleanup
+void cleanup_ibm_result(IBMJobResult* result);
 
 #endif // QUANTUM_IBM_API_H

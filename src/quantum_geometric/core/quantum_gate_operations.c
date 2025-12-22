@@ -374,6 +374,60 @@ bool shift_gate_parameters(
     return update_gate_parameters(gate, &shifted_param, 1);
 }
 
+// Create an RX rotation gate
+quantum_gate_t* create_rx_gate(size_t qubit, double angle) {
+    size_t qubits[1] = {qubit};
+    return create_quantum_gate(GATE_TYPE_RX, qubits, 1, &angle, 1);
+}
+
+// Create an RY rotation gate
+quantum_gate_t* create_ry_gate(size_t qubit, double angle) {
+    size_t qubits[1] = {qubit};
+    return create_quantum_gate(GATE_TYPE_RY, qubits, 1, &angle, 1);
+}
+
+// Create an RZ rotation gate
+quantum_gate_t* create_rz_gate(size_t qubit, double angle) {
+    size_t qubits[1] = {qubit};
+    return create_quantum_gate(GATE_TYPE_RZ, qubits, 1, &angle, 1);
+}
+
+// Create a Hadamard gate
+quantum_gate_t* create_h_gate(size_t qubit) {
+    size_t qubits[1] = {qubit};
+    return create_quantum_gate(GATE_TYPE_H, qubits, 1, NULL, 0);
+}
+
+// Create a Pauli-X gate
+quantum_gate_t* create_x_gate(size_t qubit) {
+    size_t qubits[1] = {qubit};
+    return create_quantum_gate(GATE_TYPE_X, qubits, 1, NULL, 0);
+}
+
+// Create a Pauli-Y gate
+quantum_gate_t* create_y_gate(size_t qubit) {
+    size_t qubits[1] = {qubit};
+    return create_quantum_gate(GATE_TYPE_Y, qubits, 1, NULL, 0);
+}
+
+// Create a Pauli-Z gate
+quantum_gate_t* create_z_gate(size_t qubit) {
+    size_t qubits[1] = {qubit};
+    return create_quantum_gate(GATE_TYPE_Z, qubits, 1, NULL, 0);
+}
+
+// Create a CNOT gate
+quantum_gate_t* create_cnot_gate(size_t control, size_t target) {
+    size_t qubits[2] = {control, target};
+    return create_quantum_gate(GATE_TYPE_CNOT, qubits, 2, NULL, 0);
+}
+
+// Create a CZ gate
+quantum_gate_t* create_cz_gate(size_t control, size_t target) {
+    size_t qubits[2] = {control, target};
+    return create_quantum_gate(GATE_TYPE_CZ, qubits, 2, NULL, 0);
+}
+
 // Destroy quantum gate
 void destroy_quantum_gate(quantum_gate_t* gate) {
     if (!gate) return;

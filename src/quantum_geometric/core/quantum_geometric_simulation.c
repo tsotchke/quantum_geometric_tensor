@@ -81,40 +81,41 @@ qgt_error_t geometric_step_simulation(quantum_geometric_simulation_t* simulation
     
     // Perform simulation step based on type
     switch (simulation->type) {
-        case GEOMETRIC_SIMULATION_SCHRODINGER:
+        case GEOMETRIC_SIMULATION_SCHRODINGER: {
             // Simple Euler step for Schrödinger equation
             ComplexFloat* new_state = (ComplexFloat*)malloc(dim * sizeof(ComplexFloat));
             if (!new_state) {
                 return QGT_ERROR_ALLOCATION_FAILED;
             }
-            
+
             // Compute evolution using metric and connection
             for (size_t i = 0; i < dim; i++) {
                 ComplexFloat sum = COMPLEX_FLOAT_ZERO;
-                
+
                 for (size_t j = 0; j < dim; j++) {
                     ComplexFloat metric_term = metric->components[i * dim + j];
                     ComplexFloat connection_term = connection->coefficients[(i * dim + j) * dim];
-                    
+
                     ComplexFloat term = complex_float_multiply(
                         complex_float_add(metric_term, connection_term),
                         simulation->state[j]
                     );
                     sum = complex_float_add(sum, term);
                 }
-                
+
                 // Apply time evolution
                 new_state[i] = complex_float_multiply(
                     complex_float_create(0.0f, -simulation->dt),
                     sum
                 );
             }
-            
+
             // Update state
             memcpy(simulation->state, new_state, dim * sizeof(ComplexFloat));
             free(new_state);
             break;
-            
+        }
+
         default:
             return QGT_ERROR_NOT_IMPLEMENTED;
     }

@@ -49,6 +49,23 @@
 #define QGT_PREFETCH_DISTANCE QGT_POOL_PREFETCH
 #define QGT_PARALLEL_THRESHOLD 1000
 
+// Global state structure for geometric operations
+#include <stdatomic.h>
+typedef struct GlobalState {
+    atomic_bool initialized;
+    quantum_geometric_config_t config;
+    struct MemoryPool* pool;
+    quantum_geometric_hardware_t* hardware;
+} GlobalState;
+
+// External global state declaration
+extern GlobalState g_state;
+
+// Inline state validation function
+static inline qgt_error_t validate_state(void) {
+    return atomic_load(&g_state.initialized) ? QGT_SUCCESS : QGT_ERROR_INVALID_STATE;
+}
+
 // Memory management
 qgt_error_t geometric_initialize(void);
 void geometric_shutdown(void);

@@ -68,6 +68,7 @@ typedef struct HierarchicalMatrix {
     matrix_type_t type;            // Matrix type
     storage_format_t format;       // Storage format
     double complex* data;          // Raw data for leaf nodes
+    double complex* grad;          // Gradient data for backpropagation
     double complex* U;             // Left singular vectors
     double complex* V;             // Right singular vectors
     size_t n;                     // Matrix dimension
@@ -160,5 +161,65 @@ bool export_matrix(const HierarchicalMatrix* matrix,
 bool import_matrix(HierarchicalMatrix* matrix,
                   const char* filename);
 void print_matrix(const HierarchicalMatrix* matrix);
+
+// ============================================================================
+// Legacy API (hmatrix_* naming convention) - Declarations
+// ============================================================================
+
+/**
+ * @brief Create hierarchical matrix (implemented in hierarchical_matrix.c)
+ */
+HierarchicalMatrix* hmatrix_create(size_t rows, size_t cols, double tolerance);
+
+/**
+ * @brief Destroy hierarchical matrix (implemented in hierarchical_matrix.c)
+ */
+void hmatrix_destroy(HierarchicalMatrix* matrix);
+
+/**
+ * @brief Matrix multiplication (implemented in hierarchical_matrix.c)
+ */
+void hmatrix_multiply(HierarchicalMatrix* dst,
+                     const HierarchicalMatrix* a,
+                     const HierarchicalMatrix* b);
+
+/**
+ * @brief Matrix-vector multiplication for tensor networks
+ */
+void hmatrix_multiply_vector(const HierarchicalMatrix* matrix,
+                            const double complex* input,
+                            double complex* output,
+                            size_t batch_size);
+
+/**
+ * @brief Matrix conjugate transpose multiplication
+ */
+void hmatrix_multiply_conjugate_transpose(const HierarchicalMatrix* matrix,
+                                         const double complex* input,
+                                         double complex* output,
+                                         size_t batch_size);
+
+/**
+ * @brief Apply gradient update to matrix
+ */
+void hmatrix_apply_gradient(HierarchicalMatrix* matrix,
+                           const double complex* gradient,
+                           double learning_rate);
+
+// ============================================================================
+// Tree Tensor Network Configuration
+// ============================================================================
+
+/**
+ * @brief Configuration for tree tensor networks
+ */
+typedef struct TTNConfig {
+    size_t max_bond_dimension;     // Maximum bond dimension
+    double compression_tolerance;   // SVD truncation tolerance
+    bool use_gpu;                  // Use GPU acceleration
+    bool use_metal;                // Use Metal acceleration (macOS)
+    size_t num_threads;            // Number of threads for parallel operations
+    size_t cache_size;             // Size of tensor cache in bytes
+} TTNConfig;
 
 #endif // HIERARCHICAL_MATRIX_H

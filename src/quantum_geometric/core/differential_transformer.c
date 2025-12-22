@@ -1,9 +1,9 @@
 #include "quantum_geometric/core/differential_transformer.h"
 #include "quantum_geometric/core/simd_operations.h"
+#include "quantum_geometric/core/platform_intrinsics.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <immintrin.h>
 
 // Constants for numerical stability
 #define EPSILON 1e-6

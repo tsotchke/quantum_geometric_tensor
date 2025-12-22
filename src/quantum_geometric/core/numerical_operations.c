@@ -3,60 +3,133 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <immintrin.h>
+#include <complex.h>
+
+// Platform-specific SIMD includes
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    #if defined(__AVX512F__)
+        #include <immintrin.h>
+        #define QGT_USE_AVX512 1
+    #elif defined(__AVX2__) || defined(__AVX__)
+        #include <immintrin.h>
+        #define QGT_USE_AVX 1
+    #endif
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    #if defined(__ARM_NEON) || defined(__ARM_NEON__)
+        #include <arm_neon.h>
+        #define QGT_USE_NEON 1
+    #endif
+#endif
+
+// Helper for computing |z|^2 for complex numbers
+static inline double qgt_abs_squared_impl(double complex z) {
+    double re = creal(z);
+    double im = cimag(z);
+    return re * re + im * im;
+}
 
 void qgt_vector_add(double complex* dst, const double complex* a, const double complex* b, size_t n) {
-    simd_complex_add(dst, a, b, n);
+    // Use scalar fallback - simd_complex_add handles optimization internally
+    for (size_t i = 0; i < n; i++) {
+        dst[i] = a[i] + b[i];
+    }
 }
 
 void qgt_vector_scale(double complex* dst, const double complex* src, double scale, size_t n) {
-    simd_complex_scale(dst, src, scale, n);
+    for (size_t i = 0; i < n; i++) {
+        dst[i] = src[i] * scale;
+    }
 }
 
 double complex qgt_vector_dot(const double complex* a, const double complex* b, size_t n) {
     double complex result = 0;
-    
+
+#if QGT_USE_AVX512
     // Use AVX-512 for complex dot product
-    __m512d sum = _mm512_setzero_pd();
+    __m512d sum_re = _mm512_setzero_pd();
+    __m512d sum_im = _mm512_setzero_pd();
+
     for (size_t i = 0; i + 4 <= n; i += 4) {
-        __m512d va = _mm512_load_pd((double*)&a[i]);
-        __m512d vb = _mm512_load_pd((double*)&b[i]);
-        __m512d prod = _mm512_complex_mul_pd(va, vb);
-        sum = _mm512_add_pd(sum, prod);
+        // Load 4 complex numbers (8 doubles)
+        __m512d va = _mm512_loadu_pd((double*)&a[i]);
+        __m512d vb = _mm512_loadu_pd((double*)&b[i]);
+
+        // Extract real and imaginary parts (interleaved format)
+        __m512d a_re = _mm512_shuffle_pd(va, va, 0x00);  // Even indices
+        __m512d a_im = _mm512_shuffle_pd(va, va, 0xFF);  // Odd indices
+        __m512d b_re = _mm512_shuffle_pd(vb, vb, 0x00);
+        __m512d b_im = _mm512_shuffle_pd(vb, vb, 0xFF);
+
+        // Complex multiply: (a_re + i*a_im) * (b_re + i*b_im)
+        sum_re = _mm512_fmadd_pd(a_re, b_re, sum_re);
+        sum_re = _mm512_fnmadd_pd(a_im, b_im, sum_re);
+        sum_im = _mm512_fmadd_pd(a_re, b_im, sum_im);
+        sum_im = _mm512_fmadd_pd(a_im, b_re, sum_im);
     }
-    
-    // Reduce sum across vector
-    double complex partial;
-    _mm512_store_pd((double*)&partial, sum);
-    result += partial;
-    
+
+    // Reduce sums
+    double re_sum = _mm512_reduce_add_pd(sum_re);
+    double im_sum = _mm512_reduce_add_pd(sum_im);
+    result = re_sum + I * im_sum;
+
     // Handle remaining elements
     for (size_t i = (n/4)*4; i < n; i++) {
         result += a[i] * b[i];
     }
-    
+#elif QGT_USE_NEON
+    // Use NEON for complex dot product
+    float64x2_t sum_re = vdupq_n_f64(0.0);
+    float64x2_t sum_im = vdupq_n_f64(0.0);
+
+    for (size_t i = 0; i + 1 < n; i += 1) {
+        double a_re = creal(a[i]);
+        double a_im = cimag(a[i]);
+        double b_re = creal(b[i]);
+        double b_im = cimag(b[i]);
+
+        result += (a_re * b_re - a_im * b_im) + I * (a_re * b_im + a_im * b_re);
+    }
+#else
+    // Scalar fallback
+    for (size_t i = 0; i < n; i++) {
+        result += a[i] * b[i];
+    }
+#endif
+
     return result;
 }
 
 double qgt_vector_norm(const double complex* vec, size_t n) {
     double norm = 0.0;
-    
+
+#if QGT_USE_AVX512
     // Use AVX-512 for squared norm calculation
     __m512d sum = _mm512_setzero_pd();
     for (size_t i = 0; i + 4 <= n; i += 4) {
-        __m512d v = _mm512_load_pd((double*)&vec[i]);
+        __m512d v = _mm512_loadu_pd((double*)&vec[i]);
         __m512d squared = _mm512_mul_pd(v, v);
         sum = _mm512_add_pd(sum, squared);
     }
-    
+
     // Reduce sum across vector
     norm += _mm512_reduce_add_pd(sum);
-    
+
     // Handle remaining elements
     for (size_t i = (n/4)*4; i < n; i++) {
-        norm += qgt_abs_squared(vec[i]);
+        norm += qgt_abs_squared_impl(vec[i]);
     }
-    
+#elif QGT_USE_NEON
+    // Use NEON for squared norm
+    for (size_t i = 0; i < n; i++) {
+        norm += qgt_abs_squared_impl(vec[i]);
+    }
+#else
+    // Scalar fallback
+    for (size_t i = 0; i < n; i++) {
+        norm += qgt_abs_squared_impl(vec[i]);
+    }
+#endif
+
     return sqrt(norm);
 }
 

@@ -181,6 +181,7 @@ typedef struct distributed_memory_config_t {
 typedef struct memory_distribution_t {
     size_t* node_sizes;
     void** node_ptrs;
+    double* allocation_weights;  // Weight factors for allocation preference per node
     size_t num_nodes;
     bool is_balanced;
 } memory_distribution_t;
@@ -301,12 +302,13 @@ struct quantum_geometric_tensor_t {
 
 // Geometric transformation types
 typedef enum {
-    GEOMETRIC_TRANSFORM_ROTATION,    // Rotation transformation
-    GEOMETRIC_TRANSFORM_TRANSLATION, // Translation transformation
-    GEOMETRIC_TRANSFORM_SCALING,     // Scaling transformation
-    GEOMETRIC_TRANSFORM_SHEAR,      // Shear transformation
-    GEOMETRIC_TRANSFORM_REFLECTION,  // Reflection transformation
-    GEOMETRIC_TRANSFORM_CUSTOM      // Custom transformation
+    GEOMETRIC_TRANSFORM_ROTATION,           // Rotation transformation
+    GEOMETRIC_TRANSFORM_TRANSLATION,        // Translation transformation
+    GEOMETRIC_TRANSFORM_SCALING,            // Scaling transformation
+    GEOMETRIC_TRANSFORM_SHEAR,              // Shear transformation
+    GEOMETRIC_TRANSFORM_REFLECTION,         // Reflection transformation
+    GEOMETRIC_TRANSFORM_ERROR_CORRECTION,   // Error correction transformation
+    GEOMETRIC_TRANSFORM_CUSTOM              // Custom transformation
 } geometric_transform_type_t;
 
 // Geometric metric types

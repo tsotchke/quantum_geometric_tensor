@@ -1,6 +1,29 @@
 #include "quantum_geometric/core/quantum_circuit_creation.h"
+#include "quantum_geometric/core/quantum_circuit_operations.h"
 #include "quantum_geometric/core/quantum_geometric_constants.h"
 #include "quantum_geometric/core/quantum_phase_estimation.h"
+#include "quantum_geometric/core/quantum_complex.h"
+#include <complex.h>
+#include <math.h>
+
+// Internal helper functions for building circuits
+// These wrap the core circuit operations with a builder-style API
+static inline qgt_error_t quantum_circuit_add_hadamard(quantum_circuit_t* circuit, size_t qubit) {
+    return quantum_circuit_hadamard(circuit, qubit);
+}
+
+static inline qgt_error_t quantum_circuit_add_controlled_phase(
+    quantum_circuit_t* circuit, size_t control, size_t target, double angle) {
+    // Use controlled Z with phase adjustment
+    qgt_error_t err = quantum_circuit_phase(circuit, target, angle);
+    if (err != QGT_SUCCESS) return err;
+    return quantum_circuit_cz(circuit, control, target);
+}
+
+static inline qgt_error_t quantum_circuit_add_controlled_not(
+    quantum_circuit_t* circuit, size_t control, size_t target) {
+    return quantum_circuit_cnot(circuit, control, target);
+}
 
 quantum_circuit_t* quantum_create_inversion_circuit(size_t num_qubits, int flags) {
     quantum_circuit_t* circuit = quantum_circuit_create(num_qubits);
@@ -74,14 +97,14 @@ void quantum_compute_gradient(quantum_register_t* reg_state,
                             quantum_system_t* system,
                             quantum_circuit_t* circuit,
                             const quantum_phase_config_t* config) {
-    // Initialize gradient computation
+    // Initialize gradient computation with zero complex values
     for (size_t i = 0; i < reg_gradient->size; i++) {
-        reg_gradient->amplitudes[i] = 0;
+        reg_gradient->amplitudes[i] = COMPLEX_FLOAT_ZERO;
     }
-    
+
     // Apply quantum phase estimation
     quantum_phase_estimation_optimized(reg_state, system, circuit, config);
-    
+
     // Extract gradient information
     for (size_t i = 0; i < reg_gradient->size; i++) {
         reg_gradient->amplitudes[i] = reg_state->amplitudes[i];
@@ -95,14 +118,14 @@ void quantum_compute_hessian_hierarchical(quantum_register_t* reg_state,
                                         quantum_system_t* system,
                                         quantum_circuit_t* circuit,
                                         const quantum_phase_config_t* config) {
-    // Initialize Hessian computation
+    // Initialize Hessian computation with zero complex values
     for (size_t i = 0; i < reg_hessian->size; i++) {
-        reg_hessian->amplitudes[i] = 0;
+        reg_hessian->amplitudes[i] = COMPLEX_FLOAT_ZERO;
     }
-    
+
     // Apply quantum phase estimation
     quantum_phase_estimation_optimized(reg_state, system, circuit, config);
-    
+
     // Extract Hessian information
     for (size_t i = 0; i < reg_hessian->size; i++) {
         reg_hessian->amplitudes[i] = reg_state->amplitudes[i];

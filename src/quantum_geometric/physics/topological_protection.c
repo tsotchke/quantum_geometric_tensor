@@ -8,7 +8,15 @@
 #include "quantum_geometric/physics/quantum_topological_operations.h"
 #include <complex.h>
 #include <math.h>
-#include <immintrin.h>
+
+// Platform-specific SIMD includes
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    #include <immintrin.h>
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    #if defined(__ARM_NEON) || defined(__ARM_NEON__)
+        #include <arm_neon.h>
+    #endif
+#endif
 
 /* Quantum-accelerated topological entropy calculation using phase estimation - O(log N) */
 double calculate_topological_entropy(TreeTensorNetwork* network) {

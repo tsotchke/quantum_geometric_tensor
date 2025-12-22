@@ -14,25 +14,8 @@ struct quantum_circuit;
 struct quantum_result;
 struct StabilizerState;
 
-// Error correction graph structures
-typedef struct {
-    size_t id;
-    double weight;
-    size_t* neighbors;
-    size_t num_neighbors;
-} MatchingVertex;
-
-typedef struct {
-    MatchingVertex* vertices;
-    size_t num_vertices;
-} MatchingGraph;
-
-// Syndrome configuration
-typedef struct {
-    size_t num_qubits;
-    size_t num_stabilizers;
-    double threshold;
-} SyndromeConfig;
+// Note: MatchingVertex, MatchingGraph, and SyndromeConfig are already
+// defined in quantum_ibm_api.h which is included above
 
 #include "quantum_geometric/core/system_dependencies.h"
 #include "quantum_geometric/core/numeric_utils.h"

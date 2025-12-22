@@ -13,13 +13,21 @@
 #include <complex.h>
 
 // Maximum number of qubits supported by the simulator
+#ifndef MAX_QUBITS
 #define MAX_QUBITS 32
+#endif
 
 // Use GateType from quantum_circuit.h
 
 // Use types from quantum_hardware_types.h
-typedef struct quantum_gate_t QuantumGate;
-typedef struct quantum_circuit_t QuantumCircuit;
+// Note: QuantumGate is defined as a struct directly in quantum_hardware_types.h
+// We use quantum_gate_t for internal gate operations and QuantumGate for API
+#ifndef QUANTUM_SIMULATOR_TYPES_DEFINED
+#define QUANTUM_SIMULATOR_TYPES_DEFINED
+// Forward declarations to avoid redefinition
+struct quantum_circuit_t;
+typedef struct quantum_circuit_t SimulatorCircuit;
+#endif
 
 // Noise model types
 typedef enum noise_type_t {
@@ -68,63 +76,63 @@ typedef struct {
 } SimulatorState;
 
 // Initialize simulator
-SimulatorState* init_simulator(uint32_t num_qubits, uint32_t num_classical_bits, const SimulatorConfig* config);
+SimulatorState* sim_init(uint32_t num_qubits, uint32_t num_classical_bits, const struct SimulatorConfig* config);
 
-// Create quantum circuit
-QuantumCircuit* create_circuit(uint32_t num_qubits, uint32_t num_classical_bits);
+// Create quantum circuit for simulator
+SimulatorCircuit* sim_create_circuit(uint32_t num_qubits, uint32_t num_classical_bits);
 
-// Add gate to circuit
-bool add_gate(QuantumCircuit* circuit, gate_type_t type, uint32_t target, uint32_t control, double* parameters);
+// Add gate to simulator circuit
+bool sim_add_gate(SimulatorCircuit* circuit, gate_type_t type, uint32_t target, uint32_t control, double* parameters);
 
-// Add controlled gate
-bool add_controlled_gate(QuantumCircuit* circuit, gate_type_t type, uint32_t target, uint32_t control, uint32_t control2, double* parameters);
+// Add controlled gate to simulator circuit
+bool sim_add_controlled_gate(SimulatorCircuit* circuit, gate_type_t type, uint32_t target, uint32_t control, uint32_t control2, double* parameters);
 
 // Execute circuit on simulator
-bool execute_circuit(SimulatorState* state, const QuantumCircuit* circuit);
+bool sim_execute_circuit(SimulatorState* state, const SimulatorCircuit* circuit);
 
 // Measure qubit
-bool measure_qubit(SimulatorState* state, uint32_t qubit, uint32_t classical_bit);
+bool sim_measure_qubit(SimulatorState* state, uint32_t qubit, uint32_t classical_bit);
 
 // Measure all qubits
-bool measure_all(SimulatorState* state);
+bool sim_measure_all(SimulatorState* state);
 
 // Get measurement results
-bool* get_measurement_results(const SimulatorState* state);
+bool* sim_get_measurement_results(const SimulatorState* state);
 
 // Get measurement counts
-uint64_t* get_measurement_counts(const SimulatorState* state, uint32_t shots);
+uint64_t* sim_get_measurement_counts(const SimulatorState* state, uint32_t shots);
 
 // Get state vector
-double complex* get_statevector(const SimulatorState* state);
+double complex* sim_get_statevector(const SimulatorState* state);
 
 // Get density matrix
-double complex* get_density_matrix(const SimulatorState* state);
+double complex* sim_get_density_matrix(const SimulatorState* state);
 
 // Get expectation value
-double get_expectation_value(const SimulatorState* state, const char* observable);
+double sim_get_expectation_value(const SimulatorState* state, const char* observable);
 
 // Apply noise to state
-bool apply_noise(SimulatorState* state, const NoiseModel* noise);
+bool sim_apply_noise(SimulatorState* state, const NoiseModel* noise);
 
 // Apply error mitigation for simulator
-bool apply_simulator_error_mitigation(SimulatorState* state, const MitigationParams* params);
+bool sim_apply_error_mitigation(SimulatorState* state, const MitigationParams* params);
 
 // Reset simulator state
-void reset_state(SimulatorState* state);
+void sim_reset_state(SimulatorState* state);
 
 // Free simulator resources
-void cleanup_simulator(SimulatorState* state);
+void sim_cleanup(SimulatorState* state);
 
 // Free circuit resources
-void cleanup_circuit(QuantumCircuit* circuit);
+void sim_cleanup_circuit(SimulatorCircuit* circuit);
 
-// Utility functions
-bool validate_circuit(const QuantumCircuit* circuit);
-bool optimize_circuit(QuantumCircuit* circuit);
-char* circuit_to_string(const QuantumCircuit* circuit);
-double get_circuit_depth(const QuantumCircuit* circuit);
-double estimate_runtime(const QuantumCircuit* circuit);
-bool save_circuit(const QuantumCircuit* circuit, const char* filename);
-QuantumCircuit* load_circuit(const char* filename);
+// Utility functions for simulator
+bool sim_validate_circuit(const SimulatorCircuit* circuit);
+bool sim_optimize_circuit(SimulatorCircuit* circuit);
+char* sim_circuit_to_string(const SimulatorCircuit* circuit);
+double sim_get_circuit_depth(const SimulatorCircuit* circuit);
+double sim_estimate_runtime(const SimulatorCircuit* circuit);
+bool sim_save_circuit(const SimulatorCircuit* circuit, const char* filename);
+SimulatorCircuit* sim_load_circuit(const char* filename);
 
 #endif // QUANTUM_SIMULATOR_H

@@ -6,25 +6,78 @@
 #include <math.h>
 #include <complex.h>
 
-// Tree tensor network node structure
-struct TreeTensorNetwork {
-    HierarchicalMatrix* tensor;     // Node tensor data
-    TreeTensorNetwork* left;        // Left child
-    TreeTensorNetwork* right;       // Right child
-    size_t input_dim;              // Input dimension
-    size_t output_dim;             // Output dimension
-    size_t bond_dim;               // Bond dimension
-    double tolerance;              // SVD truncation tolerance
-    bool is_leaf;                  // Whether this is a leaf node
-    TTNConfig config;              // Configuration parameters
-};
+// Binary tree tensor network node (internal implementation)
+// Note: Uses TTN_BinaryNode to avoid conflict with TTN_BinaryNode in tree_tensor_network.h
+typedef struct TTN_BinaryNode {
+    HierarchicalMatrix* tensor;         // Node tensor data
+    struct TTN_BinaryNode* left;        // Left child
+    struct TTN_BinaryNode* right;       // Right child
+    size_t input_dim;                   // Input dimension
+    size_t output_dim;                  // Output dimension
+    size_t bond_dim;                    // Bond dimension
+    double tolerance;                   // SVD truncation tolerance
+    bool is_leaf;                       // Whether this is a leaf node
+    TTNConfig config;                   // Configuration parameters
+} TTN_BinaryNode;
 
 // Maximum tensor rank for compression
 #define MAX_TENSOR_RANK 1024
 
-TreeTensorNetwork* ttn_create(size_t input_dim, size_t output_dim,
+// Error codes for tensor network operations
+typedef enum {
+    TTN_SUCCESS = 0,
+    TTN_ERROR_INVALID_ARGUMENT,
+    TTN_ERROR_OUT_OF_MEMORY,
+    TTN_ERROR_CUDA_ERROR,
+    TTN_ERROR_METAL_ERROR,
+    TTN_ERROR_INVALID_OPERATION,
+    TTN_ERROR_COMPUTATION_FAILED,
+    TTN_ERROR_NOT_INITIALIZED
+} TTNError;
+
+// Forward declarations for internal functions
+static bool hmatrix_is_low_rank(const HierarchicalMatrix* matrix);
+static void hmatrix_compress(HierarchicalMatrix* matrix);
+void ttn_merge_networks(TTN_BinaryNode* dst,
+                       const TTN_BinaryNode* a,
+                       const TTN_BinaryNode* b);
+
+// ============================================================================
+// Helper function implementations
+// ============================================================================
+
+/**
+ * @brief Check if matrix has low rank (suitable for compression)
+ */
+static bool hmatrix_is_low_rank(const HierarchicalMatrix* matrix) {
+    if (!matrix) return false;
+    // Consider low rank if rank is less than 10% of minimum dimension
+    size_t min_dim = matrix->rows < matrix->cols ? matrix->rows : matrix->cols;
+    return matrix->rank < min_dim / 10 || matrix->rank < 16;
+}
+
+/**
+ * @brief Compress hierarchical matrix using SVD truncation
+ */
+static void hmatrix_compress(HierarchicalMatrix* matrix) {
+    if (!matrix || !matrix->data) return;
+
+    // Use the compression function from hierarchical_matrix.h
+    compression_params_t params = {
+        .mode = COMPRESS_SVD,
+        .tolerance = matrix->tolerance,
+        .max_rank = MAX_TENSOR_RANK,
+        .recompression = true,
+        .threshold = matrix->tolerance,
+        .compression_data = NULL
+    };
+
+    compress_matrix(matrix, &params);
+}
+
+TTN_BinaryNode* ttn_create(size_t input_dim, size_t output_dim,
                             size_t bond_dim, double tolerance) {
-    TreeTensorNetwork* network = malloc(sizeof(TreeTensorNetwork));
+    TTN_BinaryNode* network = malloc(sizeof(TTN_BinaryNode));
     if (!network) return NULL;
 
     network->tensor = hmatrix_create(output_dim, input_dim, tolerance);
@@ -52,7 +105,7 @@ TreeTensorNetwork* ttn_create(size_t input_dim, size_t output_dim,
     return network;
 }
 
-void ttn_destroy(TreeTensorNetwork* network) {
+void ttn_destroy(TTN_BinaryNode* network) {
     if (!network) return;
 
     if (network->tensor) {
@@ -67,7 +120,7 @@ void ttn_destroy(TreeTensorNetwork* network) {
     free(network);
 }
 
-void ttn_forward(TreeTensorNetwork* network,
+void ttn_forward(TTN_BinaryNode* network,
                 const double complex* input,
                 double complex* output,
                 size_t batch_size) {
@@ -75,7 +128,7 @@ void ttn_forward(TreeTensorNetwork* network,
 
     // For leaf nodes, directly apply tensor
     if (network->is_leaf) {
-        hmatrix_multiply(network->tensor, input, output, batch_size);
+        hmatrix_multiply_vector(network->tensor, input, output, batch_size);
         return;
     }
 
@@ -119,14 +172,14 @@ void ttn_forward(TreeTensorNetwork* network,
     }
 
     // Apply this node's tensor
-    hmatrix_multiply(network->tensor, combined, output, batch_size);
+    hmatrix_multiply_vector(network->tensor, combined, output, batch_size);
 
     free(left_output);
     free(right_output);
     free(combined);
 }
 
-void ttn_backward(TreeTensorNetwork* network,
+void ttn_backward(TTN_BinaryNode* network,
                  const double complex* grad_output,
                  double complex* grad_input,
                  size_t batch_size) {
@@ -181,7 +234,7 @@ void ttn_backward(TreeTensorNetwork* network,
     free(right_grad);
 }
 
-void ttn_update_parameters(TreeTensorNetwork* network,
+void ttn_update_parameters(TTN_BinaryNode* network,
                          double learning_rate) {
     if (!network) return;
 
@@ -202,7 +255,7 @@ void ttn_update_parameters(TreeTensorNetwork* network,
     }
 }
 
-void ttn_compress(TreeTensorNetwork* network,
+void ttn_compress(TTN_BinaryNode* network,
                  double new_tolerance) {
     if (!network) return;
 
@@ -222,7 +275,7 @@ void ttn_compress(TreeTensorNetwork* network,
     }
 }
 
-size_t ttn_count_parameters(const TreeTensorNetwork* network) {
+size_t ttn_count_parameters(const TTN_BinaryNode* network) {
     if (!network) return 0;
 
     size_t count = 0;
@@ -241,7 +294,7 @@ size_t ttn_count_parameters(const TreeTensorNetwork* network) {
     return count;
 }
 
-void ttn_print_stats(const TreeTensorNetwork* network) {
+void ttn_print_stats(const TTN_BinaryNode* network) {
     if (!network) return;
 
     printf("Tree Tensor Network Statistics:\n");
@@ -260,7 +313,7 @@ void ttn_print_stats(const TreeTensorNetwork* network) {
     }
 }
 
-double ttn_compute_complexity(const TreeTensorNetwork* network,
+double ttn_compute_complexity(const TTN_BinaryNode* network,
                             size_t input_size) {
     if (!network) return 0.0;
     
@@ -283,7 +336,7 @@ double ttn_compute_complexity(const TreeTensorNetwork* network,
     return complexity;
 }
 
-void ttn_optimize_structure(TreeTensorNetwork* network,
+void ttn_optimize_structure(TTN_BinaryNode* network,
                           double compression_tolerance) {
     if (!network) return;
     
@@ -327,7 +380,7 @@ void ttn_optimize_structure(TreeTensorNetwork* network,
     }
 }
 
-void ttn_truncate_bonds(TreeTensorNetwork* network,
+void ttn_truncate_bonds(TTN_BinaryNode* network,
                        size_t max_bond_dim) {
     if (!network) return;
     
@@ -359,9 +412,9 @@ void ttn_truncate_bonds(TreeTensorNetwork* network,
     }
 }
 
-void ttn_merge_networks(TreeTensorNetwork* dst,
-                       const TreeTensorNetwork* a,
-                       const TreeTensorNetwork* b) {
+void ttn_merge_networks(TTN_BinaryNode* dst,
+                       const TTN_BinaryNode* a,
+                       const TTN_BinaryNode* b) {
     if (!dst || !a || !b) return;
     
     // Create merged tensor
@@ -389,9 +442,9 @@ void ttn_merge_networks(TreeTensorNetwork* dst,
     dst->output_dim = merged_rows;
 }
 
-void ttn_split_network(const TreeTensorNetwork* network,
-                      TreeTensorNetwork** left,
-                      TreeTensorNetwork** right) {
+void ttn_split_network(const TTN_BinaryNode* network,
+                      TTN_BinaryNode** left,
+                      TTN_BinaryNode** right) {
     if (!network || !left || !right) return;
     
     size_t mid_col = network->input_dim / 2;
@@ -428,7 +481,7 @@ void ttn_split_network(const TreeTensorNetwork* network,
     (*right)->config = network->config;
 }
 
-bool ttn_is_valid(const TreeTensorNetwork* network) {
+bool ttn_is_valid(const TTN_BinaryNode* network) {
     if (!network) return false;
     
     // Check dimensions
@@ -449,7 +502,7 @@ bool ttn_is_valid(const TreeTensorNetwork* network) {
     return true;
 }
 
-void ttn_randomize_parameters(TreeTensorNetwork* network) {
+void ttn_randomize_parameters(TTN_BinaryNode* network) {
     if (!network) return;
     
     // Randomize tensor if present
@@ -467,7 +520,7 @@ void ttn_randomize_parameters(TreeTensorNetwork* network) {
     if (network->right) ttn_randomize_parameters(network->right);
 }
 
-void ttn_zero_grad(TreeTensorNetwork* network) {
+void ttn_zero_grad(TTN_BinaryNode* network) {
     if (!network) return;
 
     // Zero gradients in tensor
@@ -500,7 +553,7 @@ const char* ttn_error_string(TTNError error) {
     }
 }
 
-void ttn_set_config(TreeTensorNetwork* network,
+void ttn_set_config(TTN_BinaryNode* network,
                    const TTNConfig* config) {
     if (!network || !config) return;
     
@@ -511,7 +564,7 @@ void ttn_set_config(TreeTensorNetwork* network,
     if (network->right) ttn_set_config(network->right, config);
 }
 
-void ttn_get_config(const TreeTensorNetwork* network,
+void ttn_get_config(const TTN_BinaryNode* network,
                    TTNConfig* config) {
     if (!network || !config) return;
     
@@ -519,21 +572,21 @@ void ttn_get_config(const TreeTensorNetwork* network,
 }
 
 #ifdef USE_CUDA
-void ttn_to_gpu(TreeTensorNetwork* network) {
+void ttn_to_gpu(TTN_BinaryNode* network) {
     // Implementation for CUDA support
 }
 
-void ttn_to_cpu(TreeTensorNetwork* network) {
+void ttn_to_cpu(TTN_BinaryNode* network) {
     // Implementation for CUDA support
 }
 #endif
 
 #ifdef USE_METAL
-void ttn_to_metal(TreeTensorNetwork* network) {
+void ttn_to_metal(TTN_BinaryNode* network) {
     // Implementation for Metal support
 }
 
-void ttn_to_host(TreeTensorNetwork* network) {
+void ttn_to_host(TTN_BinaryNode* network) {
     // Implementation for Metal support
 }
 #endif

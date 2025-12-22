@@ -1,14 +1,25 @@
 #include "../include/quantum_geometric_core.h"
 #include <math.h>
 #include <complex.h>
-#include <immintrin.h>
+
+// Platform-specific SIMD includes
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    #define QGT_USE_AVX 1
+    #include <immintrin.h>
+#elif defined(__aarch64__) || defined(_M_ARM64) || defined(__arm__) || defined(_M_ARM)
+    #define QGT_USE_NEON 1
+    #if defined(__ARM_NEON) || defined(__ARM_NEON__)
+        #include <arm_neon.h>
+    #endif
+#endif
 
 /**
  * @file advanced_geometry_operations.c
  * @brief Implementation of advanced geometric operations
  */
 
-/* SIMD helper for Kähler operations */
+#if QGT_USE_AVX
+/* SIMD helper for Kähler operations - AVX version */
 static inline void qgt_kahler_multiply_pd(__m256d* result_real, __m256d* result_imag,
                                         const __m256d* omega_real, const __m256d* omega_imag,
                                         const __m256d* metric_real, const __m256d* metric_imag) {
@@ -22,6 +33,37 @@ static inline void qgt_kahler_multiply_pd(__m256d* result_real, __m256d* result_
         _mm256_mul_pd(*omega_imag, *metric_real)
     );
 }
+#elif QGT_USE_NEON
+/* SIMD helper for Kähler operations - NEON version */
+static inline void qgt_kahler_multiply_pd(double* result_real, double* result_imag,
+                                         const double* omega_real, const double* omega_imag,
+                                         const double* metric_real, const double* metric_imag,
+                                         size_t count) {
+    for (size_t i = 0; i + 2 <= count; i += 2) {
+        float64x2_t or_ = vld1q_f64(omega_real + i);
+        float64x2_t oi = vld1q_f64(omega_imag + i);
+        float64x2_t mr = vld1q_f64(metric_real + i);
+        float64x2_t mi = vld1q_f64(metric_imag + i);
+
+        float64x2_t rr = vsubq_f64(vmulq_f64(or_, mr), vmulq_f64(oi, mi));
+        float64x2_t ri = vaddq_f64(vmulq_f64(or_, mi), vmulq_f64(oi, mr));
+
+        vst1q_f64(result_real + i, rr);
+        vst1q_f64(result_imag + i, ri);
+    }
+}
+#else
+/* Scalar fallback for Kähler operations */
+static inline void qgt_kahler_multiply_pd(double* result_real, double* result_imag,
+                                         const double* omega_real, const double* omega_imag,
+                                         const double* metric_real, const double* metric_imag,
+                                         size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        result_real[i] = omega_real[i] * metric_real[i] - omega_imag[i] * metric_imag[i];
+        result_imag[i] = omega_real[i] * metric_imag[i] + omega_imag[i] * metric_real[i];
+    }
+}
+#endif
 
 QGT_PUBLIC QGT_HOT QGT_VECTORIZE qgt_error_t
 evolve_kahler_flow(quantum_geometric_tensor* tensor, uint32_t flags) {

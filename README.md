@@ -30,7 +30,7 @@ A high performance production-capable quantum computing framework in active deve
   ```
   - Theoretical error reduction from O(ε) to O(ε²)
   - Expected coherence time improvements of 10-100x
-  - > 99.9% state fidelity
+  - >99.9% state fidelity
 
 ### 3. Hardware-Optimized Performance (In Development)
 - **Automatic Optimization** (Core algorithms complete, testing in progress)
@@ -43,7 +43,7 @@ A high performance production-capable quantum computing framework in active deve
   quantum_optimize_circuit(circuit, &config);
   ```
   - Expected 30-70% circuit depth reduction
-  - 2-5x gate fidelity improvement
+  - Target: 2-5x gate fidelity improvement
   - Hardware-aware compilation in development
 
 ### 4. Distributed Training (Planned)
@@ -259,6 +259,36 @@ Features:
 2. [Error Protection](docs/QUANTUM_ERROR.md)
 3. [Performance Optimization](docs/PERFORMANCE_OPTIMIZATION.md)
 4. [Distributed Training](docs/advanced/DISTRIBUTED_TRAINING.md)
+
+### API Documentation with Doxygen
+
+The library includes a comprehensive Doxygen-based documentation system that:
+
+1. **Generates API Documentation**: Creates HTML and PDF documentation of the entire codebase
+2. **Identifies Unfinished Code**: Helps track implementation status and find code that needs work
+3. **Visualizes Code Relationships**: Creates diagrams showing dependencies and relationships
+4. **Accelerates Development**: Provides insights to help developers understand the codebase quickly
+
+To generate the documentation:
+
+```bash
+# Generate HTML and PDF documentation
+make docs
+
+# Or use the script for interactive documentation generation
+./doc/generate_docs.sh
+
+# Find unfinished code in the codebase
+make find-unfinished-code
+```
+
+The documentation system includes:
+- Implementation status tracking
+- TODO list prioritization
+- Test coverage tracking
+- Known issues documentation
+
+See [Documentation Guide](doc/README.md) for more details on using the documentation system.
 
 ## Architectural Performance Metrics
 

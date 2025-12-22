@@ -41,6 +41,13 @@ typedef enum {
     QGT_LOSS_SPHERICAL
 } qgt_loss_type_t;
 
+// Embedding types for geometric embeddings
+typedef enum {
+    QGT_EMBED_EUCLIDEAN,     // Euclidean embeddings
+    QGT_EMBED_HYPERBOLIC,    // Hyperbolic (Poincaré ball) embeddings
+    QGT_EMBED_SPHERICAL      // Spherical embeddings
+} qgt_embedding_type_t;
+
 // Optimizer types
 typedef enum {
     OPTIMIZER_SGD,
@@ -98,7 +105,7 @@ typedef struct quantum_geometric_tensor quantum_geometric_tensor;
 // Core tensor operations
 quantum_geometric_tensor* create_quantum_tensor(size_t rows, size_t cols, qgt_memory_type_t mem_type);
 void free_quantum_tensor(quantum_geometric_tensor* tensor);
-void initialize_geometric_embeddings(quantum_geometric_tensor* tensor, qgt_loss_type_t type);
+void initialize_geometric_embeddings(quantum_geometric_tensor* tensor, qgt_embedding_type_t type);
 void initialize_random_state(quantum_geometric_tensor* tensor, unsigned int seed);
 
 // Network operations
