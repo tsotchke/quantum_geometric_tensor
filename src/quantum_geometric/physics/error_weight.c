@@ -224,3 +224,84 @@ static bool validate_weight_parameters(const WeightConfig* config) {
 
     return true;
 }
+
+// Pauli measurement implementations for error weight calculations
+// Renamed to avoid conflict with heavy_hex_surface_code.c and parallel_stabilizer.c
+static bool measure_pauli_x_for_weight(const quantum_state* state, size_t x, size_t y, double* result) {
+    if (!state || !result) {
+        return false;
+    }
+
+    // Get lattice dimensions from state
+    size_t width = state->lattice_width > 0 ? state->lattice_width :
+                   (size_t)sqrt((double)state->num_qubits);
+    size_t idx = y * width + x;
+
+    if (idx >= state->num_qubits || !state->coordinates) {
+        *result = 0.0;
+        return false;
+    }
+
+    // Calculate Pauli X expectation value
+    // <X> = 2 * Re(a* × b) where state = a|0> + b|1>
+    // For single qubit at position idx, extract amplitudes
+    ComplexFloat c = state->coordinates[idx];
+
+    // X measurement gives real part contribution
+    *result = 2.0 * c.real;
+
+    return true;
+}
+
+// Renamed to avoid conflict
+static bool measure_pauli_y_for_weight(const quantum_state* state, size_t x, size_t y, double* result) {
+    if (!state || !result) {
+        return false;
+    }
+
+    // Get lattice dimensions from state
+    size_t width = state->lattice_width > 0 ? state->lattice_width :
+                   (size_t)sqrt((double)state->num_qubits);
+    size_t idx = y * width + x;
+
+    if (idx >= state->num_qubits || !state->coordinates) {
+        *result = 0.0;
+        return false;
+    }
+
+    // Calculate Pauli Y expectation value
+    // <Y> = 2 * Im(a* × b) where state = a|0> + b|1>
+    ComplexFloat c = state->coordinates[idx];
+
+    // Y measurement gives imaginary part contribution
+    *result = 2.0 * c.imag;
+
+    return true;
+}
+
+// Renamed to avoid conflict
+static bool measure_pauli_z_for_weight(const quantum_state* state, size_t x, size_t y, double* result) {
+    if (!state || !result) {
+        return false;
+    }
+
+    // Get lattice dimensions from state
+    size_t width = state->lattice_width > 0 ? state->lattice_width :
+                   (size_t)sqrt((double)state->num_qubits);
+    size_t idx = y * width + x;
+
+    if (idx >= state->num_qubits || !state->coordinates) {
+        *result = 0.0;
+        return false;
+    }
+
+    // Calculate Pauli Z expectation value
+    // <Z> = |a|^2 - |b|^2 where state = a|0> + b|1>
+    ComplexFloat c = state->coordinates[idx];
+    double magnitude_sq = c.real * c.real + c.imag * c.imag;
+
+    // Z measurement gives probability difference
+    *result = 1.0 - 2.0 * magnitude_sq;
+
+    return true;
+}

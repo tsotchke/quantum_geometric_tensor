@@ -63,7 +63,7 @@ void cleanup_error_correlation(void) {
 }
 
 ErrorCorrelation analyze_error_correlations(const MatchingGraph* graph,
-                                          const quantum_state* state) {
+                                          const quantum_state_t* state) {
     ErrorCorrelation correlation = {0};
     if (!graph || !state || !correlation_state.initialized) {
         return correlation;
@@ -164,7 +164,7 @@ ErrorCorrelation analyze_error_correlations(const MatchingGraph* graph,
                     temporal_count++;
                     
                     // Trigger fast feedback if needed
-                    if (should_trigger_feedback(correlation)) {
+                    if (should_trigger_correlation_feedback(correlation)) {
                         trigger_correlation_feedback(i, j, correlation);
                     }
                 }

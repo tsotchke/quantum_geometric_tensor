@@ -4,10 +4,10 @@
 
 // Platform-specific includes
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-#define QGTL_ARCH_X86
+#define QGT_ARCH_X86
 #include <cpuid.h>
 #elif defined(__aarch64__) || defined(_M_ARM64)
-#define QGTL_ARCH_ARM64
+#define QGT_ARCH_ARM64
 #ifdef __APPLE__
 #include <sys/sysctl.h>
 #endif
@@ -21,7 +21,7 @@
 // x86 Implementation
 // ============================================================================
 
-#ifdef QGTL_ARCH_X86
+#ifdef QGT_ARCH_X86
 
 void get_cpu_vendor(char* vendor) {
     unsigned int eax, ebx, ecx, edx;
@@ -166,13 +166,13 @@ static bool os_supports_feature(unsigned int feature) {
     }
 }
 
-#endif // QGTL_ARCH_X86
+#endif // QGT_ARCH_X86
 
 // ============================================================================
 // ARM64 Implementation
 // ============================================================================
 
-#ifdef QGTL_ARCH_ARM64
+#ifdef QGT_ARCH_ARM64
 
 void get_cpu_vendor(char* vendor) {
 #ifdef __APPLE__
@@ -308,13 +308,13 @@ static bool os_supports_feature(unsigned int feature) {
     return true;
 }
 
-#endif // QGTL_ARCH_ARM64
+#endif // QGT_ARCH_ARM64
 
 // ============================================================================
 // Fallback Implementation (for unknown architectures)
 // ============================================================================
 
-#if !defined(QGTL_ARCH_X86) && !defined(QGTL_ARCH_ARM64)
+#if !defined(QGT_ARCH_X86) && !defined(QGT_ARCH_ARM64)
 
 void get_cpu_vendor(char* vendor) {
     strcpy(vendor, "Unknown");
@@ -343,3 +343,57 @@ static bool os_supports_feature(unsigned int feature) {
 }
 
 #endif
+
+// ============================================================================
+// Common Implementation (for all architectures)
+// ============================================================================
+
+void get_cpu_features(unsigned int* feature_flags, bool* has_fma, bool* has_avx,
+                     bool* has_avx2, bool* has_avx512, bool* has_neon,
+                     bool* has_sve, bool* has_amx) {
+    // Initialize all to safe defaults
+    if (feature_flags) *feature_flags = 0;
+    if (has_fma) *has_fma = false;
+    if (has_avx) *has_avx = false;
+    if (has_avx2) *has_avx2 = false;
+    if (has_avx512) *has_avx512 = false;
+    if (has_neon) *has_neon = false;
+    if (has_sve) *has_sve = false;
+    if (has_amx) *has_amx = false;
+
+#ifdef QGT_ARCH_X86
+    // Detect x86 features
+    if (has_fma && cpu_has_feature(bit_FMA) && os_supports_feature(bit_FMA)) {
+        *has_fma = true;
+        if (feature_flags) *feature_flags |= (1 << 9);  // CAP_FMA
+    }
+    if (has_avx && cpu_has_feature(bit_AVX) && os_supports_feature(bit_AVX)) {
+        *has_avx = true;
+        if (feature_flags) *feature_flags |= (1 << 10);  // CAP_AVX
+    }
+    if (has_avx2 && cpu_has_feature(bit_AVX2) && os_supports_feature(bit_AVX)) {
+        *has_avx2 = true;
+        if (feature_flags) *feature_flags |= (1 << 11);  // CAP_AVX2
+    }
+    if (has_avx512 && cpu_has_feature(bit_AVX512F) && os_supports_feature(bit_AVX512F)) {
+        *has_avx512 = true;
+        if (feature_flags) *feature_flags |= (1 << 12);  // CAP_AVX512
+    }
+    if (has_amx && cpu_has_feature(bit_AMX_TILE) && os_supports_feature(bit_AMX_TILE)) {
+        *has_amx = true;
+        if (feature_flags) *feature_flags |= (1 << 15);  // CAP_AMX
+    }
+#endif
+
+#ifdef QGT_ARCH_ARM64
+    // Detect ARM features
+    if (has_neon && cpu_has_feature(CPU_FEATURE_NEON)) {
+        *has_neon = true;
+        if (feature_flags) *feature_flags |= (1 << 13);  // CAP_NEON
+    }
+    if (has_sve && cpu_has_feature(CPU_FEATURE_SVE)) {
+        *has_sve = true;
+        if (feature_flags) *feature_flags |= (1 << 14);  // CAP_SVE
+    }
+#endif
+}

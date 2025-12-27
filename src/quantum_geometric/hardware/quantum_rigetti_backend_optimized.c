@@ -16,6 +16,7 @@
 #include "quantum_geometric/hardware/quantum_backend_types.h"
 #include "quantum_geometric/hardware/hardware_capabilities.h"
 #include "quantum_geometric/hardware/quantum_rigetti_api.h"
+#include "quantum_geometric/hardware/quantum_rigetti_api.h"
 
 // Forward declare RigettiConfig as struct (defined in quantum_backend_types.h)
 typedef struct RigettiConfig RigettiConfig;
@@ -749,9 +750,10 @@ void cleanup_rigetti_backend(RigettiState* state) {
     }
 }
 
-bool execute_circuit(RigettiState* state,
-                    quantum_circuit* circuit,
-                    quantum_result* result) {
+// Renamed to avoid conflict with other backend implementations
+bool execute_rigetti_circuit(RigettiState* state,
+                             quantum_circuit* circuit,
+                             quantum_result* result) {
     if (!state || !state->initialized || !circuit || !result) {
         return false;
     }
@@ -811,7 +813,45 @@ static bool initialize_backend(RigettiState* state,
 
 static void cleanup_backend(RigettiState* state) {
     if (!state) return;
-    // Additional cleanup if needed
+
+    // Securely zero the API key before freeing
+    if (state->config.api_key) {
+        size_t key_len = strlen(state->config.api_key);
+        memset(state->config.api_key, 0, key_len);
+        free(state->config.api_key);
+        state->config.api_key = NULL;
+    }
+
+    // Free other config strings
+    free(state->config.url);
+    state->config.url = NULL;
+    free(state->config.backend_name);
+    state->config.backend_name = NULL;
+    free(state->config.noise_model);
+    state->config.noise_model = NULL;
+
+    // Free calibration and error data
+    free(state->calibration_data);
+    state->calibration_data = NULL;
+    free(state->error_rates);
+    state->error_rates = NULL;
+    free(state->readout_errors);
+    state->readout_errors = NULL;
+    free(state->qubit_availability);
+    state->qubit_availability = NULL;
+    free(state->measurement_order);
+    state->measurement_order = NULL;
+
+    // Free coupling map
+    if (state->coupling_map) {
+        for (size_t i = 0; i < state->num_qubits; i++) {
+            free(state->coupling_map[i]);
+        }
+        free(state->coupling_map);
+        state->coupling_map = NULL;
+    }
+
+    state->initialized = false;
 }
 
 static bool optimize_circuit(RigettiState* state,

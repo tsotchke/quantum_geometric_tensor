@@ -7,6 +7,8 @@
 #include "quantum_geometric/core/quantum_state.h"
 #include "quantum_geometric/core/quantum_geometric_constants.h"
 #include "quantum_geometric/core/memory_pool.h"
+#include "quantum_geometric/core/hierarchical_matrix.h"
+#include "quantum_geometric/physics/stabilizer_types.h"
 #include <stdbool.h>
 #include <complex.h>
 #include <pthread.h>
@@ -89,6 +91,31 @@ void quantum_wait(const quantum_state_t* state, double duration);
 void apply_composite_x_pulse(const quantum_state_t* state, size_t x, size_t y);
 double get_readout_error_rate(size_t x, size_t y);
 double get_gate_error_rate(size_t x, size_t y);
+
+// Pauli measurement functions with confidence tracking
+bool measure_pauli_z_with_confidence(const quantum_state_t* state,
+                                    size_t x,
+                                    size_t y,
+                                    double* value,
+                                    double* confidence);
+
+bool measure_pauli_x_with_confidence(const quantum_state_t* state,
+                                    size_t x,
+                                    size_t y,
+                                    double* value,
+                                    double* confidence);
+
+// Stabilizer measurement interface for stabilizer_measurement.c
+bool init_stabilizer_measurement(StabilizerState* state,
+                                const StabilizerConfig* config);
+void cleanup_stabilizer_measurement(StabilizerState* state);
+bool measure_stabilizers(StabilizerState* state,
+                        quantum_state_t* qstate);
+const double* get_stabilizer_measurements(const StabilizerState* state,
+                                         StabilizerType type,
+                                         size_t* size);
+double get_stabilizer_error_rate(const StabilizerState* state);
+const double* get_last_syndrome(const StabilizerState* state, size_t* size);
 
 // Hierarchical matrix operations
 void update_hmatrix_quantum_state(HierarchicalMatrix* mat);

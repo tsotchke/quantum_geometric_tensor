@@ -9,7 +9,7 @@
 #include <string.h>
 #include <math.h>
 
-#ifdef QGTL_HAS_MPI
+#ifdef QGT_HAS_MPI
 #include <mpi.h>
 #endif
 
@@ -73,17 +73,18 @@ static struct {
     ErrorTrackingStats* stats;
     ErrorMitigationConfig config;
     HardwareErrorRates* rates;
-    HardwareOptimizations* hw_opts;
+    MitigationHardwareContext* hw_opts;
     bool initialized;
     pthread_mutex_t mutex;
 } error_tracking_state = {0};
 
 // ============================================================================
-// Hardware Optimizations
+// Hardware Optimizations (local versions for error mitigation)
 // ============================================================================
 
-HardwareOptimizations* init_hardware_optimizations(const char* backend_type) {
-    HardwareOptimizations* hw_opts = calloc(1, sizeof(HardwareOptimizations));
+// Made static to avoid conflict with quantum_hardware_optimization.c
+static MitigationHardwareContext* local_init_hardware_optimizations(const char* backend_type) {
+    MitigationHardwareContext* hw_opts = calloc(1, sizeof(MitigationHardwareContext));
     if (!hw_opts) return NULL;
 
     // Determine backend type
@@ -108,22 +109,24 @@ HardwareOptimizations* init_hardware_optimizations(const char* backend_type) {
     return hw_opts;
 }
 
-void cleanup_hardware_optimizations(HardwareOptimizations* hw_opts) {
+// Made static to avoid conflict with quantum_hardware_optimization.c
+static void local_cleanup_hardware_optimizations(MitigationHardwareContext* hw_opts) {
     if (!hw_opts) return;
     free(hw_opts->backend_specific);
     free(hw_opts);
 }
 
 // ============================================================================
-// Distributed Error Tracking
+// Distributed Error Tracking (local versions for error mitigation)
 // ============================================================================
 
-int init_distributed_error_tracking(const char* backend_type,
-                                    const DistributedConfig* config) {
+// Made static to avoid conflict with quantum_error_communication.c
+static int local_init_distributed_error_tracking(const char* backend_type,
+                                                  const DistributedConfig* config) {
     (void)backend_type;
     (void)config;
 
-#ifdef QGTL_HAS_MPI
+#ifdef QGT_HAS_MPI
     int initialized;
     MPI_Initialized(&initialized);
     if (!initialized) {
@@ -135,14 +138,16 @@ int init_distributed_error_tracking(const char* backend_type,
 #endif
 }
 
-void cleanup_distributed_error_tracking(void) {
+// Made static to avoid conflict with quantum_error_communication.c
+static void local_cleanup_distributed_error_tracking(void) {
     // No-op - MPI cleanup handled elsewhere
 }
 
-void broadcast_error_stats(const ErrorTrackingStats* stats) {
+// Made static to avoid conflict with quantum_error_communication.c
+static void local_broadcast_error_stats(const ErrorTrackingStats* stats) {
     if (!stats) return;
 
-#ifdef QGTL_HAS_MPI
+#ifdef QGT_HAS_MPI
     int initialized;
     MPI_Initialized(&initialized);
     if (initialized) {
@@ -167,7 +172,7 @@ void broadcast_error_stats(const ErrorTrackingStats* stats) {
 void broadcast_to_nodes(const void* msg, size_t size) {
     if (!msg || size == 0) return;
 
-#ifdef QGTL_HAS_MPI
+#ifdef QGT_HAS_MPI
     int initialized;
     MPI_Initialized(&initialized);
     if (initialized) {
@@ -185,13 +190,14 @@ void broadcast_to_nodes(const void* msg, size_t size) {
 // Initialization and Cleanup
 // ============================================================================
 
-ErrorMitigationConfig* init_error_mitigation(
+// Renamed to avoid conflict with stabilizer_error_mitigation.c
+ErrorMitigationConfig* init_global_error_mitigation(
     const char* backend_type,
     size_t num_qubits,
     bool distributed_mode) {
 
     // Initialize hardware optimizations
-    HardwareOptimizations* hw_opts = init_hardware_optimizations(backend_type);
+    MitigationHardwareContext* hw_opts = local_init_hardware_optimizations(backend_type);
     if (!hw_opts) {
         return NULL;
     }
@@ -210,8 +216,8 @@ ErrorMitigationConfig* init_error_mitigation(
                 .error_threshold = 1e-6,
                 .min_responses = num_qubits / 2
             };
-            if (init_distributed_error_tracking(backend_type, &dist_config) != 0) {
-                cleanup_hardware_optimizations(hw_opts);
+            if (local_init_distributed_error_tracking(backend_type, &dist_config) != 0) {
+                local_cleanup_hardware_optimizations(hw_opts);
                 return NULL;
             }
         }
@@ -272,13 +278,13 @@ void cleanup_error_mitigation(ErrorMitigationConfig* config) {
 
     // Clean up hardware optimizations
     if (error_tracking_state.hw_opts) {
-        cleanup_hardware_optimizations(error_tracking_state.hw_opts);
+        local_cleanup_hardware_optimizations(error_tracking_state.hw_opts);
         error_tracking_state.hw_opts = NULL;
     }
 
     // Clean up distributed tracking if enabled
     if (config->use_distributed_tracking) {
-        cleanup_distributed_error_tracking();
+        local_cleanup_distributed_error_tracking();
     }
 
     error_tracking_state.initialized = false;
@@ -737,7 +743,7 @@ void update_error_tracking(
 
     // Broadcast if distributed
     if (config->use_distributed_tracking) {
-        broadcast_error_stats(stats);
+        local_broadcast_error_stats(stats);
     }
 
     pthread_mutex_unlock(&error_tracking_state.mutex);

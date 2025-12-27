@@ -1461,10 +1461,8 @@ bool optimize_contraction_order(tensor_network_t* network,
             size_t best_cost = SIZE_MAX;
             size_t* best_order = calloc(n - 1, sizeof(size_t) * 2);  // Pairs of indices
 
-            // Current state
+            // Current state tracking
             size_t* current_order = calloc(n - 1, sizeof(size_t) * 2);
-            size_t current_cost = 0;
-            size_t depth = 0;
 
             // Available tensors (represented as a bitmask)
             size_t available = ((size_t)1 << n) - 1;
@@ -1596,4 +1594,255 @@ bool optimize_contraction_order(tensor_network_t* network,
             set_error(network, TENSOR_NETWORK_ERROR_INVALID_ARGUMENT);
             return false;
     }
+}
+
+// =============================================================================
+// Quantum Geometric Tensor Network API
+// =============================================================================
+
+/**
+ * @brief Add a tensor node to the network using the qg_ API
+ *
+ * This function provides the standardized quantum geometric tensor library
+ * interface for adding nodes to a tensor network. It wraps the internal
+ * add_tensor_node function with proper tensor_t handling.
+ *
+ * @param network Target tensor network
+ * @param tensor Tensor data to add as a node
+ * @param edges Array of edge indices for connections (can be NULL)
+ * @return true on success, false on failure
+ */
+bool qg_tensor_network_add_node(tensor_network_t* network,
+                               const tensor_t* tensor,
+                               const size_t* edges) {
+    if (!network || !tensor) {
+        if (network) {
+            set_error(network, TENSOR_NETWORK_ERROR_INVALID_ARGUMENT);
+        }
+        return false;
+    }
+
+    // Validate tensor has data
+    if (!tensor->data || tensor->rank == 0) {
+        set_error(network, TENSOR_NETWORK_ERROR_INVALID_ARGUMENT);
+        return false;
+    }
+
+    // Resize nodes array if needed
+    if (network->num_nodes >= network->capacity) {
+        size_t new_capacity = network->capacity * 2;
+        if (new_capacity == 0) new_capacity = 8;
+
+        tensor_node_t** new_nodes = realloc(network->nodes,
+            new_capacity * sizeof(tensor_node_t*));
+        if (!new_nodes) {
+            set_error(network, TENSOR_NETWORK_ERROR_MEMORY);
+            return false;
+        }
+        network->nodes = new_nodes;
+        network->capacity = new_capacity;
+    }
+
+    // Create new tensor node
+    tensor_node_t* node = aligned_alloc(64, sizeof(tensor_node_t));
+    if (!node) {
+        set_error(network, TENSOR_NETWORK_ERROR_MEMORY);
+        return false;
+    }
+    memset(node, 0, sizeof(tensor_node_t));
+
+    // Calculate total size from tensor dimensions
+    size_t total_size = 1;
+    for (size_t i = 0; i < tensor->rank; i++) {
+        if (tensor->dimensions[i] == 0) {
+            free(node);
+            set_error(network, TENSOR_NETWORK_ERROR_INVALID_ARGUMENT);
+            return false;
+        }
+        total_size *= tensor->dimensions[i];
+    }
+
+    // Allocate and copy tensor data
+    node->data = aligned_alloc(64, total_size * sizeof(ComplexFloat));
+    if (!node->data) {
+        free(node);
+        set_error(network, TENSOR_NETWORK_ERROR_MEMORY);
+        return false;
+    }
+
+    // Copy tensor data - tensor_t uses ComplexFloat* data
+    memcpy(node->data, tensor->data, total_size * sizeof(ComplexFloat));
+
+    // Allocate and copy dimensions
+    node->dimensions = aligned_alloc(64, tensor->rank * sizeof(size_t));
+    if (!node->dimensions) {
+        free(node->data);
+        free(node);
+        set_error(network, TENSOR_NETWORK_ERROR_MEMORY);
+        return false;
+    }
+    memcpy(node->dimensions, tensor->dimensions, tensor->rank * sizeof(size_t));
+
+    node->rank = tensor->rank;
+    node->num_dimensions = tensor->rank;
+    node->total_size = total_size;
+
+    // Allocate connection arrays with capacity for all dimensions
+    size_t max_connections = tensor->rank * 2;  // Each dimension can connect
+    node->connected_nodes = aligned_alloc(64, max_connections * sizeof(size_t));
+    node->connected_dims = aligned_alloc(64, max_connections * sizeof(size_t));
+    if (!node->connected_nodes || !node->connected_dims) {
+        free(node->connected_nodes);
+        free(node->connected_dims);
+        free(node->dimensions);
+        free(node->data);
+        free(node);
+        set_error(network, TENSOR_NETWORK_ERROR_MEMORY);
+        return false;
+    }
+    memset(node->connected_nodes, 0, max_connections * sizeof(size_t));
+    memset(node->connected_dims, 0, max_connections * sizeof(size_t));
+    node->num_connections = 0;
+
+    // Process edge specifications if provided
+    if (edges) {
+        for (size_t i = 0; i < tensor->rank && edges[i] != (size_t)-1; i++) {
+            // Edge values encode target node and dimension
+            // Format: edges[i] = target_node_id (or -1 for unconnected)
+            if (edges[i] < network->num_nodes) {
+                node->connected_nodes[node->num_connections] = edges[i];
+                node->connected_dims[node->num_connections] = i;
+                node->num_connections++;
+            }
+        }
+    }
+
+    // Set node metadata
+    node->id = network->next_id++;
+    node->is_valid = true;
+
+    // Add node to network
+    network->nodes[network->num_nodes++] = node;
+    network->optimized = false;
+    network->is_optimized = false;
+
+    return true;
+}
+
+/**
+ * @brief Connect two nodes in the tensor network
+ *
+ * Creates a bond between two tensor nodes by specifying which dimensions
+ * (edges) should be contracted. The dimensions must have matching sizes
+ * for the connection to be valid.
+ *
+ * @param network Tensor network containing the nodes
+ * @param node1_idx Index of the first node
+ * @param node2_idx Index of the second node
+ * @param edge1_idx Dimension index of first node to connect
+ * @param edge2_idx Dimension index of second node to connect
+ * @return true on success, false on failure
+ */
+bool qg_tensor_network_connect_nodes(tensor_network_t* network,
+                                    size_t node1_idx,
+                                    size_t node2_idx,
+                                    size_t edge1_idx,
+                                    size_t edge2_idx) {
+    if (!network) {
+        return false;
+    }
+
+    // Validate node indices
+    if (node1_idx >= network->num_nodes || node2_idx >= network->num_nodes) {
+        set_error(network, TENSOR_NETWORK_ERROR_INVALID_ARGUMENT);
+        return false;
+    }
+
+    // Get the nodes
+    tensor_node_t* node1 = network->nodes[node1_idx];
+    tensor_node_t* node2 = network->nodes[node2_idx];
+
+    if (!node1 || !node2 || !node1->is_valid || !node2->is_valid) {
+        set_error(network, TENSOR_NETWORK_ERROR_INVALID_ARGUMENT);
+        return false;
+    }
+
+    // Validate edge indices
+    if (edge1_idx >= node1->num_dimensions || edge2_idx >= node2->num_dimensions) {
+        set_error(network, TENSOR_NETWORK_ERROR_INVALID_ARGUMENT);
+        return false;
+    }
+
+    // Validate dimension sizes match (required for tensor contraction)
+    if (node1->dimensions[edge1_idx] != node2->dimensions[edge2_idx]) {
+        set_error(network, TENSOR_NETWORK_ERROR_DIMENSION_MISMATCH);
+        return false;
+    }
+
+    // Check if connection already exists
+    for (size_t i = 0; i < node1->num_connections; i++) {
+        if (node1->connected_nodes[i] == node2->id &&
+            node1->connected_dims[i] == edge1_idx) {
+            // Connection already exists
+            return true;
+        }
+    }
+
+    // Ensure capacity for new connections
+    size_t max_conns = node1->num_dimensions * 2;
+    if (node1->num_connections >= max_conns) {
+        size_t* new_nodes = realloc(node1->connected_nodes,
+                                    max_conns * 2 * sizeof(size_t));
+        size_t* new_dims = realloc(node1->connected_dims,
+                                   max_conns * 2 * sizeof(size_t));
+        if (!new_nodes || !new_dims) {
+            set_error(network, TENSOR_NETWORK_ERROR_MEMORY);
+            return false;
+        }
+        node1->connected_nodes = new_nodes;
+        node1->connected_dims = new_dims;
+    }
+
+    if (node2->num_connections >= max_conns) {
+        size_t* new_nodes = realloc(node2->connected_nodes,
+                                    max_conns * 2 * sizeof(size_t));
+        size_t* new_dims = realloc(node2->connected_dims,
+                                   max_conns * 2 * sizeof(size_t));
+        if (!new_nodes || !new_dims) {
+            set_error(network, TENSOR_NETWORK_ERROR_MEMORY);
+            return false;
+        }
+        node2->connected_nodes = new_nodes;
+        node2->connected_dims = new_dims;
+    }
+
+    // Add bidirectional connection
+    // Node1 -> Node2
+    node1->connected_nodes[node1->num_connections] = node2->id;
+    node1->connected_dims[node1->num_connections] = edge1_idx;
+    node1->num_connections++;
+
+    // Node2 -> Node1
+    node2->connected_nodes[node2->num_connections] = node1->id;
+    node2->connected_dims[node2->num_connections] = edge2_idx;
+    node2->num_connections++;
+
+    // Update network connection tracking if available
+    if (network->connections) {
+        // Expand connections array if needed
+        size_t* new_conns = realloc(network->connections,
+            (network->num_connections + 2) * sizeof(size_t));
+        if (new_conns) {
+            network->connections = new_conns;
+            network->connections[network->num_connections * 2] = node1->id;
+            network->connections[network->num_connections * 2 + 1] = node2->id;
+            network->num_connections++;
+        }
+    }
+
+    // Mark network as needing re-optimization
+    network->optimized = false;
+    network->is_optimized = false;
+
+    return true;
 }

@@ -71,10 +71,12 @@ typedef struct {
     quantum_pipeline_t* pipeline;  // Reference to active pipeline
 } distributed_state_t;
 
-// Forward declaration of wrapper functions
+// Forward declarations for wrapper functions (implemented at end of file)
 workload_manager_t* workload_manager_create(void);
 void workload_manager_destroy(workload_manager_t* manager);
 int workload_manager_configure(workload_manager_t* manager, const workload_config_t* config);
+gradient_optimizer_t* gradient_optimizer_create(void);
+void gradient_optimizer_destroy(gradient_optimizer_t* optimizer);
 communication_optimizer_t* communication_optimizer_create(void);
 void communication_optimizer_destroy(communication_optimizer_t* optimizer);
 
@@ -212,7 +214,7 @@ int distributed_manager_prepare_training(distributed_manager_t* manager,
     }
     
     // Allocate gradient buffer
-    size_t model_size = quantum_pipeline_get_parameter_count(pipeline);
+    size_t model_size = dist_pipeline_get_parameter_count(pipeline);
     state->buffer_size = model_size * sizeof(double);
     state->gradient_buffer = malloc(state->buffer_size);
     if (!state->gradient_buffer) {
@@ -235,15 +237,15 @@ int distributed_manager_train_step(distributed_manager_t* manager,
     
     // Update learning rate
     float lr = distributed_manager_update_learning_rate(manager, step);
-    quantum_pipeline_set_learning_rate(pipeline, lr);
-    
+    dist_pipeline_set_learning_rate(pipeline, lr);
+
     // Forward pass
-    if (quantum_pipeline_forward(pipeline, batch_data, batch_size) != 0) {
+    if (dist_pipeline_forward(pipeline, batch_data, batch_size) != 0) {
         return -1;
     }
-    
+
     // Backward pass
-    if (quantum_pipeline_backward(pipeline) != 0) {
+    if (dist_pipeline_backward(pipeline) != 0) {
         return -1;
     }
     
@@ -253,12 +255,12 @@ int distributed_manager_train_step(distributed_manager_t* manager,
     }
     
     // Update parameters
-    if (quantum_pipeline_update_parameters(pipeline) != 0) {
+    if (dist_pipeline_update_parameters(pipeline) != 0) {
         return -1;
     }
-    
+
     // Update metrics
-    quantum_pipeline_get_metrics(pipeline, metrics);
+    dist_pipeline_get_metrics(pipeline, metrics);
     
     // Save checkpoint if needed
     if (step % manager->config.save_interval == 0) {
@@ -277,8 +279,8 @@ int distributed_manager_sync_gradients(distributed_manager_t* manager,
     distributed_state_t* state = manager->internal_state;
     
     // Get gradients from pipeline
-    if (quantum_pipeline_get_gradients(pipeline, state->gradient_buffer,
-                                     state->buffer_size) != 0) {
+    if (dist_pipeline_get_gradients(pipeline, state->gradient_buffer,
+                                   state->buffer_size) != 0) {
         return -1;
     }
     
@@ -295,8 +297,8 @@ int distributed_manager_sync_gradients(distributed_manager_t* manager,
     }
     
     // Set scaled gradients back to pipeline
-    if (quantum_pipeline_set_gradients(pipeline, state->gradient_buffer,
-                                     state->buffer_size) != 0) {
+    if (dist_pipeline_set_gradients(pipeline, state->gradient_buffer,
+                                   state->buffer_size) != 0) {
         return -1;
     }
     
@@ -319,7 +321,7 @@ int distributed_manager_save_checkpoint(distributed_manager_t* manager,
              manager->config.checkpoint_dir, step);
     
     // Save model state
-    if (quantum_pipeline_save_state(pipeline, checkpoint_path) != 0) {
+    if (dist_pipeline_save_state(pipeline, checkpoint_path) != 0) {
         return -1;
     }
     
@@ -342,7 +344,7 @@ int distributed_manager_load_checkpoint(distributed_manager_t* manager,
              manager->config.checkpoint_dir, step);
     
     // Load model state
-    if (quantum_pipeline_load_state(pipeline, checkpoint_path) != 0) {
+    if (dist_pipeline_load_state(pipeline, checkpoint_path) != 0) {
         return -1;
     }
     
@@ -352,7 +354,7 @@ int distributed_manager_load_checkpoint(distributed_manager_t* manager,
     size_t buffer_size = 0;
     
     if (distributed_manager_is_primary(manager)) {
-        quantum_pipeline_serialize(pipeline, &model_buffer, &buffer_size);
+        dist_pipeline_serialize(pipeline, &model_buffer, &buffer_size);
     }
     
     // Broadcast buffer size
@@ -366,7 +368,7 @@ int distributed_manager_load_checkpoint(distributed_manager_t* manager,
     MPI_Bcast(model_buffer, buffer_size, MPI_BYTE, 0, state->world_comm);
     
     if (!distributed_manager_is_primary(manager)) {
-        quantum_pipeline_deserialize(pipeline, model_buffer, buffer_size);
+        dist_pipeline_deserialize(pipeline, model_buffer, buffer_size);
     }
     
     free(model_buffer);
@@ -418,6 +420,67 @@ float distributed_manager_update_learning_rate(distributed_manager_t* manager,
     
     return lr;
 }
+
+// ============================================================================
+// Wrapper function implementations for component managers
+// ============================================================================
+
+// Type alias for WorkloadManager as workload_manager_t
+typedef WorkloadManager workload_manager_t_impl;
+
+workload_manager_t* workload_manager_create(void) {
+    return (workload_manager_t*)init_workload_manager();
+}
+
+void workload_manager_destroy(workload_manager_t* manager) {
+    if (manager) {
+        cleanup_workload_manager((WorkloadManager*)manager);
+    }
+}
+
+int workload_manager_configure(workload_manager_t* manager, const workload_config_t* config) {
+    if (!manager || !config) return -1;
+
+    WorkloadManager* wm = (WorkloadManager*)manager;
+    wm->rank = config->local_rank;
+    wm->world_size = config->world_size;
+
+    // Additional configuration could be applied here
+    // For now, basic configuration is sufficient
+    return 0;
+}
+
+// gradient_optimizer_create() - Canonical implementation in gradient_optimizer.c
+// (removed: this was a simple wrapper, use init_gradient_optimizer directly)
+
+// gradient_optimizer_destroy() - Canonical implementation in gradient_optimizer.c
+// (removed: this was a simple wrapper, use cleanup_gradient_optimizer directly)
+
+communication_optimizer_t* communication_optimizer_create(void) {
+    // Create with default configuration
+    CommConfig default_config = {
+        .buffer_size = 64 * 1024 * 1024,  // 64MB
+        .min_message_size = 4096,
+        .max_concurrent = 4,
+        .enable_compression = false,
+        .enable_topology_aware = true,
+        .use_pinned_memory = false,
+        .numa_aware = true,
+        .topology_aware = true,
+        .numa_policy = 0
+    };
+    return (communication_optimizer_t*)init_communication_optimizer(&default_config);
+}
+
+void communication_optimizer_destroy(communication_optimizer_t* optimizer) {
+    if (optimizer) {
+        cleanup_communication_optimizer((CommunicationOptimizer*)optimizer);
+    }
+}
+
+// ============================================================================
+// Failure handling
+// ============================================================================
 
 int distributed_manager_handle_failure(distributed_manager_t* manager,
                                      size_t failed_rank) {
@@ -539,3 +602,5 @@ int distributed_manager_handle_failure(distributed_manager_t* manager,
     // No failure detected
     return 0;
 }
+
+

@@ -121,6 +121,39 @@ bool get_weight_statistics(const WeightState* state, WeightStatistics* stats);
  */
 const double* get_weight_map(const WeightState* state, size_t* size);
 
+/**
+ * @brief Measure Pauli X expectation at a lattice position
+ *
+ * @param state Quantum state to measure
+ * @param x X coordinate in the lattice
+ * @param y Y coordinate in the lattice
+ * @param result Output for measurement result
+ * @return true on success, false on failure
+ */
+bool measure_pauli_x(const quantum_state* state, size_t x, size_t y, double* result);
+
+/**
+ * @brief Measure Pauli Y expectation at a lattice position
+ *
+ * @param state Quantum state to measure
+ * @param x X coordinate in the lattice
+ * @param y Y coordinate in the lattice
+ * @param result Output for measurement result
+ * @return true on success, false on failure
+ */
+bool measure_pauli_y(const quantum_state* state, size_t x, size_t y, double* result);
+
+/**
+ * @brief Measure Pauli Z expectation at a lattice position
+ *
+ * @param state Quantum state to measure
+ * @param x X coordinate in the lattice
+ * @param y Y coordinate in the lattice
+ * @param result Output for measurement result
+ * @return true on success, false on failure
+ */
+bool measure_pauli_z(const quantum_state* state, size_t x, size_t y, double* result);
+
 #ifdef __cplusplus
 }
 #endif

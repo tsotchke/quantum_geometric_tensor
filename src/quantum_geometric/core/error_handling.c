@@ -26,59 +26,8 @@ static qgt_error_t validate_system_state(const quantum_system_t* system) {
     return QGT_SUCCESS;
 }
 
-quantum_system_t* quantum_system_create(size_t num_qubits, int flags) {
-    // Parameter validation
-    if (num_qubits == 0 || num_qubits > QGT_MAX_DIMENSIONS) {
-        return NULL;
-    }
-    
-    // Allocate system
-    quantum_system_t* system = (quantum_system_t*)malloc(sizeof(quantum_system_t));
-    if (!system) {
-        return NULL;
-    }
-    
-    // Initialize with default values
-    system->num_qubits = num_qubits;
-    system->num_classical_bits = 0;
-    system->flags = flags;
-    system->device_type = 0;
-    system->device_data = NULL;
-    system->state = NULL;
-    system->operations = NULL;
-    system->hardware = NULL;
-    
-    // Validate initial state
-    if (validate_system_state(system) != QGT_SUCCESS) {
-        free(system);
-        return NULL;
-    }
-    
-    return system;
-}
-
-void quantum_system_destroy(quantum_system_t* system) {
-    if (!system) {
-        return;
-    }
-    
-    // Free device data if it exists
-    if (system->device_data) {
-        if (system->flags & QUANTUM_SYSTEM_FLAG_PROTECTED) {
-            cleanup_protection_system((quantum_protection_t*)system->device_data);
-        } else {
-            free(system->device_data);
-        }
-        system->device_data = NULL;
-    }
-    
-    // Free other resources
-    if (system->state) free(system->state);
-    if (system->operations) free(system->operations);
-    if (system->hardware) free(system->hardware);
-    
-    free(system);
-}
+// NOTE: quantum_system_create and quantum_system_destroy are implemented
+// in quantum_system.c to avoid duplication. Use those canonical implementations.
 
 qgt_error_t quantum_protect_config(void* config, quantum_system_t* system) {
     // Parameter validation

@@ -11,15 +11,22 @@
 #include "quantum_geometric/hardware/quantum_hardware_types.h"
 #include <stdbool.h>
 
-// Include the canonical quantum_result definition
-#include "quantum_geometric/core/quantum_result.h"
-
 // Gate types and aliases are defined in quantum_base_types.h (included via quantum_types.h)
 // gate_type_t enum and GATE_* aliases are available from there
 
 // Gate structure is defined in quantum_types.h
 
-// quantum_result is defined in quantum_result.h - do not redefine here
+// Result structure
+#ifndef QUANTUM_RESULT_DEFINED
+#define QUANTUM_RESULT_DEFINED
+typedef struct quantum_result {
+    double* measurements;     // Measurement results
+    size_t num_measurements; // Number of measurements
+    double* probabilities;   // Measurement probabilities
+    size_t shots;           // Number of shots
+    void* backend_data;     // Backend-specific data
+} quantum_result;
+#endif
 
 // Circuit creation and management
 quantum_circuit* create_quantum_circuit(size_t num_qubits);

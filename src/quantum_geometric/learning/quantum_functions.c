@@ -1415,7 +1415,7 @@ quantum_optimizer_state_t* quantum_create_optimizer_state(
     
     // Initialize optimizer-specific parameters
     switch (type) {
-        case OPTIMIZER_QUANTUM_ADAM:
+        case OPTIMIZER_ADAM:
             state->beta1 = 0.9;    // Default Adam beta1
             state->beta2 = 0.999;  // Default Adam beta2
             state->epsilon = 1e-8;
@@ -1429,7 +1429,7 @@ quantum_optimizer_state_t* quantum_create_optimizer_state(
             memset(state->v, 0, param_size * sizeof(ComplexFloat));
             break;
             
-        case OPTIMIZER_QUANTUM_GRADIENT_DESCENT:
+        case OPTIMIZER_SGD:
             state->beta1 = 0.0;
             state->beta2 = 0.0;
             state->epsilon = 0.0;
@@ -1474,7 +1474,7 @@ bool quantum_update_weights(
     const size_t block_size = BLOCK_SIZE; // Process in cache-efficient blocks
     
     switch (optimizer_state->type) {
-        case OPTIMIZER_QUANTUM_GRADIENT_DESCENT:
+        case OPTIMIZER_SGD:
         {
             ComplexFloat lr = {(float)-learning_rate, 0};
             for (size_t offset = 0; offset < total_elements; offset += block_size) {
@@ -1489,7 +1489,7 @@ bool quantum_update_weights(
             break;
         }
         
-        case OPTIMIZER_QUANTUM_ADAM:
+        case OPTIMIZER_ADAM:
         {
             optimizer_state->t++;
             const double beta1 = optimizer_state->beta1;

@@ -4,62 +4,36 @@
 #include <time.h>
 #include <sys/resource.h>
 
-// Performance metrics
-typedef struct {
-    // Timing metrics
-    double quantum_execution_time;
-    double classical_execution_time;
-    double communication_overhead;
-    
-    // Resource usage
-    double cpu_utilization;
-    double gpu_utilization;
-    double memory_usage;
-    double quantum_resource_usage;
-    
-    // Error metrics
-    double quantum_error_rate;
-    double classical_error_rate;
-    double total_fidelity;
-    
-    // Energy metrics
-    double quantum_energy_consumption;
-    double classical_energy_consumption;
-    
-    // Performance counters
-    size_t num_quantum_operations;
-    size_t num_classical_operations;
-    size_t num_communications;
-    
-    // Timestamps
-    struct timespec start_time;
-    struct timespec last_update;
-} PerformanceMetrics;
+// max macro if not defined
+#ifndef max
+#define max(a, b) ((a) > (b) ? (a) : (b))
+#endif
 
-// Performance monitor
-typedef struct {
-    PerformanceMetrics current;
-    PerformanceMetrics* history;
-    size_t history_size;
-    size_t history_capacity;
-    bool monitoring_enabled;
-    FILE* log_file;
-} PerformanceMonitor;
+// Forward declarations for static helper functions
+static void update_resource_metrics(PerformanceMonitor* monitor);
+static void log_performance_metrics(PerformanceMonitor* monitor);
+static double get_elapsed_time(const PerformanceMonitor* monitor);
+static double get_gpu_utilization(void);
+static double estimate_quantum_resources(const PerformanceMonitor* monitor);
+static double estimate_quantum_energy(const PerformanceMonitor* monitor);
+static double estimate_classical_energy(const PerformanceMonitor* monitor);
 
-// Initialize performance monitoring
-PerformanceMonitor* init_performance_monitor(void) {
+// MonitoringMetrics and PerformanceMonitor are defined in the header
+
+// Initialize hybrid performance monitoring (renamed to avoid conflict with core/performance_monitor.c)
+PerformanceMonitor* init_hybrid_performance_monitor(void) {
     PerformanceMonitor* monitor = malloc(sizeof(PerformanceMonitor));
     if (!monitor) return NULL;
-    
+
     // Initialize current metrics
-    memset(&monitor->current, 0, sizeof(PerformanceMetrics));
+    memset(&monitor->current, 0, sizeof(MonitoringMetrics));
     clock_gettime(CLOCK_MONOTONIC, &monitor->current.start_time);
     monitor->current.last_update = monitor->current.start_time;
-    
+
     // Initialize history
     monitor->history_capacity = 1000;
     monitor->history = malloc(
-        monitor->history_capacity * sizeof(PerformanceMetrics));
+        monitor->history_capacity * sizeof(MonitoringMetrics));
     
     if (!monitor->history) {
         free(monitor);
@@ -82,60 +56,60 @@ PerformanceMonitor* init_performance_monitor(void) {
 
 // Start monitoring operation
 void start_operation(PerformanceMonitor* monitor,
-                    OperationType type) {
+                    MonitoringOperationType type) {
     if (!monitor || !monitor->monitoring_enabled) return;
-    
+
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
-    
+
     // Update operation counters
     switch (type) {
-        case OPERATION_QUANTUM:
+        case MONITOR_OP_QUANTUM:
             monitor->current.num_quantum_operations++;
             break;
-            
-        case OPERATION_CLASSICAL:
+
+        case MONITOR_OP_CLASSICAL:
             monitor->current.num_classical_operations++;
             break;
-            
-        case OPERATION_COMMUNICATION:
+
+        case MONITOR_OP_COMMUNICATION:
             monitor->current.num_communications++;
             break;
     }
-    
+
     monitor->current.last_update = now;
 }
 
 // End monitoring operation
 void end_operation(PerformanceMonitor* monitor,
-                  OperationType type) {
+                  MonitoringOperationType type) {
     if (!monitor || !monitor->monitoring_enabled) return;
-    
+
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
-    
+
     // Calculate elapsed time
     double elapsed = (now.tv_sec - monitor->current.last_update.tv_sec) +
                     (now.tv_nsec - monitor->current.last_update.tv_nsec) * 1e-9;
-    
+
     // Update timing metrics
     switch (type) {
-        case OPERATION_QUANTUM:
+        case MONITOR_OP_QUANTUM:
             monitor->current.quantum_execution_time += elapsed;
             break;
-            
-        case OPERATION_CLASSICAL:
+
+        case MONITOR_OP_CLASSICAL:
             monitor->current.classical_execution_time += elapsed;
             break;
-            
-        case OPERATION_COMMUNICATION:
+
+        case MONITOR_OP_COMMUNICATION:
             monitor->current.communication_overhead += elapsed;
             break;
     }
-    
+
     // Update resource usage
     update_resource_metrics(monitor);
-    
+
     // Log metrics
     log_performance_metrics(monitor);
 }
@@ -300,14 +274,14 @@ static double estimate_classical_energy(
            monitor->current.classical_execution_time;
 }
 
-// Clean up performance monitor
-void cleanup_performance_monitor(PerformanceMonitor* monitor) {
+// Renamed to avoid conflict with core/performance_monitor.c (this takes a monitor pointer)
+void cleanup_hybrid_performance_monitor(PerformanceMonitor* monitor) {
     if (!monitor) return;
-    
+
     if (monitor->log_file) {
         fclose(monitor->log_file);
     }
-    
+
     free(monitor->history);
     free(monitor);
 }

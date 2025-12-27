@@ -5,23 +5,12 @@
 #include "quantum_geometric/core/quantum_matrix_operations.h"
 #include "quantum_geometric/core/quantum_circuit_creation.h"
 #include "quantum_geometric/core/quantum_circuit_operations.h"
+#include "quantum_geometric/core/quantum_register.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
-// Forward declaration for quantum_register_create_empty
-static quantum_register_t* quantum_register_create_empty(size_t size) {
-    quantum_register_t* reg = malloc(sizeof(quantum_register_t));
-    if (!reg) return NULL;
-    reg->size = size;
-    reg->amplitudes = calloc(size, sizeof(ComplexFloat));
-    if (!reg->amplitudes) {
-        free(reg);
-        return NULL;
-    }
-    reg->system = NULL;
-    return reg;
-}
+// quantum_register_create_empty is declared in quantum_register.h
 
 // Helper function to safely free memory
 static void safe_free(void* ptr) {

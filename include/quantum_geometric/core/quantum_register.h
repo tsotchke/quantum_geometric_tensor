@@ -14,6 +14,7 @@ typedef struct quantum_operator_t quantum_operator_t;
 
 // Creation and destruction
 quantum_register_t* quantum_register_create(size_t num_qubits, int flags);
+quantum_register_t* quantum_register_create_empty(size_t size);
 quantum_register_t* quantum_register_create_state(complex double* amplitudes, size_t size, quantum_system_t* system);
 void quantum_register_destroy(quantum_register_t* reg);
 
@@ -50,3 +51,5 @@ int quantum_register_verify_state(const quantum_register_t* reg);
 size_t quantum_register_memory_size(const quantum_register_t* reg);
 
 #endif // QUANTUM_REGISTER_H
+
+

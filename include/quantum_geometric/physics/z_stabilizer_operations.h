@@ -22,18 +22,35 @@ typedef struct {
     double measurement_fidelity;    // Measurement fidelity
     size_t echo_sequence_length;    // Echo sequence length
     bool dynamic_phase_correction;  // Enable dynamic phase correction
+    double noise_scale;             // Overall noise scaling factor
 } ZHardwareConfig;
 
-// Z stabilizer configuration
+// Z stabilizer configuration (unified across all modules)
 typedef struct {
+    // Core measurement parameters
     size_t repetition_count;         // Number of measurement repetitions
     double error_threshold;          // Error detection threshold
     double confidence_threshold;     // Confidence threshold
     size_t history_capacity;         // Measurement history capacity
+
+    // Phase control
     double phase_calibration;        // Phase calibration factor
     size_t echo_sequence_length;     // Echo sequence length
     bool dynamic_phase_correction;   // Enable dynamic phase correction
+    bool use_phase_tracking;         // Enable phase tracking
+
+    // Optimization flags
     bool enable_z_optimization;      // Enable Z-specific optimizations
+    bool track_correlations;         // Enable correlation tracking
+
+    // Hardware acceleration
+    bool use_metal_acceleration;     // Enable Metal GPU acceleration
+    size_t num_stabilizers;          // Number of stabilizers
+    size_t parallel_group_size;      // Size of parallel measurement groups
+
+    // Advanced parameters
+    double correlation_factor;       // Correlation scaling factor
+    size_t num_threads;              // Number of threads for parallel ops
 } ZStabilizerConfig;
 
 // Z stabilizer state

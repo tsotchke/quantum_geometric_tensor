@@ -20,7 +20,10 @@ typedef struct tree_tensor_node tree_tensor_node_t;
 typedef struct tree_tensor_network tree_tensor_network_t;
 
 // Type aliases for CamelCase naming convention compatibility
+#ifndef TREE_TENSOR_NETWORK_TYPEDEF_DEFINED
+#define TREE_TENSOR_NETWORK_TYPEDEF_DEFINED
 typedef struct tree_tensor_network TreeTensorNetwork;
+#endif
 
 // Tensor stream for processing large tensors in chunks
 struct tensor_stream {
@@ -48,13 +51,23 @@ struct tree_tensor_node {
     bool use_hierarchical;       // Whether to use hierarchical representation
 };
 
-// Tree tensor network structure
+// Tree tensor network structure (unified for all modules)
 struct tree_tensor_network {
+    // Core structure
     tree_tensor_node_t* root;    // Root node of the tree
     size_t num_nodes;            // Total number of nodes
     size_t max_rank;             // Maximum bond dimension
     size_t num_qubits;           // Number of qubits (for quantum states)
     double tolerance;            // SVD truncation tolerance
+
+    // Topological properties (for physics operations)
+    size_t num_sites;            // Number of sites (alias for num_qubits)
+    size_t bond_dim;             // Bond dimension (alias for max_rank)
+    double* site_tensors;        // Tensor data at each site
+    size_t* connectivity;        // Connectivity graph
+    double entanglement_entropy; // Calculated entanglement entropy
+
+    // Memory management
     MemoryPool* memory_pool;     // Memory pool for tensor allocations
     advanced_memory_system_t* memory_system; // Advanced memory system
     tensor_network_metrics_t metrics; // Performance metrics
@@ -169,3 +182,5 @@ bool reset_tree_tensor_network_metrics(
 #endif
 
 #endif // TREE_TENSOR_NETWORK_H
+
+

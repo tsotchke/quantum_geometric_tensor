@@ -937,12 +937,12 @@ bool apply_phase_correction(geometric_attention_t* attention,
 }
 
 // =============================================================================
-// Error Detection and Correction
+// Error Detection and Correction (prefixed to avoid conflict with error_syndrome.c)
 // =============================================================================
 
-bool detect_errors(geometric_attention_t* attention,
-                  const attention_state_t* state,
-                  double* error_rates) {
+bool detect_attention_errors(geometric_attention_t* attention,
+                             const attention_state_t* state,
+                             double* error_rates) {
     if (!attention || !state || !error_rates) return false;
 
     size_t n = state->seq_length * state->head_dim;
@@ -959,8 +959,8 @@ bool detect_errors(geometric_attention_t* attention,
     return true;
 }
 
-bool correct_errors(geometric_attention_t* attention,
-                   attention_state_t* state) {
+bool correct_attention_errors(geometric_attention_t* attention,
+                              attention_state_t* state) {
     if (!attention || !state) return false;
 
     size_t n = state->seq_length * state->head_dim;

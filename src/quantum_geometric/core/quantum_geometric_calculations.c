@@ -289,11 +289,6 @@ qgt_error_t estimate_geometric_resources(const quantum_geometric_state_t* state,
     return QGT_SUCCESS;
 }
 
-// Hardware acceleration checks
-bool is_gpu_available(void) {
-    return false; // CPU-only implementation
-}
-
-bool is_accelerator_available(void) {
-    return false; // CPU-only implementation
-}
+// Hardware acceleration checks removed - use canonical implementations from:
+// - is_gpu_available: quantum_field_gpu_monitor.c (context-based check)
+// - is_accelerator_available: quantum_hardware_abstraction.c

@@ -6,7 +6,70 @@
 
 static amx_state_t amx_state;
 
-// AMX instructions (implemented in assembly)
+// ============================================================================
+// AMX Assembly Fallbacks
+// ============================================================================
+// These provide weak symbol fallbacks for AMX assembly instructions.
+// On systems with actual AMX assembly support, these will be overridden.
+// On systems without AMX assembly files, these provide safe no-ops.
+
+#ifndef QGT_HAS_AMX_ASM
+
+// Weak symbol fallbacks for AMX assembly functions
+__attribute__((weak)) void _amx_init_asm(void) {
+    // No-op fallback - AMX not available
+}
+
+__attribute__((weak)) void amx_stop(void) {
+    // No-op fallback
+}
+
+__attribute__((weak)) void amx_ldx(const void* ptr, uint64_t offset) {
+    (void)ptr;
+    (void)offset;
+    // No-op fallback
+}
+
+__attribute__((weak)) void amx_ldy(const void* ptr, uint64_t offset) {
+    (void)ptr;
+    (void)offset;
+    // No-op fallback
+}
+
+__attribute__((weak)) void amx_stx(void* ptr, uint64_t offset) {
+    (void)ptr;
+    (void)offset;
+    // No-op fallback
+}
+
+__attribute__((weak)) void amx_sty(void* ptr, uint64_t offset) {
+    (void)ptr;
+    (void)offset;
+    // No-op fallback
+}
+
+__attribute__((weak)) void amx_ldz(const void* ptr, uint64_t offset) {
+    (void)ptr;
+    (void)offset;
+    // No-op fallback
+}
+
+__attribute__((weak)) void amx_stz(void* ptr, uint64_t offset) {
+    (void)ptr;
+    (void)offset;
+    // No-op fallback
+}
+
+__attribute__((weak)) void amx_fma64(uint64_t x_offset, uint64_t y_offset, uint64_t z_offset) {
+    (void)x_offset;
+    (void)y_offset;
+    (void)z_offset;
+    // No-op fallback
+}
+
+#else
+
+// When AMX assembly is available, use extern declarations
 extern void _amx_init_asm(void);
 extern void amx_stop(void);
 extern void amx_ldx(const void* ptr, uint64_t offset);
@@ -16,6 +79,8 @@ extern void amx_sty(void* ptr, uint64_t offset);
 extern void amx_ldz(const void* ptr, uint64_t offset);
 extern void amx_stz(void* ptr, uint64_t offset);
 extern void amx_fma64(uint64_t x_offset, uint64_t y_offset, uint64_t z_offset);
+
+#endif // QGT_HAS_AMX_ASM
 
 // Initialize AMX unit
 static void initialize_amx() {

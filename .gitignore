@@ -4,9 +4,11 @@ _build/
 cmake-build-*/
 Debug/
 Release/
+BACKUP/
 
 # Doxygen
 doc/
+notes/
 
 # IDE directories
 .vscode/

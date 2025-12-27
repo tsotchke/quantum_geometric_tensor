@@ -76,6 +76,8 @@ static bool should_use_optimized_path(size_t rows, size_t cols) {
 }
 
 // SVD and low-rank approximation
+// On ARM64, use optimized version from hierarchical_matrix_arm.c
+#ifndef __arm64__
 void compute_svd(double complex* data, size_t rows, size_t cols,
                  double complex* U, double complex* S, double complex* V) {
     // Initialize numerical backend
@@ -135,6 +137,7 @@ void compute_svd(double complex* data, size_t rows, size_t cols,
     free(S_f);
     free(VT_f);
 }
+#endif // __arm64__ - compute_svd
 
 // Original linear search implementation
 static void truncate_svd_linear(double complex* U, double complex* S, double complex* V,
@@ -507,6 +510,8 @@ bool validate_hierarchical_matrix(const HierarchicalMatrix* matrix) {
     return true;
 }
 
+// On ARM64, use optimized versions from hierarchical_matrix_arm.c
+#ifndef __arm64__
 // Function to choose between implementations
 HierarchicalMatrix* create_hierarchical_matrix(size_t n, double tolerance) {
     if (should_use_optimized_path(n, n)) {
@@ -1139,6 +1144,7 @@ bool compress_matrix(HierarchicalMatrix* matrix, const compression_params_t* par
             return false;
     }
 }
+#endif // __arm64__ - create_hierarchical_matrix, init_matrix_properties, compress_matrix
 
 void hmatrix_destroy(HierarchicalMatrix* mat) {
     if (!mat) return;
@@ -1314,38 +1320,57 @@ bool hmatrix_is_low_rank(const HierarchicalMatrix* mat) {
 
 void hmatrix_compress(HierarchicalMatrix* mat) {
     if (!mat || mat->is_leaf || hmatrix_is_low_rank(mat)) return;
-    
+
     // Try to compress each child first
     #pragma omp parallel for
     for (int i = 0; i < 4; i++) {
         hmatrix_compress(mat->children[i]);
     }
-    
+
+    // Need data to compress
+    if (!mat->data) return;
+
     // Estimate potential compression ratio
     size_t full_size = mat->rows * mat->cols;
     size_t low_rank_size = (mat->rows + mat->cols) * MAX_RANK;
     double compression_ratio = (double)low_rank_size / full_size;
-    
+
     // Check if compression would be beneficial
     if (compression_ratio < COMPRESSION_THRESHOLD) {
         double error = hmatrix_error_estimate(mat);
         if (error < mat->tolerance) {
-            // Convert to low-rank representation
-            size_t max_dim = (mat->rows > mat->cols) ? mat->rows : mat->cols;
-            double complex* S = aligned_alloc(CACHE_LINE_SIZE, max_dim * sizeof(double complex));
-            if (!S) {
-                printf("Failed to allocate singular values array\n");
+            // Allocate SVD output buffers
+            size_t min_dim = (mat->rows < mat->cols) ? mat->rows : mat->cols;
+            double complex* S = aligned_alloc(CACHE_LINE_SIZE, min_dim * sizeof(double complex));
+            double complex* U_new = aligned_alloc(CACHE_LINE_SIZE, mat->rows * mat->rows * sizeof(double complex));
+            double complex* V_new = aligned_alloc(CACHE_LINE_SIZE, mat->cols * mat->cols * sizeof(double complex));
+
+            if (!S || !U_new || !V_new) {
+                printf("Failed to allocate SVD buffers\n");
+                free(S);
+                free(U_new);
+                free(V_new);
                 return;
             }
-            
-            compute_svd(mat->data, mat->rows, mat->cols, mat->U, S, mat->V);
-            truncate_svd(mat->U, S, mat->V, mat->rows, mat->cols, &mat->rank, mat->tolerance);
-            
-            free(S);
+
+            // Compute SVD: A = U * S * V^T
+            compute_svd(mat->data, mat->rows, mat->cols, U_new, S, V_new);
+
+            // Truncate to desired rank based on tolerance
+            truncate_svd(U_new, S, V_new, mat->rows, mat->cols, &mat->rank, mat->tolerance);
+
+            // Free old buffers and assign new ones
+            free(mat->U);
+            free(mat->V);
             free(mat->data);
+            free(S);
+
+            mat->U = U_new;
+            mat->V = V_new;
             mat->data = NULL;
-            
-            // Free child nodes
+            mat->is_leaf = true;  // Now a low-rank leaf
+
+            // Free child nodes since we're now a leaf
             for (int i = 0; i < 4; i++) {
                 hmatrix_destroy(mat->children[i]);
                 mat->children[i] = NULL;
@@ -2004,6 +2029,8 @@ void hmatrix_apply_gradient(HierarchicalMatrix* matrix,
 }
 
 // Matrix transpose
+// On ARM64, use optimized version from hierarchical_matrix_arm.c
+#ifndef __arm64__
 void hmatrix_transpose(HierarchicalMatrix* dst, const HierarchicalMatrix* src) {
     if (!dst || !src) return;
 
@@ -2063,3 +2090,46 @@ void hmatrix_transpose(HierarchicalMatrix* dst, const HierarchicalMatrix* src) {
         }
     }
 }
+#endif // __arm64__ - hmatrix_transpose
+
+// =============================================================================
+// Public Matrix Operation Wrappers
+// =============================================================================
+
+/**
+ * @brief Multiply two hierarchical matrices
+ *
+ * Computes result = a * b using the hierarchical matrix multiplication
+ * algorithm. Handles both leaf and recursive cases.
+ *
+ * @param result Output matrix (must be pre-allocated with correct dimensions)
+ * @param a Left matrix operand
+ * @param b Right matrix operand
+ * @return true on success, false on failure
+ */
+bool multiply_matrices(HierarchicalMatrix* result,
+                      const HierarchicalMatrix* a,
+                      const HierarchicalMatrix* b) {
+    if (!result || !a || !b) {
+        return false;
+    }
+
+    // Validate dimensions
+    if (a->cols != b->rows) {
+        return false;
+    }
+
+    // Ensure result has correct dimensions
+    if (result->rows != a->rows || result->cols != b->cols) {
+        return false;
+    }
+
+    // Perform multiplication
+    hmatrix_multiply((HierarchicalMatrix*)result,
+                     (const HierarchicalMatrix*)a,
+                     (const HierarchicalMatrix*)b);
+
+    return true;
+}
+
+

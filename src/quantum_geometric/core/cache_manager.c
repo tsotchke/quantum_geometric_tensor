@@ -1,5 +1,7 @@
 #include "quantum_geometric/core/cache_manager.h"
 #include "quantum_geometric/core/quantum_geometric_hardware.h"
+#include "quantum_geometric/core/quantum_geometric_compute.h"
+#include "quantum_geometric/core/quantum_circuit_operations.h"
 #include "quantum_geometric/core/quantum_complex.h"
 #include "quantum_geometric/hardware/quantum_hardware_types.h"
 #include <stdlib.h>
@@ -341,4 +343,88 @@ void qg_cache_cleanup(void) {
 float qg_cache_get_efficiency(void) {
     if (!cache_state.initialized) return 0.0f;
     return (float)cache_state.used_size / cache_state.total_size;
+}
+
+// =============================================================================
+// Quantum Cache Helper Functions
+// =============================================================================
+
+quantum_circuit_t* quantum_create_cache_circuit(size_t num_qubits, uint32_t flags) {
+    (void)flags;
+    quantum_circuit_t* circuit = quantum_circuit_create(num_qubits);
+    return circuit;
+}
+
+void quantum_cache_destroy(quantum_cache_t cache) {
+    // Free quantum state if allocated
+    if (cache.quantum_state) {
+        free(cache.quantum_state);
+    }
+
+    // Free error syndrome
+    if (cache.protection.error_syndrome) {
+        free(cache.protection.error_syndrome);
+    }
+
+    // Cleanup hardware if owned
+    if (cache.hardware) {
+        geometric_destroy_hardware(cache.hardware);
+    }
+}
+
+cache_entry_t* quantum_remove_cache_entry(
+    cache_entry_t* entry,
+    void* ptr,
+    quantum_cache_t* cache,
+    quantum_system_t* system,
+    quantum_circuit_t* circuit,
+    cache_config_t* config
+) {
+    (void)cache; (void)system; (void)circuit; (void)config;
+
+    if (!entry) return NULL;
+
+    // Search for the entry with matching pointer
+    cache_entry_t* prev = NULL;
+    cache_entry_t* current = entry;
+
+    while (current) {
+        if (current->data == ptr) {
+            // Found the entry - unlink it
+            if (prev) {
+                prev->next = current->next;
+            }
+            current->next = NULL;
+            return current;
+        }
+        prev = current;
+        current = current->next;
+    }
+
+    return NULL;
+}
+
+void quantum_free_cache_entry(
+    cache_entry_t* entry,
+    quantum_cache_t* cache,
+    quantum_system_t* system
+) {
+    (void)cache; (void)system;
+
+    if (!entry) return;
+
+    // Free data
+    if (entry->data) {
+        free(entry->data);
+        entry->data = NULL;
+    }
+
+    // Free protection syndrome
+    if (entry->protection.error_syndrome) {
+        free(entry->protection.error_syndrome);
+        entry->protection.error_syndrome = NULL;
+    }
+
+    // Free entry itself
+    free(entry);
 }

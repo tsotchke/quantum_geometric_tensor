@@ -1,6 +1,42 @@
 #ifndef MPI_CONFIG_H
 #define MPI_CONFIG_H
 
+#include <stddef.h>
+
+// MPI configuration structure
+typedef struct mpi_config_t {
+    int num_processes;      // Number of MPI processes
+    int process_rank;       // This process's rank
+    size_t chunk_size;      // Data chunk size for distribution
+    int use_gpu;            // Whether to use GPU acceleration
+    int debug_level;        // Debug output level
+} mpi_config_t;
+
+// Configuration management functions
+int qg_mpi_config_init(mpi_config_t* config);
+void qg_mpi_config_cleanup(mpi_config_t* config);
+int qg_mpi_config_load(mpi_config_t* config, const char* config_file);
+int qg_mpi_config_save(const mpi_config_t* config, const char* config_file);
+
+// Getters
+int qg_mpi_config_get_num_processes(const mpi_config_t* config);
+int qg_mpi_config_get_process_rank(const mpi_config_t* config);
+size_t qg_mpi_config_get_chunk_size(const mpi_config_t* config);
+int qg_mpi_config_get_use_gpu(const mpi_config_t* config);
+int qg_mpi_config_get_debug_level(const mpi_config_t* config);
+
+// Setters
+int qg_mpi_config_set_num_processes(mpi_config_t* config, int num_processes);
+int qg_mpi_config_set_process_rank(mpi_config_t* config, int process_rank);
+int qg_mpi_config_set_chunk_size(mpi_config_t* config, size_t chunk_size);
+int qg_mpi_config_set_use_gpu(mpi_config_t* config, int use_gpu);
+int qg_mpi_config_set_debug_level(mpi_config_t* config, int debug_level);
+
+// Utility functions
+int qg_mpi_config_validate(const mpi_config_t* config);
+int qg_mpi_config_print(const mpi_config_t* config);
+const char* qg_mpi_config_get_version(void);
+
 #ifdef USE_MPI
 
 #ifdef __APPLE__

@@ -6,12 +6,8 @@
 #include "quantum_geometric/core/quantum_types.h"
 #include "quantum_geometric/core/quantum_state.h"
 
-// Pauli operator types
-typedef enum {
-    PAULI_X,
-    PAULI_Y,
-    PAULI_Z
-} pauli_type;
+// Pauli types (pauli_type, rotation_axis_t, PAULI_X/Y/Z) are defined
+// in quantum_types.h which is included above
 
 // Circuit creation and management
 quantum_circuit_t* quantum_circuit_create(size_t num_qubits);

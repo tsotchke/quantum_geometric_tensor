@@ -92,9 +92,10 @@ double calculate_topological_entropy(TreeTensorNetwork* network) {
 }
 
 /* Quantum-accelerated error detection using amplitude estimation - O(log N) */
-ErrorCode detect_topological_errors(quantum_geometric_tensor* qgt) {
+/* Renamed to avoid conflict with full_topological_protection.c */
+ErrorCode detect_topological_errors_amplitude_estimation(quantum_topological_tensor_t* qgt) {
     if (!qgt) return ERROR_INVALID_STATE;
-    
+
     // Initialize quantum system
     quantum_system_t* system = quantum_system_create(
         (size_t)log2(qgt->dimension),
@@ -117,7 +118,7 @@ ErrorCode detect_topological_errors(quantum_geometric_tensor* qgt) {
     );
     
     // Initialize quantum registers
-    quantum_register_t* reg_state = quantum_register_create_state(
+    quantum_register_t* reg_state = topo_register_create_state(
         qgt,
         system
     );
@@ -171,7 +172,8 @@ ErrorCode detect_topological_errors(quantum_geometric_tensor* qgt) {
 }
 
 /* Correct errors using quantum-optimized anyon braiding - O(log N) */
-void correct_topological_errors(quantum_geometric_tensor* qgt) {
+/* Renamed to avoid conflict with full_topological_protection.c */
+void correct_topological_errors_braiding(quantum_topological_tensor_t* qgt) {
     if (!qgt) return;
     
     // Initialize quantum circuit for anyon detection
@@ -442,7 +444,7 @@ void protect_distributed_state(NetworkPartition* partitions, size_t num_parts) {
 }
 
 /* Apply quantum-optimized topological attention - O(log N) */
-void apply_topological_attention(quantum_geometric_tensor* qgt,
+void apply_topological_attention(quantum_topological_tensor_t* qgt,
                                const AttentionConfig* config) {
     if (!qgt || !config) return;
     
@@ -497,12 +499,14 @@ void apply_topological_attention(quantum_geometric_tensor* qgt,
     
     // Update global state
     update_global_state(qgt);
-    
-    free(scores);
+
+    // Cleanup quantum resources
+    free(attention_state);
+    cleanup_quantum_circuit(qc);
 }
 
 /* Monitor and maintain topological order using quantum circuits - O(log N) */
-void monitor_topological_order(quantum_geometric_tensor* qgt,
+void monitor_topological_order(quantum_topological_tensor_t* qgt,
                              const MonitorConfig* config) {
     if (!qgt || !config) return;
     
@@ -530,7 +534,7 @@ void monitor_topological_order(quantum_geometric_tensor* qgt,
         // Check metrics using quantum estimation - O(log N)
         double order = quantum_estimate_order(qgt, qc, qws);
         double tee = quantum_estimate_tee(qgt, qc, qws);
-        double braiding = quantum_verify_braiding(qgt, qc, qws);
+        double braiding = quantum_verify_braiding_order(qgt, qc, qws);
         
         // Update using quantum state tomography
         quantum_update_metrics(monitor, order, tee, braiding, qc, qws);

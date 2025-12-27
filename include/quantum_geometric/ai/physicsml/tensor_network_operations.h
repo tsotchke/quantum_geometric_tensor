@@ -21,13 +21,20 @@ extern "C" {
 
 // Forward declarations
 typedef struct TreeNode TreeNode;
-typedef struct TreeTensorNetwork TreeTensorNetwork;
 typedef struct MinimalSurface MinimalSurface;
 
-/**
- * @brief Physical constraints for tensor network optimization
- */
-typedef struct {
+// TreeTensorNetwork - use consistent definition with tree_tensor_network.h
+#ifndef TREE_TENSOR_NETWORK_TYPEDEF_DEFINED
+#define TREE_TENSOR_NETWORK_TYPEDEF_DEFINED
+struct tree_tensor_network;
+typedef struct tree_tensor_network TreeTensorNetwork;
+#endif
+
+// PhysicalConstraints is defined in quantum_geometric_types.h
+// Forward declare here if not already defined
+#ifndef PHYSICAL_CONSTRAINTS_DEFINED
+#define PHYSICAL_CONSTRAINTS_DEFINED
+typedef struct PhysicalConstraints {
     double energy_threshold;         // Energy convergence threshold
     double fidelity_threshold;       // Fidelity convergence threshold
     double symmetry_tolerance;       // Tolerance for symmetry violations
@@ -37,6 +44,7 @@ typedef struct {
     double renormalization_scale;   // RG flow scale parameter
     double causality_tolerance;     // Causality violation tolerance
 } PhysicalConstraints;
+#endif
 
 /**
  * @brief Holographic constraints for tensor network optimization

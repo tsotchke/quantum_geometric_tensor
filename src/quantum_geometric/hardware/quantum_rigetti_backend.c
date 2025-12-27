@@ -1,17 +1,37 @@
 #include "quantum_geometric/hardware/quantum_rigetti_backend.h"
+#include "quantum_geometric/hardware/quantum_rigetti_api.h"
+#include "quantum_geometric/hardware/quantum_hardware_abstraction.h"
 #include "quantum_geometric/core/quantum_geometric_operations.h"
+#include "quantum_geometric/core/quantum_circuit_types.h"
+#include "quantum_geometric/core/quantum_geometric_logging.h"
 #include <curl/curl.h>
 #include <json-c/json.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
+#include <time.h>
 
-// Rigetti parameters
-#define MAX_QUBITS 80
+// Logging macros
+#define log_info(...)  geometric_log_info(__VA_ARGS__)
+#define log_warn(...)  geometric_log_warning(__VA_ARGS__)
+#define log_error(...) geometric_log_error(__VA_ARGS__)
+
+// Gate field access macros for compatibility
+// quantum_gate_t uses arrays: control_qubits[], target_qubits[]
+// This code expects simple: control, target fields
+// We use macros to bridge the difference
+#define GATE_GET_TARGET(gate) ((gate)->target_qubits ? (gate)->target_qubits[0] : 0)
+#define GATE_GET_CONTROL(gate) ((gate)->control_qubits && (gate)->num_controls > 0 ? (gate)->control_qubits[0] : SIZE_MAX)
+#define GATE_IS_SINGLE_QUBIT(gate) ((gate)->num_controls == 0 || !(gate)->control_qubits)
+
+// Rigetti parameters - undefine to avoid conflicts
+#undef MAX_QUBITS
+#define RIGETTI_MAX_QUBITS 80
 #define MAX_CIRCUITS 500
 #define API_TIMEOUT 30
 #define MAX_RETRIES 3
 #define MIN_SHOTS 1000
-#define MAX_SHOTS 100000
+#define LOCAL_MAX_SHOTS 100000
 #define DEFAULT_SHOTS 10000
 
 // Error mitigation parameters
@@ -27,110 +47,162 @@
 #define RIGETTI_JOBS_URL RIGETTI_API_URL "/jobs"
 #define RIGETTI_DEVICES_URL RIGETTI_API_URL "/devices"
 
-// Error mitigation configuration
+// Error mitigation configuration (internal)
 typedef struct {
     double zne_scales[NUM_ZNE_SCALES];
     double readout_threshold;
     double symmetry_threshold;
     double error_bound;
-} ErrorMitigationConfig;
+    // Additional fields for error estimation
+    size_t num_qubits;
+    size_t num_shots;
+    double readout_error_rate;
+    double gate_error_rate;
+    size_t circuit_depth;
+    double t1_time;
+    double t2_time;
+} RigettiErrorMitigationConfig;
 
-// Rigetti backend with error mitigation
-typedef struct {
+// Alias for backward compatibility
+typedef RigettiErrorMitigationConfig ErrorMitigationConfig;
+
+// Internal Rigetti backend state
+typedef struct RigettiInternalBackend {
     char* api_key;
     char* device_name;
     size_t num_qubits;
     bool is_simulator;
     CURL* curl;
-    struct json_object* config;
+    struct json_object* json_config;
     char error_buffer[CURL_ERROR_SIZE];
-    ErrorMitigationConfig error_config;
-} RigettiBackend;
+    RigettiErrorMitigationConfig error_config;
+    // QCS API handle for proper job management
+    rigetti_qcs_handle_t* qcs_handle;
+    // Job tracking
+    char** active_job_ids;
+    size_t num_active_jobs;
+    size_t max_active_jobs;
+    // Cached job results
+    struct {
+        char job_id[64];
+        qcs_job_result_t result;
+        bool valid;
+    } cached_results[16];
+    size_t num_cached_results;
+    // Last error info
+    char last_error[512];
+    int last_error_code;
+} RigettiInternalBackend;
+
+// Static internal backend for current session
+static RigettiInternalBackend* g_rigetti_backend = NULL;
+
+// Forward declarations
+static void cleanup_internal_backend(RigettiInternalBackend* backend);
+static int gate_to_native_quil(const quantum_gate_t* gate, const size_t* qubit_mapping,
+                               char* quil, size_t size);
 
 // CURL callback for writing response
 static size_t write_callback(char* ptr, size_t size, size_t nmemb, void* userdata) {
     struct json_object** response = (struct json_object**)userdata;
     size_t total_size = size * nmemb;
-    
+
     // Parse JSON response
-    enum json_tokener_error error;
     struct json_object* obj = json_tokener_parse_ex(
-        json_tokener_new(), ptr, total_size);
-    
+        json_tokener_new(), ptr, (int)total_size);
+
     if (obj) {
         *response = obj;
         return total_size;
     }
-    
+
     return 0;
 }
 
-// Initialize Rigetti backend with error mitigation
-RigettiBackend* init_rigetti_backend(const char* api_key, const char* device) {
-    RigettiBackend* rb = malloc(sizeof(RigettiBackend));
-    if (!rb) return NULL;
-    
+// Legacy Rigetti backend initialization (canonical init_rigetti_backend is in quantum_rigetti_backend_optimized.c)
+struct RigettiConfig* init_rigetti_backend_legacy(const struct RigettiBackendConfig* backend_config) {
+    if (!backend_config) return NULL;
+
+    // Allocate RigettiConfig
+    struct RigettiConfig* config = calloc(1, sizeof(struct RigettiConfig));
+    if (!config) return NULL;
+
+    // Copy configuration
+    if (backend_config->api_key) {
+        config->api_key = strdup(backend_config->api_key);
+    }
+    if (backend_config->backend_name) {
+        config->backend_name = strdup(backend_config->backend_name);
+        config->url = strdup("https://api.qcs.rigetti.com/v1");
+    }
+    config->max_shots = backend_config->max_shots > 0 ? backend_config->max_shots : DEFAULT_SHOTS;
+    config->max_qubits = RIGETTI_MAX_QUBITS;
+    config->optimize_mapping = backend_config->optimize_mapping;
+
+    // Create internal backend
+    RigettiInternalBackend* internal = calloc(1, sizeof(RigettiInternalBackend));
+    if (!internal) {
+        cleanup_rigetti_config(config);
+        return NULL;
+    }
+
     // Initialize CURL
     curl_global_init(CURL_GLOBAL_DEFAULT);
-    rb->curl = curl_easy_init();
-    if (!rb->curl) {
-        free(rb);
+    internal->curl = curl_easy_init();
+    if (!internal->curl) {
+        free(internal);
+        cleanup_rigetti_config(config);
         return NULL;
     }
-    
+
     // Set API key and device name
-    rb->api_key = strdup(api_key);
-    rb->device_name = strdup(device);
-    rb->is_simulator = (strstr(device, "qvm") != NULL);
-    
+    if (backend_config->api_key) {
+        internal->api_key = strdup(backend_config->api_key);
+    }
+    if (backend_config->backend_name) {
+        internal->device_name = strdup(backend_config->backend_name);
+        internal->is_simulator = (strstr(backend_config->backend_name, "qvm") != NULL);
+    }
+
     // Configure error mitigation
-    rb->error_config = (ErrorMitigationConfig){
-        .zne_scales = ZNE_SCALE_FACTORS,
-        .readout_threshold = 0.98,
-        .symmetry_threshold = 0.95,
-        .error_bound = ERROR_BOUND_THRESHOLD
-    };
-    
+    double zne_scales[] = ZNE_SCALE_FACTORS;
+    memcpy(internal->error_config.zne_scales, zne_scales, sizeof(zne_scales));
+    internal->error_config.readout_threshold = 0.98;
+    internal->error_config.symmetry_threshold = 0.95;
+    internal->error_config.error_bound = ERROR_BOUND_THRESHOLD;
+    // Default values for error estimation
+    internal->error_config.num_qubits = RIGETTI_MAX_QUBITS;
+    internal->error_config.num_shots = DEFAULT_SHOTS;
+    internal->error_config.readout_error_rate = 0.02;  // 2% default
+    internal->error_config.gate_error_rate = 0.001;    // 0.1% default
+    internal->error_config.circuit_depth = 10;         // Default circuit depth
+    internal->error_config.t1_time = 50e-6;            // 50µs default
+    internal->error_config.t2_time = 30e-6;            // 30µs default
+
     // Configure CURL
-    curl_easy_setopt(rb->curl, CURLOPT_WRITEFUNCTION, write_callback);
-    curl_easy_setopt(rb->curl, CURLOPT_ERRORBUFFER, rb->error_buffer);
-    curl_easy_setopt(rb->curl, CURLOPT_TIMEOUT, API_TIMEOUT);
-    
+    curl_easy_setopt(internal->curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(internal->curl, CURLOPT_ERRORBUFFER, internal->error_buffer);
+    curl_easy_setopt(internal->curl, CURLOPT_TIMEOUT, API_TIMEOUT);
+
     // Set authentication headers
-    struct curl_slist* headers = NULL;
-    char auth_header[256];
-    snprintf(auth_header, sizeof(auth_header),
-             "Authorization: Bearer %s", api_key);
-    headers = curl_slist_append(headers, auth_header);
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    curl_easy_setopt(rb->curl, CURLOPT_HTTPHEADER, headers);
-    
-    // Get device configuration
-    struct json_object* response = NULL;
-    char device_url[256];
-    snprintf(device_url, sizeof(device_url),
-             "%s/%s", RIGETTI_DEVICES_URL, device);
-    
-    curl_easy_setopt(rb->curl, CURLOPT_URL, device_url);
-    curl_easy_setopt(rb->curl, CURLOPT_WRITEDATA, &response);
-    
-    CURLcode res = curl_easy_perform(rb->curl);
-    if (res != CURLE_OK) {
-        cleanup_rigetti_backend(rb);
-        return NULL;
+    if (backend_config->api_key) {
+        struct curl_slist* headers = NULL;
+        char auth_header[256];
+        snprintf(auth_header, sizeof(auth_header),
+                 "Authorization: Bearer %s", backend_config->api_key);
+        headers = curl_slist_append(headers, auth_header);
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+        curl_easy_setopt(internal->curl, CURLOPT_HTTPHEADER, headers);
     }
-    
-    // Parse configuration
-    struct json_object* num_qubits_obj;
-    if (json_object_object_get_ex(response, "num_qubits",
-                                 &num_qubits_obj)) {
-        rb->num_qubits = json_object_get_int(num_qubits_obj);
-    } else {
-        rb->num_qubits = 0;
-    }
-    
-    rb->config = response;
-    return rb;
+
+    // Store internal backend pointer
+    config->backend_specific_config = internal;
+    g_rigetti_backend = internal;
+
+    // Default qubit count for simulation
+    internal->num_qubits = RIGETTI_MAX_QUBITS;
+
+    return config;
 }
 
 // ============================================================================
@@ -290,7 +362,7 @@ static double get_edge_error(const HardwareTopology* topo, size_t q1, size_t q2)
 }
 
 // Compute mapping cost based on circuit and hardware
-static double compute_mapping_cost(const QuantumCircuit* circuit,
+static double compute_mapping_cost(const struct quantum_circuit* circuit,
                                    const HardwareTopology* topo,
                                    const size_t* mapping,
                                    size_t num_qubits) {
@@ -298,16 +370,17 @@ static double compute_mapping_cost(const QuantumCircuit* circuit,
 
     // Cost from two-qubit gates requiring SWAPs
     for (size_t i = 0; i < circuit->num_gates; i++) {
-        const QuantumGate* gate = &circuit->gates[i];
+        const quantum_gate_t* gate = circuit->gates[i];
+        if (!gate) continue;
 
         // Single-qubit gate cost based on error rate
-        if (gate->control == SIZE_MAX) {
-            size_t phys = mapping[gate->target];
+        if (GATE_IS_SINGLE_QUBIT(gate)) {
+            size_t phys = mapping[GATE_GET_TARGET(gate)];
             cost += topo->gate_errors[phys];
         } else {
             // Two-qubit gate
-            size_t phys_ctrl = mapping[gate->control];
-            size_t phys_tgt = mapping[gate->target];
+            size_t phys_ctrl = mapping[GATE_GET_CONTROL(gate)];
+            size_t phys_tgt = mapping[GATE_GET_TARGET(gate)];
 
             if (are_connected(topo, phys_ctrl, phys_tgt)) {
                 // Connected - use edge error rate
@@ -345,7 +418,7 @@ static double compute_mapping_cost(const QuantumCircuit* circuit,
 }
 
 // Greedy initial mapping based on qubit quality
-static void greedy_initial_mapping(const QuantumCircuit* circuit,
+static void greedy_initial_mapping(const struct quantum_circuit* circuit,
                                    const HardwareTopology* topo,
                                    size_t* mapping,
                                    size_t num_qubits) {
@@ -412,7 +485,7 @@ static void greedy_initial_mapping(const QuantumCircuit* circuit,
 }
 
 // Simulated annealing to optimize mapping
-static void optimize_mapping_sa(const QuantumCircuit* circuit,
+static void optimize_mapping_sa(const struct quantum_circuit* circuit,
                                 const HardwareTopology* topo,
                                 size_t* mapping,
                                 size_t num_qubits) {
@@ -466,7 +539,7 @@ static void optimize_mapping_sa(const QuantumCircuit* circuit,
 }
 
 // Optimize qubit mapping for hardware connectivity
-static size_t* optimize_qubit_mapping(const QuantumCircuit* circuit,
+static size_t* optimize_qubit_mapping(const struct quantum_circuit* circuit,
                                     const struct json_object* topology,
                                     size_t num_qubits) {
     size_t* mapping = malloc(num_qubits * sizeof(size_t));
@@ -536,23 +609,25 @@ static int add_symmetry_circuits(char* quil,
     return offset;
 }
 
-// Convert circuit to hardware-efficient Quil
-static char* circuit_to_quil(const QuantumCircuit* circuit,
-                           const RigettiBackend* rb) {
-    if (!circuit || !rb) return NULL;
-    
+// Internal: Convert quantum_circuit to hardware-efficient Quil
+static char* circuit_to_quil_internal(const struct quantum_circuit* circuit) {
+    if (!circuit) return NULL;
+
+    // Get internal backend state
+    RigettiInternalBackend* rb = g_rigetti_backend;
+    if (!rb) return NULL;
+
     // Get device topology
-    struct json_object* topology_obj;
-    if (!json_object_object_get_ex(rb->config, "topology",
-                                  &topology_obj)) {
-        return NULL;
+    struct json_object* topology_obj = NULL;
+    if (rb->json_config) {
+        json_object_object_get_ex(rb->json_config, "topology", &topology_obj);
     }
-    
+
     // Create qubit mapping to respect connectivity
     size_t* qubit_mapping = optimize_qubit_mapping(
         circuit, topology_obj, rb->num_qubits);
     if (!qubit_mapping) return NULL;
-    
+
     // Allocate Quil string
     size_t max_size = 1024 * 1024;  // 1MB should be enough
     char* quil = malloc(max_size);
@@ -560,7 +635,7 @@ static char* circuit_to_quil(const QuantumCircuit* circuit,
         free(qubit_mapping);
         return NULL;
     }
-    
+
     // Add header with error mitigation declarations
     int offset = snprintf(quil, max_size,
                          "DECLARE ro BIT[%zu]\n"
@@ -569,26 +644,27 @@ static char* circuit_to_quil(const QuantumCircuit* circuit,
                          circuit->num_qubits,
                          circuit->num_qubits * 2,  // For both |0⟩ and |1⟩
                          circuit->num_qubits);
-    
+
     // Add readout error calibration circuits
     offset += add_calibration_circuits(quil + offset,
                                      max_size - offset,
                                      circuit->num_qubits);
-    
+
     // Add symmetry verification circuits
     offset += add_symmetry_circuits(quil + offset,
                                   max_size - offset,
                                   circuit->num_qubits);
-    
+
     // Add main circuit with hardware-efficient gates
     for (size_t i = 0; i < circuit->num_gates; i++) {
-        const QuantumGate* gate = &circuit->gates[i];
+        const quantum_gate_t* gate = circuit->gates[i];
+        if (!gate) continue;
         offset += gate_to_native_quil(gate,
                                     qubit_mapping,
                                     quil + offset,
                                     max_size - offset);
     }
-    
+
     // Add measurements with error mitigation
     for (size_t i = 0; i < circuit->num_qubits; i++) {
         size_t physical_qubit = qubit_mapping[i];
@@ -596,19 +672,93 @@ static char* circuit_to_quil(const QuantumCircuit* circuit,
                          "MEASURE %zu ro[%zu]\n",
                          physical_qubit, i);
     }
-    
+
     free(qubit_mapping);
     return quil;
 }
 
+// Helper: Convert HardwareGate to Quil instruction
+static int hardware_gate_to_quil(const HardwareGate* gate, char* quil, size_t size) {
+    if (!gate || !quil) return 0;
+
+    switch (gate->type) {
+        case GATE_H:
+            return snprintf(quil, size,
+                          "RZ(pi/2) %u\nRX(pi/2) %u\nRZ(pi/2) %u\n",
+                          gate->target, gate->target, gate->target);
+        case GATE_X:
+            return snprintf(quil, size, "RX(pi) %u\n", gate->target);
+        case GATE_Y:
+            return snprintf(quil, size, "RY(pi) %u\n", gate->target);
+        case GATE_Z:
+            return snprintf(quil, size, "RZ(pi) %u\n", gate->target);
+        case GATE_CNOT:
+            return snprintf(quil, size,
+                          "RX(pi/2) %u\nCZ %u %u\nRX(-pi/2) %u\n",
+                          gate->target, gate->control, gate->target, gate->target);
+        case GATE_CZ:
+            return snprintf(quil, size, "CZ %u %u\n", gate->control, gate->target);
+        case GATE_RX:
+            return snprintf(quil, size, "RX(%g) %u\n", gate->parameter, gate->target);
+        case GATE_RY:
+            return snprintf(quil, size, "RY(%g) %u\n", gate->parameter, gate->target);
+        case GATE_RZ:
+            return snprintf(quil, size, "RZ(%g) %u\n", gate->parameter, gate->target);
+        default:
+            return 0;
+    }
+}
+
+// Public API: Convert QuantumCircuit (HAL type) to Quil
+// Matches header: char* circuit_to_quil(const struct QuantumCircuit* circuit);
+char* circuit_to_quil(const struct QuantumCircuit* circuit) {
+    if (!circuit) return NULL;
+
+    // Allocate Quil string
+    size_t max_size = 1024 * 1024;  // 1MB
+    char* quil = malloc(max_size);
+    if (!quil) return NULL;
+
+    // Add header with declarations
+    int offset = snprintf(quil, max_size,
+                         "DECLARE ro BIT[%zu]\n\n",
+                         circuit->num_qubits);
+
+    // Add calibration circuits if backend available
+    RigettiInternalBackend* rb = g_rigetti_backend;
+    if (rb) {
+        offset += add_calibration_circuits(quil + offset,
+                                         max_size - offset,
+                                         circuit->num_qubits);
+        offset += add_symmetry_circuits(quil + offset,
+                                      max_size - offset,
+                                      circuit->num_qubits);
+    }
+
+    // Convert each HardwareGate to Quil
+    for (size_t i = 0; i < circuit->num_gates; i++) {
+        offset += hardware_gate_to_quil(&circuit->gates[i],
+                                       quil + offset,
+                                       max_size - offset);
+    }
+
+    // Add measurements
+    for (size_t i = 0; i < circuit->num_qubits; i++) {
+        offset += snprintf(quil + offset, max_size - offset,
+                         "MEASURE %zu ro[%zu]\n", i, i);
+    }
+
+    return quil;
+}
+
 // Convert gate to native Rigetti gates
-static int gate_to_native_quil(const QuantumGate* gate,
+static int gate_to_native_quil(const quantum_gate_t* gate,
                              const size_t* qubit_mapping,
                              char* quil,
                              size_t size) {
-    size_t physical_target = qubit_mapping[gate->target];
-    size_t physical_control = gate->control != SIZE_MAX ?
-                             qubit_mapping[gate->control] : SIZE_MAX;
+    size_t physical_target = qubit_mapping[GATE_GET_TARGET(gate)];
+    size_t physical_control = !GATE_IS_SINGLE_QUBIT(gate) ?
+                             qubit_mapping[GATE_GET_CONTROL(gate)] : SIZE_MAX;
     
     switch (gate->type) {
         case GATE_H:
@@ -1142,13 +1292,24 @@ static double estimate_error_bound(double probability,
 }
 
 // Submit quantum circuit to Rigetti backend with error mitigation
-int submit_rigetti_circuit(RigettiBackend* rb,
-                         const QuantumCircuit* circuit,
-                         QuantumResult* result) {
-    if (!rb || !circuit || !result) return -1;
-    
-    // Convert circuit to hardware-efficient Quil
-    char* quil = circuit_to_quil(circuit, rb);
+// Matches header: struct QuantumCircuit* (HAL type)
+int submit_rigetti_circuit(struct RigettiConfig* config,
+                         struct QuantumCircuit* circuit,
+                         struct MitigationParams* mitigation,
+                         struct ExecutionResult* result) {
+    if (!config || !circuit || !result) return -1;
+
+    // Get internal backend from config
+    RigettiInternalBackend* rb = (RigettiInternalBackend*)config->backend_specific_config;
+    if (!rb) rb = g_rigetti_backend;
+    if (!rb) return -1;
+
+    // Update error config with circuit-specific values
+    rb->error_config.num_qubits = circuit->num_qubits;
+    rb->error_config.circuit_depth = circuit->num_gates;
+
+    // Convert QuantumCircuit (HAL type) to hardware-efficient Quil
+    char* quil = circuit_to_quil(circuit);
     if (!quil) return -1;
     
     // Create job request with error mitigation
@@ -1161,12 +1322,12 @@ int submit_rigetti_circuit(RigettiBackend* rb,
                           json_object_new_int(DEFAULT_SHOTS));
     
     // Add error mitigation parameters
-    struct json_object* mitigation = json_object_new_object();
-    json_object_object_add(mitigation, "readout_correction",
+    struct json_object* mit_config = json_object_new_object();
+    json_object_object_add(mit_config, "readout_correction",
                           json_object_new_boolean(true));
-    json_object_object_add(mitigation, "symmetry_verification",
+    json_object_object_add(mit_config, "symmetry_verification",
                           json_object_new_boolean(true));
-    json_object_object_add(request, "error_mitigation", mitigation);
+    json_object_object_add(request, "error_mitigation", mit_config);
     
     // Submit job
     struct json_object* response = NULL;
@@ -1244,12 +1405,32 @@ int submit_rigetti_circuit(RigettiBackend* rb,
                             &rb->error_config);
                             
                         // Store final results with error bounds
-                        for (size_t i = 0; i < result->num_states; i++) {
-                            result->probabilities[i] = final[i];
-                            result->error_bounds[i] = estimate_error_bound(
-                                final[i],
-                                &rb->error_config);
+                        // ExecutionResult uses num_results, not num_states
+                        size_t dim = 1UL << circuit->num_qubits;
+                        if (!result->probabilities) {
+                            result->probabilities = calloc(dim, sizeof(double));
                         }
+                        result->num_results = dim;
+
+                        // Store error bounds in backend_data
+                        double* error_bounds = calloc(dim, sizeof(double));
+                        double max_error = 0.0;
+
+                        for (size_t i = 0; i < result->num_results; i++) {
+                            result->probabilities[i] = final[i];
+                            if (error_bounds) {
+                                error_bounds[i] = estimate_error_bound(
+                                    final[i],
+                                    &rb->error_config);
+                                if (error_bounds[i] > max_error) {
+                                    max_error = error_bounds[i];
+                                }
+                            }
+                        }
+
+                        // Store error bounds in backend_data and max error in error_rate
+                        result->error_rate = max_error;
+                        result->backend_data = error_bounds;
                         
                         free(corrected);
                         free(zne);
@@ -1270,20 +1451,439 @@ int submit_rigetti_circuit(RigettiBackend* rb,
     return completed ? 0 : -1;
 }
 
-// Clean up Rigetti backend
-void cleanup_rigetti_backend(RigettiBackend* rb) {
-    if (!rb) return;
-    
-    if (rb->curl) {
-        curl_easy_cleanup(rb->curl);
-        curl_global_cleanup();
+// Clean up Rigetti config (matches header)
+void cleanup_rigetti_config(struct RigettiConfig* config) {
+    if (!config) return;
+
+    // Clean up internal backend if present
+    if (config->backend_specific_config) {
+        RigettiInternalBackend* internal = (RigettiInternalBackend*)config->backend_specific_config;
+
+        if (internal->curl) {
+            curl_easy_cleanup(internal->curl);
+            curl_global_cleanup();
+        }
+
+        if (internal->json_config) {
+            json_object_put(internal->json_config);
+        }
+
+        free(internal->api_key);
+        free(internal->device_name);
+        free(internal);
+        config->backend_specific_config = NULL;
     }
-    
-    if (rb->config) {
-        json_object_put(rb->config);
+
+    // Clean up RigettiConfig fields
+    free(config->api_key);
+    free(config->url);
+    free(config->backend_name);
+    free(config->noise_model);
+    free(config);
+
+    // Clear global reference
+    g_rigetti_backend = NULL;
+}
+
+// ============================================================================
+// Job Management Functions
+// ============================================================================
+
+/**
+ * @brief Initialize QCS handle if not already done
+ */
+static bool ensure_qcs_handle(RigettiInternalBackend* internal) {
+    if (!internal) return false;
+    if (internal->qcs_handle) return true;
+
+    // Try to connect using API key or default settings
+    if (internal->api_key) {
+        qcs_auth_config_t auth = {
+            .api_key = internal->api_key,
+            .user_id = NULL,
+            .qcs_url = NULL,
+            .quilc_url = NULL,
+            .qvm_url = NULL,
+            .use_client_configuration = false
+        };
+        internal->qcs_handle = qcs_connect(&auth);
+    } else {
+        internal->qcs_handle = qcs_connect_default();
     }
-    
-    free(rb->api_key);
-    free(rb->device_name);
-    free(rb);
+
+    if (!internal->qcs_handle) {
+        snprintf(internal->last_error, sizeof(internal->last_error),
+                 "Failed to establish QCS connection");
+        internal->last_error_code = -1;
+        return false;
+    }
+
+    return true;
+}
+
+/**
+ * @brief Add job ID to tracking list
+ */
+static bool track_job(RigettiInternalBackend* internal, const char* job_id) {
+    if (!internal || !job_id) return false;
+
+    // Initialize job tracking if needed
+    if (!internal->active_job_ids) {
+        internal->max_active_jobs = 64;
+        internal->active_job_ids = calloc(internal->max_active_jobs, sizeof(char*));
+        if (!internal->active_job_ids) return false;
+    }
+
+    // Grow if needed
+    if (internal->num_active_jobs >= internal->max_active_jobs) {
+        size_t new_max = internal->max_active_jobs * 2;
+        char** new_ids = realloc(internal->active_job_ids, new_max * sizeof(char*));
+        if (!new_ids) return false;
+        internal->active_job_ids = new_ids;
+        internal->max_active_jobs = new_max;
+    }
+
+    internal->active_job_ids[internal->num_active_jobs++] = strdup(job_id);
+    return true;
+}
+
+/**
+ * @brief Remove job ID from tracking list
+ */
+static void untrack_job(RigettiInternalBackend* internal, const char* job_id) {
+    if (!internal || !job_id || !internal->active_job_ids) return;
+
+    for (size_t i = 0; i < internal->num_active_jobs; i++) {
+        if (internal->active_job_ids[i] && strcmp(internal->active_job_ids[i], job_id) == 0) {
+            free(internal->active_job_ids[i]);
+            // Shift remaining jobs
+            for (size_t j = i; j < internal->num_active_jobs - 1; j++) {
+                internal->active_job_ids[j] = internal->active_job_ids[j + 1];
+            }
+            internal->num_active_jobs--;
+            return;
+        }
+    }
+}
+
+/**
+ * @brief Cache a job result for later retrieval
+ */
+static void cache_result(RigettiInternalBackend* internal, const char* job_id,
+                         const qcs_job_result_t* qcs_result) {
+    if (!internal || !job_id || !qcs_result) return;
+
+    // Find empty slot or oldest entry
+    size_t slot = internal->num_cached_results;
+    if (slot >= 16) {
+        // Overwrite oldest (slot 0) and shift
+        qcs_free_result((qcs_job_result_t*)&internal->cached_results[0].result);
+        for (size_t i = 0; i < 15; i++) {
+            internal->cached_results[i] = internal->cached_results[i + 1];
+        }
+        slot = 15;
+    } else {
+        internal->num_cached_results++;
+    }
+
+    // Copy result
+    strncpy(internal->cached_results[slot].job_id, job_id, 63);
+    internal->cached_results[slot].job_id[63] = '\0';
+    memcpy(&internal->cached_results[slot].result, qcs_result, sizeof(qcs_job_result_t));
+    internal->cached_results[slot].valid = true;
+}
+
+/**
+ * @brief Find cached result by job ID
+ */
+static qcs_job_result_t* find_cached_result(RigettiInternalBackend* internal, const char* job_id) {
+    if (!internal || !job_id) return NULL;
+
+    for (size_t i = 0; i < internal->num_cached_results; i++) {
+        if (internal->cached_results[i].valid &&
+            strcmp(internal->cached_results[i].job_id, job_id) == 0) {
+            return &internal->cached_results[i].result;
+        }
+    }
+    return NULL;
+}
+
+/**
+ * @brief Map QCS job status to RigettiJobStatus
+ */
+static RigettiJobStatus map_qcs_status(qcs_job_status_t qcs_status) {
+    switch (qcs_status) {
+        case QCS_JOB_PENDING:  return RIGETTI_STATUS_QUEUED;
+        case QCS_JOB_QUEUED:   return RIGETTI_STATUS_QUEUED;
+        case QCS_JOB_RUNNING:  return RIGETTI_STATUS_RUNNING;
+        case QCS_JOB_COMPLETED: return RIGETTI_STATUS_COMPLETED;
+        case QCS_JOB_FAILED:   return RIGETTI_STATUS_ERROR;
+        case QCS_JOB_CANCELLED: return RIGETTI_STATUS_CANCELLED;
+        default:               return RIGETTI_STATUS_ERROR;
+    }
+}
+
+/**
+ * Submit a job to Rigetti QCS
+ *
+ * This function converts the circuit to Quil format and submits it
+ * to the Rigetti QCS platform for execution on QPU or QVM.
+ */
+char* submit_rigetti_job(struct RigettiConfig* config, const struct RigettiJobConfig* job_config) {
+    if (!job_config) {
+        return NULL;
+    }
+    (void)config;  // Use global backend state
+
+    RigettiInternalBackend* internal = g_rigetti_backend;
+    if (!internal) {
+        log_error("Rigetti backend not initialized");
+        return NULL;
+    }
+
+    // Ensure QCS connection
+    if (!ensure_qcs_handle(internal)) {
+        log_error("Failed to connect to QCS: %s", internal->last_error);
+        return NULL;
+    }
+
+    // Convert circuit to Quil
+    char* quil_program = NULL;
+    if (job_config->circuit) {
+        quil_program = circuit_to_quil(job_config->circuit);
+        if (!quil_program) {
+            snprintf(internal->last_error, sizeof(internal->last_error),
+                     "Failed to convert circuit to Quil format");
+            return NULL;
+        }
+    } else {
+        snprintf(internal->last_error, sizeof(internal->last_error),
+                 "No circuit provided in job configuration");
+        return NULL;
+    }
+
+    // Configure execution options
+    qcs_execution_options_t exec_options = {
+        .target = internal->is_simulator ? QCS_TARGET_QVM : QCS_TARGET_QPU,
+        .qpu_name = internal->device_name,
+        .shots = job_config->shots > 0 ? job_config->shots : DEFAULT_SHOTS,
+        .use_quilc = job_config->optimize,
+        .use_parametric = job_config->use_parametric_compilation,
+        .use_active_reset = false,
+        .timeout_seconds = API_TIMEOUT
+    };
+
+    // Submit job to QCS
+    char* job_id = qcs_submit_program(internal->qcs_handle, quil_program, &exec_options);
+    free(quil_program);
+
+    if (!job_id) {
+        const char* qcs_error = qcs_get_last_error(internal->qcs_handle);
+        snprintf(internal->last_error, sizeof(internal->last_error),
+                 "Failed to submit job to QCS: %s",
+                 qcs_error ? qcs_error : "Unknown error");
+        return NULL;
+    }
+
+    // Track the job
+    track_job(internal, job_id);
+
+    log_info("Submitted job %s to Rigetti %s (%zu shots)",
+             job_id,
+             internal->is_simulator ? "QVM" : internal->device_name,
+             exec_options.shots);
+
+    return job_id;
+}
+
+/**
+ * Get status of a Rigetti job
+ */
+RigettiJobStatus get_rigetti_job_status(struct RigettiConfig* config, const char* job_id) {
+    (void)config;
+
+    if (!job_id) {
+        return RIGETTI_STATUS_ERROR;
+    }
+
+    RigettiInternalBackend* internal = g_rigetti_backend;
+    if (!internal) {
+        return RIGETTI_STATUS_ERROR;
+    }
+
+    // Check cached results first
+    qcs_job_result_t* cached = find_cached_result(internal, job_id);
+    if (cached) {
+        return map_qcs_status(cached->status);
+    }
+
+    // Query QCS for status
+    if (!internal->qcs_handle) {
+        return RIGETTI_STATUS_ERROR;
+    }
+
+    qcs_job_status_t qcs_status = qcs_get_job_status(internal->qcs_handle, job_id);
+    return map_qcs_status(qcs_status);
+}
+
+/**
+ * Get result of a Rigetti job
+ *
+ * This function retrieves the execution results from QCS, including
+ * measurement counts, probabilities, and execution metadata.
+ */
+RigettiJobResult* get_rigetti_job_result(struct RigettiConfig* config, const char* job_id) {
+    (void)config;
+
+    if (!job_id) {
+        return NULL;
+    }
+
+    RigettiInternalBackend* internal = g_rigetti_backend;
+    if (!internal || !internal->qcs_handle) {
+        return NULL;
+    }
+
+    // Check cache first
+    qcs_job_result_t* cached = find_cached_result(internal, job_id);
+    qcs_job_result_t qcs_result;
+    qcs_job_result_t* result_ptr = cached;
+
+    if (!cached) {
+        // Fetch from QCS
+        memset(&qcs_result, 0, sizeof(qcs_result));
+        if (!qcs_get_job_result(internal->qcs_handle, job_id, &qcs_result)) {
+            snprintf(internal->last_error, sizeof(internal->last_error),
+                     "Failed to retrieve job result from QCS");
+            return NULL;
+        }
+        result_ptr = &qcs_result;
+
+        // Cache the result
+        cache_result(internal, job_id, &qcs_result);
+    }
+
+    // Create RigettiJobResult from qcs_job_result_t
+    RigettiJobResult* result = calloc(1, sizeof(RigettiJobResult));
+    if (!result) {
+        return NULL;
+    }
+
+    result->status = map_qcs_status(result_ptr->status);
+
+    // Copy counts if available
+    if (result_ptr->counts && result_ptr->num_outcomes > 0) {
+        result->counts = calloc(result_ptr->num_outcomes, sizeof(uint64_t));
+        if (result->counts) {
+            memcpy(result->counts, result_ptr->counts,
+                   result_ptr->num_outcomes * sizeof(uint64_t));
+        }
+    }
+
+    // Copy probabilities if available
+    if (result_ptr->probabilities && result_ptr->num_outcomes > 0) {
+        result->probabilities = calloc(result_ptr->num_outcomes, sizeof(double));
+        if (result->probabilities) {
+            memcpy(result->probabilities, result_ptr->probabilities,
+                   result_ptr->num_outcomes * sizeof(double));
+        }
+    }
+
+    // Calculate fidelity estimate from probabilities
+    if (result->probabilities && result_ptr->num_outcomes > 0) {
+        // Use max probability as rough fidelity estimate
+        double max_prob = 0.0;
+        for (size_t i = 0; i < result_ptr->num_outcomes; i++) {
+            if (result->probabilities[i] > max_prob) {
+                max_prob = result->probabilities[i];
+            }
+        }
+        result->fidelity = max_prob;
+        result->error_rate = 1.0 - max_prob;
+    }
+
+    // Copy error message if present
+    if (result_ptr->error_message) {
+        result->error_message = strdup(result_ptr->error_message);
+    }
+
+    // Store raw data reference
+    result->raw_data = result_ptr->metadata;
+
+    // Remove from active tracking
+    untrack_job(internal, job_id);
+
+    return result;
+}
+
+/**
+ * Cancel a Rigetti job
+ */
+bool cancel_rigetti_job(struct RigettiConfig* config, const char* job_id) {
+    (void)config;
+
+    if (!job_id) {
+        return false;
+    }
+
+    RigettiInternalBackend* internal = g_rigetti_backend;
+    if (!internal || !internal->qcs_handle) {
+        return false;
+    }
+
+    bool success = qcs_cancel_job(internal->qcs_handle, job_id);
+    if (success) {
+        untrack_job(internal, job_id);
+        log_info("Cancelled job %s", job_id);
+    } else {
+        const char* error = qcs_get_last_error(internal->qcs_handle);
+        snprintf(internal->last_error, sizeof(internal->last_error),
+                 "Failed to cancel job: %s", error ? error : "Unknown error");
+    }
+
+    return success;
+}
+
+/**
+ * Get error information for a Rigetti job
+ */
+char* get_rigetti_error_info(struct RigettiConfig* config, const char* job_id) {
+    (void)config;
+    (void)job_id;
+
+    RigettiInternalBackend* internal = g_rigetti_backend;
+    if (!internal) {
+        return strdup("Rigetti backend not initialized");
+    }
+
+    // First check QCS handle for latest error
+    if (internal->qcs_handle) {
+        const char* qcs_error = qcs_get_last_error(internal->qcs_handle);
+        if (qcs_error && qcs_error[0]) {
+            return strdup(qcs_error);
+        }
+    }
+
+    // Fall back to cached error
+    if (internal->last_error[0]) {
+        return strdup(internal->last_error);
+    }
+
+    return NULL;
+}
+
+/**
+ * Clean up a Rigetti job result
+ */
+void cleanup_rigetti_result(RigettiJobResult* result) {
+    if (!result) {
+        return;
+    }
+
+    free(result->counts);
+    free(result->probabilities);
+    free(result->error_message);
+    free(result->parametric_values);
+    // raw_data is owned by cache, don't free
+    free(result);
 }

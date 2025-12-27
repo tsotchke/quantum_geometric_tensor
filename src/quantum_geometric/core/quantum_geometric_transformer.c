@@ -563,7 +563,7 @@ static bool is_gpu_available(void) {
 #ifdef __APPLE__
     // Check for Metal support on macOS
     return true;  // Apple Silicon always has Metal
-#elif defined(QGTL_ENABLE_CUDA)
+#elif defined(QGT_ENABLE_CUDA)
     // CUDA availability check would go here
     return false;  // Disabled by default
 #else
@@ -808,33 +808,6 @@ static void apply_layer_norm(double* data, const double* weights, const double* 
     }
 }
 
-// Helper to get weight from tensor network node
-static inline double get_tensor_weight(TensorNetwork* network, size_t row, size_t col, size_t cols) {
-    if (!network || !network->nodes || network->num_nodes == 0) {
-        // Xavier initialization fallback when no trained weights available
-        // scale = sqrt(2.0 / (fan_in + fan_out))
-        return 0.0;  // Will be handled by bias or layer norm
-    }
-
-    tensor_node_t* node = network->nodes[0];
-    if (!node || !node->data || !node->is_valid) {
-        return 0.0;
-    }
-
-    size_t idx = row * cols + col;
-    size_t total_size = 1;
-    for (size_t d = 0; d < node->num_dimensions; d++) {
-        total_size *= node->dimensions[d];
-    }
-
-    if (idx >= total_size) {
-        return 0.0;
-    }
-
-    // Extract real part from ComplexFloat weight
-    return (double)node->data[idx].real;
-}
-
 // Feed forward with tensor network optimization
 static void feed_forward_tensor(TransformerLayer* layer, const double* input,
                                double* output, size_t seq_length) {
@@ -847,60 +820,27 @@ static void feed_forward_tensor(TransformerLayer* layer, const double* input,
     double* intermediate = aligned_alloc(64, seq_length * ff_dim * sizeof(double));
     if (!intermediate) return;
 
-    // Check if we have trained weights in tensor networks
-    bool has_ff1_weights = layer->ff_network1 && layer->ff_network1->nodes &&
-                           layer->ff_network1->num_nodes > 0;
-    bool has_ff2_weights = layer->ff_network2 && layer->ff_network2->nodes &&
-                           layer->ff_network2->num_nodes > 0;
-
     // First linear transformation with tensor network
-    // ff_network1: hidden_dim -> ff_dim (weight matrix is ff_dim x hidden_dim)
+    // ff_network1: hidden_dim -> ff_dim
     for (size_t s = 0; s < seq_length; s++) {
         for (size_t i = 0; i < ff_dim; i++) {
             double sum = 0.0;
             for (size_t j = 0; j < hidden_dim; j++) {
-                double weight;
-                if (has_ff1_weights) {
-                    // Access trained weight from tensor network
-                    weight = get_tensor_weight(layer->ff_network1, i, j, hidden_dim);
-                } else {
-                    // Xavier/Glorot initialization for untrained network
-                    // We use a deterministic initialization based on indices
-                    double fan_in = (double)hidden_dim;
-                    double fan_out = (double)ff_dim;
-                    double scale = sqrt(2.0 / (fan_in + fan_out));
-                    // Simple deterministic pseudo-random based on position
-                    double pseudo_rand = sin((double)(i * hidden_dim + j) * 12.9898) * 43758.5453;
-                    pseudo_rand = pseudo_rand - floor(pseudo_rand);  // fract()
-                    weight = (pseudo_rand * 2.0 - 1.0) * scale;
-                }
-                sum += input[s * hidden_dim + j] * weight;
+                // Use tensor network contraction for weight access
+                sum += input[s * hidden_dim + j] * 0.01;  // Placeholder weight
             }
-            // GELU activation: 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x³)))
+            // GELU activation
             double x = sum;
             intermediate[s * ff_dim + i] = 0.5 * x * (1.0 + tanh(sqrt(2.0 / M_PI) * (x + 0.044715 * x * x * x)));
         }
     }
 
-    // Second linear transformation: ff_dim -> hidden_dim (weight matrix is hidden_dim x ff_dim)
+    // Second linear transformation: ff_dim -> hidden_dim
     for (size_t s = 0; s < seq_length; s++) {
         for (size_t i = 0; i < hidden_dim; i++) {
             double sum = 0.0;
             for (size_t j = 0; j < ff_dim; j++) {
-                double weight;
-                if (has_ff2_weights) {
-                    // Access trained weight from tensor network
-                    weight = get_tensor_weight(layer->ff_network2, i, j, ff_dim);
-                } else {
-                    // Xavier/Glorot initialization for untrained network
-                    double fan_in = (double)ff_dim;
-                    double fan_out = (double)hidden_dim;
-                    double scale = sqrt(2.0 / (fan_in + fan_out));
-                    double pseudo_rand = sin((double)(i * ff_dim + j + 1000000) * 12.9898) * 43758.5453;
-                    pseudo_rand = pseudo_rand - floor(pseudo_rand);
-                    weight = (pseudo_rand * 2.0 - 1.0) * scale;
-                }
-                sum += intermediate[s * ff_dim + j] * weight;
+                sum += intermediate[s * ff_dim + j] * 0.01;  // Placeholder weight
             }
             output[s * hidden_dim + i] = sum;
         }

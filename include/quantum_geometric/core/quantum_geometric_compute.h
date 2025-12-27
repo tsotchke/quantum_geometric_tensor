@@ -16,12 +16,12 @@ extern "C" {
 // Forward declaration - actual type defined in quantum_types.h
 struct quantum_circuit_t;
 
-// Circuit creation and destruction
-quantum_circuit_t* quantum_circuit_create(size_t num_qubits);
-void quantum_circuit_destroy(quantum_circuit_t* circuit);
+// Circuit creation and destruction - canonical declarations in quantum_circuit_operations.h
+// Include that header for quantum_circuit_create() and quantum_circuit_destroy()
 
-// Circuit execution
-bool quantum_circuit_execute(quantum_circuit_t* circuit);
+// Circuit execution - unified with quantum_circuit_operations.h
+// The primary API is in quantum_circuit_operations.h
+// qgt_error_t quantum_circuit_execute(quantum_circuit_t* circuit, quantum_state_t* state);
 
 // State access
 const quantum_geometric_state_t* quantum_circuit_get_state(const quantum_circuit_t* circuit);

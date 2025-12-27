@@ -104,8 +104,8 @@ typedef struct {
 // Performance monitor (opaque)
 typedef struct PerformanceMonitorImpl PerformanceMonitor;
 
-// Initialize performance monitor
-PerformanceMonitor* init_performance_monitor(const MonitorConfig* config);
+// Initialize distributed performance monitor
+PerformanceMonitor* init_distributed_performance_monitor(const MonitorConfig* config);
 
 // Start monitoring (background thread)
 void perf_monitor_start(PerformanceMonitor* monitor);
@@ -147,8 +147,8 @@ void perf_monitor_set_callback(
 // Reset statistics
 void perf_monitor_reset(PerformanceMonitor* monitor);
 
-// Clean up performance monitor
-void cleanup_performance_monitor(PerformanceMonitor* monitor);
+// Clean up distributed performance monitor
+void cleanup_distributed_performance_monitor(PerformanceMonitor* monitor);
 
 #ifdef __cplusplus
 }

@@ -18,9 +18,9 @@ static bool initialize_backend(IBMBackendState* state,
                              const IBMBackendConfig* config);
 static void cleanup_backend(IBMBackendState* state);
 static bool optimize_circuit(IBMBackendState* state,
-                           quantum_circuit* circuit);
+                           ibm_quantum_circuit* circuit);
 static bool execute_optimized(IBMBackendState* state,
-                            quantum_circuit* circuit,
+                            ibm_quantum_circuit* circuit,
                             quantum_result* result);
 static bool apply_error_mitigation(IBMBackendState* state,
                                  quantum_result* result);
@@ -80,7 +80,7 @@ static bool setup_feedback_channels(const char* backend_name,
 }
 
 static bool execute_parallel_ops(const char* backend_name,
-                               quantum_circuit* circuit,
+                               ibm_quantum_circuit* circuit,
                                quantum_result* result,
                                const parallel_config* config) {
     if (!backend_name || !circuit || !result || !config) {
@@ -99,8 +99,8 @@ static bool execute_parallel_ops(const char* backend_name,
 }
 
 // Circuit optimization functions
-static bool are_inverse_gates(const quantum_gate* g1,
-                            const quantum_gate* g2) {
+static bool are_inverse_gates(const ibm_quantum_gate* g1,
+                            const ibm_quantum_gate* g2) {
     if (!g1 || !g2) return false;
 
     // Check if gates cancel each other
@@ -126,8 +126,8 @@ static bool are_inverse_gates(const quantum_gate* g1,
     }
 }
 
-static bool can_fuse_gates(const quantum_gate* g1,
-                          const quantum_gate* g2) {
+static bool can_fuse_gates(const ibm_quantum_gate* g1,
+                          const ibm_quantum_gate* g2) {
     if (!g1 || !g2) return false;
 
     // Check if gates can be combined
@@ -145,8 +145,8 @@ static bool can_fuse_gates(const quantum_gate* g1,
     }
 }
 
-static void fuse_gates(quantum_gate* g1,
-                      const quantum_gate* g2) {
+static void fuse_gates(ibm_quantum_gate* g1,
+                      const ibm_quantum_gate* g2) {
     if (!g1 || !g2) return;
 
     // Combine gate parameters
@@ -162,7 +162,7 @@ static void fuse_gates(quantum_gate* g1,
     }
 }
 
-static void compact_circuit(quantum_circuit* circuit) {
+static void compact_circuit(ibm_quantum_circuit* circuit) {
     if (!circuit) return;
 
     // Remove cancelled gates
@@ -184,7 +184,7 @@ typedef struct {
     bool** dependencies;
 } gate_dependency;
 
-static gate_dependency* build_dependency_graph(quantum_circuit* circuit) {
+static gate_dependency* build_dependency_graph(ibm_quantum_circuit* circuit) {
     if (!circuit) return NULL;
 
     // Allocate dependency graph
@@ -197,9 +197,9 @@ static gate_dependency* build_dependency_graph(quantum_circuit* circuit) {
 
     // Build dependencies
     for (size_t i = 0; i < deps->num_gates; i++) {
-        quantum_gate* g1 = &circuit->gates[i];
+        ibm_quantum_gate* g1 = &circuit->gates[i];
         for (size_t j = i + 1; j < deps->num_gates; j++) {
-            quantum_gate* g2 = &circuit->gates[j];
+            ibm_quantum_gate* g2 = &circuit->gates[j];
             
             // Check for qubit overlap
             for (size_t q1 = 0; q1 < g1->num_qubits; q1++) {
@@ -251,15 +251,15 @@ static size_t* schedule_parallel_gates(gate_dependency* deps,
     return schedule;
 }
 
-static void reorder_circuit_gates(quantum_circuit* circuit,
+static void reorder_circuit_gates(ibm_quantum_circuit* circuit,
                                 size_t* schedule) {
     if (!circuit || !schedule) return;
 
     // Create temporary array for reordering
-    quantum_gate* temp = calloc(circuit->num_gates,
-                              sizeof(quantum_gate));
+    ibm_quantum_gate* temp = calloc(circuit->num_gates,
+                              sizeof(ibm_quantum_gate));
     memcpy(temp, circuit->gates,
-           circuit->num_gates * sizeof(quantum_gate));
+           circuit->num_gates * sizeof(ibm_quantum_gate));
 
     // Reorder gates according to schedule
     for (size_t i = 0; i < circuit->num_gates; i++) {
@@ -275,7 +275,7 @@ typedef struct {
     bool** interactions;
 } qubit_graph;
 
-static qubit_graph* build_interaction_graph(quantum_circuit* circuit) {
+static qubit_graph* build_interaction_graph(ibm_quantum_circuit* circuit) {
     if (!circuit) return NULL;
 
     // Count unique qubits
@@ -283,7 +283,7 @@ static qubit_graph* build_interaction_graph(quantum_circuit* circuit) {
     size_t num_qubits = 0;
     
     for (size_t i = 0; i < circuit->num_gates; i++) {
-        quantum_gate* gate = &circuit->gates[i];
+        ibm_quantum_gate* gate = &circuit->gates[i];
         for (size_t j = 0; j < gate->num_qubits; j++) {
             size_t qubit = gate->qubits[j];
             if (!used_qubits[qubit]) {
@@ -303,7 +303,7 @@ static qubit_graph* build_interaction_graph(quantum_circuit* circuit) {
 
     // Build interactions
     for (size_t i = 0; i < circuit->num_gates; i++) {
-        quantum_gate* gate = &circuit->gates[i];
+        ibm_quantum_gate* gate = &circuit->gates[i];
         for (size_t j = 0; j < gate->num_qubits; j++) {
             for (size_t k = j + 1; k < gate->num_qubits; k++) {
                 size_t q1 = gate->qubits[j];
@@ -358,13 +358,13 @@ static size_t* find_optimal_mapping(qubit_graph* graph,
     return mapping;
 }
 
-static void remap_circuit_qubits(quantum_circuit* circuit,
+static void remap_circuit_qubits(ibm_quantum_circuit* circuit,
                                size_t* mapping) {
     if (!circuit || !mapping) return;
 
     // Remap qubits in all gates
     for (size_t i = 0; i < circuit->num_gates; i++) {
-        quantum_gate* gate = &circuit->gates[i];
+        ibm_quantum_gate* gate = &circuit->gates[i];
         for (size_t j = 0; j < gate->num_qubits; j++) {
             gate->qubits[j] = mapping[gate->qubits[j]];
         }
@@ -375,10 +375,13 @@ static void remap_circuit_qubits(quantum_circuit* circuit,
     }
 }
 
+// Forward declaration
+static void optimized_cleanup_ibm_backend(IBMBackendState* state);
+
 // Main interface functions
-bool init_ibm_backend(IBMBackendState* state, const IBMBackendConfig* config) {
+qgt_error_t init_ibm_backend(IBMBackendState* state, const IBMBackendConfig* config) {
     if (!state || !config || !validate_ibm_config(config)) {
-        return false;
+        return QGT_ERROR_INVALID_ARGUMENT;
     }
 
     // Initialize state
@@ -389,7 +392,7 @@ bool init_ibm_backend(IBMBackendState* state, const IBMBackendConfig* config) {
     if (!get_backend_properties(config->backend_name,
                               &state->num_qubits,
                               &state->calibration_data)) {
-        return false;
+        return QGT_ERROR_HARDWARE_NOT_AVAILABLE;
     }
 
     // Allocate arrays
@@ -397,7 +400,7 @@ bool init_ibm_backend(IBMBackendState* state, const IBMBackendConfig* config) {
     state->readout_errors = calloc(state->num_qubits, sizeof(double));
     state->qubit_availability = calloc(state->num_qubits, sizeof(bool));
     state->measurement_order = calloc(state->num_qubits, sizeof(size_t));
-    
+
     state->coupling_map = calloc(state->num_qubits, sizeof(double*));
     for (size_t i = 0; i < state->num_qubits; i++) {
         state->coupling_map[i] = calloc(state->num_qubits, sizeof(double));
@@ -405,15 +408,15 @@ bool init_ibm_backend(IBMBackendState* state, const IBMBackendConfig* config) {
 
     // Initialize backend
     if (!initialize_backend(state, config)) {
-        cleanup_ibm_backend(state);
-        return false;
+        optimized_cleanup_ibm_backend(state);
+        return QGT_ERROR_INITIALIZATION_FAILED;
     }
 
     state->initialized = true;
-    return true;
+    return QGT_SUCCESS;
 }
 
-void cleanup_ibm_backend(IBMBackendState* state) {
+static void optimized_cleanup_ibm_backend(IBMBackendState* state) {
     if (state) {
         cleanup_backend(state);
         free(state->error_rates);
@@ -430,9 +433,10 @@ void cleanup_ibm_backend(IBMBackendState* state) {
     }
 }
 
-bool execute_circuit(IBMBackendState* state,
-                    quantum_circuit* circuit,
-                    quantum_result* result) {
+// Renamed to avoid conflict with quantum_ibm_backend.c
+bool execute_ibm_circuit_optimized(IBMBackendState* state,
+                                   ibm_quantum_circuit* circuit,
+                                   quantum_result* result) {
     if (!state || !state->initialized || !circuit || !result) {
         return false;
     }
@@ -483,7 +487,7 @@ static bool initialize_backend(IBMBackendState* state,
     }
 
     // Optimize measurement order based on readout errors
-    optimize_measurement_order(state->measurement_order,
+    ibm_optimize_measurement_order(state->measurement_order,
                              state->readout_errors,
                              state->num_qubits);
 
@@ -492,11 +496,43 @@ static bool initialize_backend(IBMBackendState* state,
 
 static void cleanup_backend(IBMBackendState* state) {
     if (!state) return;
-    // Additional cleanup if needed
+
+    // Securely clear credentials from API handle
+    if (state->api_handle) {
+        ibm_api_clear_credentials(state->api_handle);
+        ibm_api_destroy(state->api_handle);
+        state->api_handle = NULL;
+    }
+
+    // Securely zero the token before freeing
+    if (state->config.token) {
+        size_t token_len = strlen(state->config.token);
+        memset(state->config.token, 0, token_len);
+        free(state->config.token);
+        state->config.token = NULL;
+    }
+
+    // Clean up last result data securely
+    if (state->last_result_data) {
+        if (state->last_result_data->raw_data) {
+            memset(state->last_result_data->raw_data, 0,
+                   state->last_result_data->raw_data_size);
+            free(state->last_result_data->raw_data);
+        }
+        free(state->last_result_data);
+        state->last_result_data = NULL;
+    }
+
+    // Free calibration data
+    free(state->calibration_data);
+    state->calibration_data = NULL;
+
+    state->initialized = false;
+    state->connected = false;
 }
 
 static bool optimize_circuit(IBMBackendState* state,
-                           quantum_circuit* circuit) {
+                           ibm_quantum_circuit* circuit) {
     if (!state || !circuit) {
         return false;
     }
@@ -505,21 +541,21 @@ static bool optimize_circuit(IBMBackendState* state,
     bool success = true;
 
     // 1. Gate cancellation
-    success &= cancel_redundant_gates(circuit);
+    success &= ibm_cancel_redundant_gates(circuit);
 
     // 2. Gate fusion
-    success &= fuse_compatible_gates(circuit);
+    success &= ibm_fuse_compatible_gates(circuit);
 
     // 3. Gate reordering for parallelism
-    success &= reorder_gates_parallel(circuit);
+    success &= ibm_reorder_gates_parallel(circuit);
 
     // 4. Qubit mapping optimization
-    success &= optimize_qubit_mapping(circuit,
+    success &= ibm_optimize_qubit_mapping(circuit,
                                     state->coupling_map,
                                     state->num_qubits);
 
     // 5. Measurement optimization
-    success &= optimize_measurements(circuit,
+    success &= ibm_optimize_measurements(circuit,
                                    state->measurement_order,
                                    state->num_qubits);
 
@@ -527,7 +563,7 @@ static bool optimize_circuit(IBMBackendState* state,
 }
 
 static bool execute_optimized(IBMBackendState* state,
-                            quantum_circuit* circuit,
+                            ibm_quantum_circuit* circuit,
                             quantum_result* result) {
     if (!state || !circuit || !result) {
         return false;
@@ -548,7 +584,7 @@ static bool execute_optimized(IBMBackendState* state,
 
     // Process results
     if (success) {
-        process_measurement_results(result,
+        ibm_process_measurement_results(result,
                                   state->readout_errors,
                                   state->num_qubits);
     }
@@ -563,21 +599,21 @@ static bool apply_error_mitigation(IBMBackendState* state,
     }
 
     // Apply readout error mitigation
-    if (!mitigate_readout_errors(result,
+    if (!ibm_mitigate_readout_errors(result,
                                 state->readout_errors,
                                 state->num_qubits)) {
         return false;
     }
 
     // Apply measurement error mitigation
-    if (!mitigate_measurement_errors(result,
+    if (!ibm_mitigate_measurement_errors(result,
                                    state->error_rates,
                                    state->num_qubits)) {
         return false;
     }
 
     // Apply noise extrapolation
-    if (!extrapolate_zero_noise(result,
+    if (!ibm_extrapolate_zero_noise(result,
                                state->error_rates,
                                state->num_qubits)) {
         return false;

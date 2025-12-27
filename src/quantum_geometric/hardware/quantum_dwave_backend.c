@@ -9,12 +9,13 @@
 #include <string.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdio.h>
 
-#ifdef QGTL_HAS_CURL
+#ifdef QGT_HAS_CURL
 #include <curl/curl.h>
 #endif
 
-#ifdef QGTL_HAS_JSON_C
+#ifdef QGT_HAS_JSON_C
 #include <json-c/json.h>
 #endif
 
@@ -60,7 +61,7 @@ static inline const DWaveInternalState* get_internal_state_const(const DWaveConf
 // CURL + JSON-C implementation (full D-Wave API support)
 // ============================================================================
 
-#if defined(QGTL_HAS_CURL) && defined(QGTL_HAS_JSON_C)
+#if defined(QGT_HAS_CURL) && defined(QGT_HAS_JSON_C)
 
 // Response buffer for CURL
 typedef struct {
@@ -482,7 +483,7 @@ void cleanup_dwave_config(DWaveConfig* config) {
     free(config);
 }
 
-#endif // QGTL_HAS_CURL && QGTL_HAS_JSON_C
+#endif // QGT_HAS_CURL && QGT_HAS_JSON_C
 
 // ============================================================================
 // Common implementations (don't require CURL/JSON)
@@ -734,7 +735,7 @@ char* load_dwave_credentials(const char* filename) {
 // Test connection
 bool test_dwave_connection(const char* token) {
     (void)token;
-#if defined(QGTL_HAS_CURL)
+#if defined(QGT_HAS_CURL)
     // Would need to actually test the connection
     return token != NULL;
 #else

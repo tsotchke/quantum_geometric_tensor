@@ -59,7 +59,8 @@ struct IBMBackendState;
 typedef struct IBMResultData {
     double fidelity;            // Measurement fidelity
     double error_rate;          // Error rate
-    void* raw_data;            // Raw backend data
+    void* raw_data;             // Raw backend data
+    size_t raw_data_size;       // Size of raw data
 } IBMResultData;
 
 // IBM job configuration

@@ -999,14 +999,14 @@ bool apply_quantum_circuit(
     return true;
 }
 
-bool measure_quantum_state(
+bool qgtn_measure_qubit(
     const quantum_geometric_tensor_network_t* qgtn,
     size_t qubit,
     double* probability_zero,
     double* probability_one) {
-    
+
     if (!qgtn || !probability_zero || !probability_one) {
-        set_qgtn_error("Invalid arguments to measure_quantum_state");
+        set_qgtn_error("Invalid arguments to qgtn_measure_qubit");
         return false;
     }
     
@@ -1251,12 +1251,13 @@ bool synchronize_distributed_state(
 }
 
 // Hardware acceleration
-bool enable_hardware_acceleration(
+// Renamed to avoid conflict with quantum_hardware_abstraction.c (this is QGTN-specific)
+bool enable_qgtn_hardware_acceleration(
     quantum_geometric_tensor_network_t* qgtn,
     HardwareType type) {
-    
+
     if (!qgtn) {
-        set_qgtn_error("Invalid arguments to enable_hardware_acceleration");
+        set_qgtn_error("Invalid arguments to enable_qgtn_hardware_acceleration");
         return false;
     }
     

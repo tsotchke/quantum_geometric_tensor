@@ -6,6 +6,7 @@
 #include <quantum_geometric/core/cache_manager.h>
 #include <quantum_geometric/core/memory_optimization.h>
 #include <quantum_geometric/core/multi_gpu_operations.h>
+#include <quantum_geometric/core/quantum_geometric_gpu.h>
 
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -35,6 +36,73 @@
 static PerformanceMetrics g_metrics = {0};
 static pthread_mutex_t g_metrics_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+// Global configuration state
+static size_t g_cache_size = 0;
+static size_t g_prefetch_size = 0;
+static size_t g_num_workers = 1;
+static bool g_profiling_enabled = false;
+static bool g_gpu_initialized = false;
+static size_t g_memory_limit = 0;
+static bool g_streaming_enabled = false;
+static size_t g_chunk_size = 0;
+static bool g_compression_enabled = false;
+
+// GPU memory wrapper functions
+static void* quantum_gpu_malloc(size_t size) {
+    void* ptr = NULL;
+    if (gpu_malloc(&ptr, size) == QGT_SUCCESS) {
+        return ptr;
+    }
+    return NULL;
+}
+
+static void quantum_gpu_free(void* ptr) {
+    if (ptr) {
+        gpu_free(ptr);
+    }
+}
+
+// Configuration helper functions
+static bool quantum_configure_cache(size_t cache_size) {
+    g_cache_size = cache_size;
+    return true;
+}
+
+static bool quantum_configure_prefetch(size_t prefetch_size) {
+    g_prefetch_size = prefetch_size;
+    return true;
+}
+
+static bool quantum_configure_workers(size_t num_workers) {
+    g_num_workers = num_workers > 0 ? num_workers : 1;
+    return true;
+}
+
+static void quantum_enable_profiling(void) {
+    g_profiling_enabled = true;
+}
+
+static bool quantum_gpu_init(void) {
+    g_gpu_initialized = true;
+    return true;
+}
+
+static bool quantum_set_memory_limit(size_t limit) {
+    g_memory_limit = limit;
+    return true;
+}
+
+static bool quantum_enable_streaming(size_t chunk_size) {
+    g_streaming_enabled = true;
+    g_chunk_size = chunk_size;
+    return true;
+}
+
+static bool quantum_enable_compression(void) {
+    g_compression_enabled = true;
+    return true;
+}
+
 // Performance monitoring
 static void update_metrics(const char* operation, double duration, size_t bytes) {
     pthread_mutex_lock(&g_metrics_mutex);
@@ -54,7 +122,7 @@ static void update_metrics(const char* operation, double duration, size_t bytes)
 #include <math.h>
 
 // Helper functions for data loading
-static dataset_t* allocate_dataset(size_t num_samples, size_t feature_dim, size_t num_classes, memory_config_t* memory_config) {
+dataset_t* allocate_dataset(size_t num_samples, size_t feature_dim, size_t num_classes, memory_config_t* memory_config) {
     clock_t start = clock();
     
     dataset_t* dataset = NULL;
@@ -1190,11 +1258,14 @@ bool quantum_configure_memory(memory_config_t config) {
     return true;
 }
 
-bool quantum_get_performance_metrics(PerformanceMetrics* metrics) {
+bool quantum_get_data_loader_metrics(data_loader_metrics_t* metrics) {
     if (!metrics) return false;
 
     pthread_mutex_lock(&g_metrics_mutex);
-    *metrics = g_metrics;
+    // Convert from internal PerformanceMetrics to data loader specific metrics
+    metrics->load_time = (double)g_metrics.cpu.total_cycles / 1e9;  // Convert to seconds
+    metrics->memory_usage = g_metrics.memory.allocations;
+    metrics->throughput = g_metrics.memory.utilization;  // samples/second
     pthread_mutex_unlock(&g_metrics_mutex);
 
     return true;

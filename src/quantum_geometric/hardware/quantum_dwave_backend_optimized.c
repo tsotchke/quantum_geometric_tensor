@@ -114,6 +114,9 @@ static DWaveOptimizedState g_state = {0};
 // Forward declarations
 void cleanup_dwave_optimized_backend(void);
 
+// Forward declarations
+void cleanup_dwave_optimized_backend(void);
+
 // ============================================================================
 // Random Number Generation (Thread-safe)
 // ============================================================================

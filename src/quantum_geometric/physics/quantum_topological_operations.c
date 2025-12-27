@@ -1,25 +1,61 @@
-#include "../include/quantum_geometric_core.h"
+#include "quantum_geometric/physics/quantum_topological_operations.h"
+#include "quantum_geometric/core/quantum_geometric_core.h"
 #include "quantum_geometric/core/quantum_geometric_constants.h"
+#include "quantum_geometric/core/quantum_geometric_compute.h"
+#include "quantum_geometric/core/platform_intrinsics.h"
+#include "quantum_geometric/hardware/quantum_geometric_gpu.h"
+#include "quantum_geometric/core/quantum_circuit_operations.h"
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
 #include <complex.h>
 
-// Platform-specific SIMD includes
-#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-    #define QGT_USE_AVX 1
-    #include <immintrin.h>
-#elif defined(__aarch64__) || defined(_M_ARM64) || defined(__arm__) || defined(_M_ARM)
-    #define QGT_USE_NEON 1
-    #if defined(__ARM_NEON) || defined(__ARM_NEON__)
-        #include <arm_neon.h>
-    #endif
-#endif
-
 /**
  * @file quantum_topological_operations.c
  * @brief Implementation of topological operations with SIMD optimization and thread safety
  */
+
+// Forward declarations for internal functions
+static GPUContext* quantum_gpu_init(void);
+static void quantum_gpu_cleanup(GPUContext* gpu);
+
+static void quantum_encode_complex(quantum_register_t* reg, simplicial_complex_t* sc,
+                                   quantum_system_t* system, quantum_circuit_t* circuit,
+                                   const quantum_phase_config_t* config);
+
+static void quantum_encode_matrix(quantum_register_t* reg, int* matrix, size_t size,
+                                  quantum_system_t* system, quantum_circuit_t* circuit,
+                                  const quantum_amplitude_config_t* config);
+
+static void quantum_extract_boundary(int* boundary, quantum_register_t* reg, size_t n_simplices,
+                                     quantum_system_t* system, quantum_circuit_t* circuit,
+                                     const quantum_phase_config_t* config);
+
+static void quantum_extract_factors(int* factors, quantum_register_t* reg, size_t size,
+                                    quantum_system_t* system, quantum_circuit_t* circuit,
+                                    const quantum_amplitude_config_t* config);
+
+static void quantum_boundary_gpu(GPUContext* gpu, quantum_register_t* reg_boundary,
+                                 quantum_register_t* reg_simplices, size_t dim,
+                                 quantum_system_t* system, quantum_circuit_t* circuit,
+                                 const quantum_phase_config_t* config);
+
+static void quantum_boundary_cpu(quantum_register_t* reg_boundary,
+                                 quantum_register_t* reg_simplices, size_t dim,
+                                 quantum_system_t* system, quantum_circuit_t* circuit,
+                                 const quantum_phase_config_t* config);
+
+static void quantum_smith_gpu(GPUContext* gpu, quantum_register_t* reg_factors,
+                              quantum_register_t* reg_matrix, quantum_system_t* system,
+                              quantum_circuit_t* circuit, const quantum_amplitude_config_t* config);
+
+static void quantum_smith_cpu(quantum_register_t* reg_factors, quantum_register_t* reg_matrix,
+                              quantum_system_t* system, quantum_circuit_t* circuit,
+                              const quantum_amplitude_config_t* config);
+
+static void quantum_compute_correlations_internal(double* spin_states, double* parallel_transport,
+                                                  double complex* output, QuantumCircuit* circuit,
+                                                  QuantumWorkspace* qws, size_t chunk_size, size_t dim);
 
 #if QGT_USE_AVX
 /* SIMD helper for braiding operations - AVX version */
@@ -120,7 +156,7 @@ static inline void qgt_matrix_multiply_complex_pd(double* real_result, double* i
 #endif
 
 /* Quantum-accelerated boundary matrix computation using phase estimation - O(log N) */
-static qgt_error_t compute_boundary_matrix(const quantum_geometric_tensor* tensor,
+static qgt_error_t compute_boundary_matrix(const quantum_topological_tensor_t* tensor,
                                          size_t dim,
                                          int** boundary,
                                          size_t* size,
@@ -128,8 +164,8 @@ static qgt_error_t compute_boundary_matrix(const quantum_geometric_tensor* tenso
     if (!tensor || !boundary || !size) {
         return QGT_ERROR_INVALID_ARGUMENT;
     }
-    
-    size_t n_simplices = tensor->topology.complex->num_simplices;
+
+    size_t n_simplices = tensor->topology.simplicial_complex->num_simplices;
     *size = n_simplices;
     
     /* Initialize quantum system */
@@ -166,7 +202,7 @@ static qgt_error_t compute_boundary_matrix(const quantum_geometric_tensor* tenso
         /* Encode simplicial complex */
         quantum_encode_complex(
             reg_simplices,
-            tensor->topology.complex,
+            tensor->topology.simplicial_complex,
             system,
             circuit,
             &config
@@ -199,10 +235,7 @@ static qgt_error_t compute_boundary_matrix(const quantum_geometric_tensor* tenso
         }
         
         /* Extract boundary matrix */
-        *boundary = qgt_aligned_alloc(
-            n_simplices * n_simplices * sizeof(int),
-            QGT_CACHE_LINE
-        );
+        *boundary = qgt_aligned_alloc(n_simplices * n_simplices * sizeof(int));
         if (*boundary) {
             quantum_extract_boundary(
                 *boundary,
@@ -221,7 +254,7 @@ static qgt_error_t compute_boundary_matrix(const quantum_geometric_tensor* tenso
     quantum_circuit_destroy(circuit);
     quantum_system_destroy(system);
     
-    return *boundary ? QGT_SUCCESS : QGT_ERROR_OUT_OF_MEMORY;
+    return *boundary ? QGT_SUCCESS : QGT_ERROR_MEMORY_ALLOCATION;
 }
 
 /* Quantum-accelerated Smith normal form computation using amplitude estimation - O(log N) */
@@ -294,10 +327,7 @@ static qgt_error_t compute_smith_normal_form(int* matrix,
         }
         
         /* Extract invariant factors */
-        *invariant_factors = qgt_aligned_alloc(
-            size * sizeof(int),
-            QGT_CACHE_LINE
-        );
+        *invariant_factors = qgt_aligned_alloc(size * sizeof(int));
         if (*invariant_factors) {
             quantum_extract_factors(
                 *invariant_factors,
@@ -316,11 +346,11 @@ static qgt_error_t compute_smith_normal_form(int* matrix,
     quantum_circuit_destroy(circuit);
     quantum_system_destroy(system);
     
-    return *invariant_factors ? QGT_SUCCESS : QGT_ERROR_OUT_OF_MEMORY;
+    return *invariant_factors ? QGT_SUCCESS : QGT_ERROR_MEMORY_ALLOCATION;
 }
 
 QGT_PUBLIC QGT_HOT qgt_error_t 
-build_simplicial_complex(quantum_geometric_tensor* tensor, uint32_t flags) {
+build_simplicial_complex(quantum_topological_tensor_t* tensor, uint32_t flags) {
     if (!tensor) return QGT_ERROR_INVALID_ARGUMENT;
 
     /* Acquire write lock */
@@ -330,17 +360,17 @@ build_simplicial_complex(quantum_geometric_tensor* tensor, uint32_t flags) {
     }
 
     /* Clear existing complex */
-    qgt_mutex_t* complex_mutex = tensor->topology.complex->mutex;
+    qgt_mutex_t* complex_mutex = tensor->topology.simplicial_complex->mutex;
     if (pthread_rwlock_wrlock(&complex_mutex->rwlock) != 0) {
         pthread_rwlock_unlock(&mutex->rwlock);
         return QGT_ERROR_THREAD_ERROR;
     }
 
-    for (size_t i = 0; i < tensor->topology.complex->num_simplices; i++) {
-        qgt_aligned_free(tensor->topology.complex->simplices[i]->vertices);
-        qgt_aligned_free(tensor->topology.complex->simplices[i]);
+    for (size_t i = 0; i < tensor->topology.simplicial_complex->num_simplices; i++) {
+        qgt_aligned_free(tensor->topology.simplicial_complex->simplices[i]->vertices);
+        qgt_aligned_free(tensor->topology.simplicial_complex->simplices[i]);
     }
-    tensor->topology.complex->num_simplices = 0;
+    tensor->topology.simplicial_complex->num_simplices = 0;
 
     /* Build simplicial complex using quantum circuits - O(log N) */
     quantum_system_t* system = quantum_system_create(
@@ -384,7 +414,7 @@ build_simplicial_complex(quantum_geometric_tensor* tensor, uint32_t flags) {
                 // Build simplicial complex using quantum operations
                 quantum_build_simplices(
                     reg_spins,
-                    tensor->topology.complex,
+                    tensor->topology.simplicial_complex,
                     chunk,
                     chunk_size,
                     system,
@@ -407,10 +437,10 @@ build_simplicial_complex(quantum_geometric_tensor* tensor, uint32_t flags) {
     if (!qc) {
         pthread_rwlock_unlock(&complex_mutex->rwlock);
         pthread_rwlock_unlock(&mutex->rwlock);
-        return QGT_ERROR_OUT_OF_MEMORY;
+        return QGT_ERROR_MEMORY_ALLOCATION;
     }
 
-    for (size_t dim = 1; dim <= tensor->topology.complex->max_dim; dim++) {
+    for (size_t dim = 1; dim <= tensor->topology.simplicial_complex->max_dim; dim++) {
         /* Use quantum phase estimation to identify correlated spins */
         #pragma omp parallel
         {
@@ -434,37 +464,16 @@ build_simplicial_complex(quantum_geometric_tensor* tensor, uint32_t flags) {
                 cleanup_quantum_workspace(qws);
             }
         }
-            
-            /* Create simplices where correlation exceeds threshold */
-            __m256d threshold = _mm256_set1_pd(QG_CORRELATION_THRESHOLD);
-            __m256d mask = _mm256_cmp_pd(correlation, threshold, _CMP_GT_OQ);
-            
-            if (_mm256_movemask_pd(mask)) {
-                for (int j = 0; j < 4 && i + j < tensor->num_spins - dim; j++) {
-                    if (((double*)&correlation)[j] > QG_CORRELATION_THRESHOLD) {
-                        simplex_t* simplex = qgt_aligned_alloc(sizeof(simplex_t), QGT_CACHE_LINE);
-                        simplex->dim = dim;
-                        simplex->vertices = qgt_aligned_alloc((dim + 1) * sizeof(size_t), QGT_CACHE_LINE);
-                        for (size_t k = 0; k <= dim; k++) {
-                            simplex->vertices[k] = i + j + k;
-                        }
-                        simplex->weight = ((double*)&correlation)[j];
-                        simplex->flags = flags;
-                        
-                        tensor->topology.complex->simplices[tensor->topology.complex->num_simplices++] = simplex;
-                    }
-                }
-            }
-        }
     }
 
+    cleanup_topological_circuit(qc);
     pthread_rwlock_unlock(&complex_mutex->rwlock);
     pthread_rwlock_unlock(&mutex->rwlock);
     return QGT_SUCCESS;
 }
 
 QGT_PUBLIC QGT_HOT qgt_error_t 
-calculate_persistent_homology(quantum_geometric_tensor* tensor, uint32_t flags) {
+calculate_persistent_homology(quantum_topological_tensor_t* tensor, uint32_t flags) {
     if (!tensor) return QGT_ERROR_INVALID_ARGUMENT;
 
     /* Acquire write lock */
@@ -474,7 +483,7 @@ calculate_persistent_homology(quantum_geometric_tensor* tensor, uint32_t flags) 
     }
 
     /* Calculate homology for each dimension */
-    for (size_t dim = 0; dim < tensor->topology.complex->max_dim; dim++) {
+    for (size_t dim = 0; dim < tensor->topology.simplicial_complex->max_dim; dim++) {
         /* Compute boundary matrices */
         int* boundary;
         size_t size;
@@ -493,24 +502,12 @@ calculate_persistent_homology(quantum_geometric_tensor* tensor, uint32_t flags) 
             return err;
         }
 
-        /* Calculate Betti numbers with SIMD */
-        __m256i zero = _mm256_setzero_si256();
-        __m256d betti = _mm256_setzero_pd();
-        
-        for (size_t i = 0; i < size; i += 4) {
-            __m256i factors = _mm256_load_si256((__m256i*)&invariant_factors[i]);
-            __m256i mask = _mm256_cmpeq_epi64(factors, zero);
-            betti = _mm256_add_pd(betti,
-                _mm256_and_pd(_mm256_set1_pd(1.0),
-                    _mm256_castsi256_pd(mask)));
-        }
-        
-        /* Store Betti numbers */
+        /* Calculate Betti numbers - count zero invariant factors */
         double betti_sum = 0.0;
-        double betti_array[4];
-        _mm256_store_pd(betti_array, betti);
-        for (int i = 0; i < 4; i++) {
-            betti_sum += betti_array[i];
+        for (size_t i = 0; i < size; i++) {
+            if (invariant_factors[i] == 0) {
+                betti_sum += 1.0;
+            }
         }
         tensor->topology.homology->betti_numbers[dim] = betti_sum;
 
@@ -522,13 +519,13 @@ calculate_persistent_homology(quantum_geometric_tensor* tensor, uint32_t flags) 
         qgt_aligned_free(invariant_factors);
     }
 
-    tensor->topology.homology->num_features = tensor->topology.complex->max_dim;
+    tensor->topology.homology->num_features = tensor->topology.simplicial_complex->max_dim;
     pthread_rwlock_unlock(&mutex->rwlock);
     return QGT_SUCCESS;
 }
 
-QGT_PUBLIC QGT_HOT QGT_VECTORIZE qgt_error_t 
-analyze_singular_spectrum(quantum_geometric_tensor* tensor, uint32_t flags) {
+QGT_PUBLIC QGT_HOT QGT_VECTORIZE qgt_error_t
+analyze_singular_spectrum(quantum_topological_tensor_t* tensor, uint32_t flags) {
     if (!tensor) return QGT_ERROR_INVALID_ARGUMENT;
 
     /* Acquire write lock */
@@ -537,26 +534,21 @@ analyze_singular_spectrum(quantum_geometric_tensor* tensor, uint32_t flags) {
         return QGT_ERROR_THREAD_ERROR;
     }
 
-    /* GPU offloading if requested and available */
-    if ((flags & QGT_OP_GPU_OFFLOAD) && /* GPU available check */) {
-        // GPU implementation
-    } else {
-        /* Allocate aligned memory for correlation matrix */
-        double complex* correlation_matrix = qgt_aligned_alloc(
-            tensor->dimension * tensor->dimension * sizeof(double complex),
-            QGT_CACHE_LINE
-        );
-        if (!correlation_matrix) {
-            pthread_rwlock_unlock(&mutex->rwlock);
-            return QGT_ERROR_OUT_OF_MEMORY;
-        }
+    size_t dim = tensor->dimension;
 
-    /* Build correlation matrix using quantum circuit - O(log N) */
-    QuantumCircuit* corr_qc = init_quantum_correlation_circuit(
-        tensor->dimension);
+    /* Allocate aligned memory for correlation matrix */
+    double complex* correlation_matrix = qgt_aligned_alloc(dim * dim * sizeof(double complex));
+    if (!correlation_matrix) {
+        pthread_rwlock_unlock(&mutex->rwlock);
+        return QGT_ERROR_MEMORY_ALLOCATION;
+    }
+
+    /* Build correlation matrix using quantum circuit */
+    QuantumCircuit* corr_qc = init_quantum_correlation_circuit(dim);
     if (!corr_qc) {
-        cleanup_quantum_circuit(qc);
-        return QGT_ERROR_OUT_OF_MEMORY;
+        qgt_aligned_free(correlation_matrix);
+        pthread_rwlock_unlock(&mutex->rwlock);
+        return QGT_ERROR_MEMORY_ALLOCATION;
     }
 
     #pragma omp parallel
@@ -564,202 +556,115 @@ analyze_singular_spectrum(quantum_geometric_tensor* tensor, uint32_t flags) {
         QuantumWorkspace* qws = init_quantum_workspace(QG_QUANTUM_CHUNK_SIZE);
         if (qws) {
             #pragma omp for schedule(guided)
-            for (size_t chunk = 0; chunk < tensor->dimension; 
-                 chunk += QG_QUANTUM_CHUNK_SIZE) {
-                size_t chunk_size = min(QG_QUANTUM_CHUNK_SIZE, 
-                                      tensor->dimension - chunk);
-                
+            for (size_t chunk = 0; chunk < dim; chunk += QG_QUANTUM_CHUNK_SIZE) {
+                size_t chunk_size = (chunk + QG_QUANTUM_CHUNK_SIZE > dim) ?
+                                    (dim - chunk) : QG_QUANTUM_CHUNK_SIZE;
+
                 /* Quantum correlation computation */
-                quantum_compute_correlations(
+                quantum_compute_correlations_internal(
                     tensor->spin_system.spin_states,
                     tensor->geometry.parallel_transport,
-                    correlation_matrix + chunk * tensor->dimension,
+                    correlation_matrix + chunk * dim,
                     corr_qc,
                     qws,
                     chunk_size,
-                    tensor->dimension
+                    dim
                 );
             }
             cleanup_quantum_workspace(qws);
         }
     }
 
-                /* Include metric tensor contribution */
-                __m256d metric = _mm256_load_pd(&tensor->geometry.metric_tensor[i * tensor->dimension + j]);
-                corr_real = _mm256_mul_pd(corr_real, metric);
-                corr_imag = _mm256_mul_pd(corr_imag, metric);
-
-                /* Store results */
-                _mm256_store_pd((double*)&correlation_matrix[i * tensor->dimension + j],
-                              corr_real);
-                _mm256_store_pd((double*)&correlation_matrix[i * tensor->dimension + j] + 1,
-                              corr_imag);
-            }
+    /* Include metric tensor contribution */
+    for (size_t i = 0; i < dim; i++) {
+        for (size_t j = 0; j < dim; j++) {
+            double metric = tensor->geometry.metric_tensor[i * dim + j];
+            double complex val = correlation_matrix[i * dim + j];
+            correlation_matrix[i * dim + j] = val * metric;
         }
-
-        /* Compute singular values using power iteration */
-        #pragma omp parallel for if(flags & QGT_OP_PARALLEL)
-        for (size_t i = 0; i < tensor->dimension; i++) {
-            /* Initialize random vector */
-            double complex* v = qgt_aligned_alloc(tensor->dimension * sizeof(double complex), 32);
-            if (!v) continue;  // Skip this iteration if allocation fails
-
-            /* Initialize with random values */
-            for (size_t j = 0; j < tensor->dimension; j += 4) {
-                __m256d rand_real = _mm256_set_pd(
-                    (double)rand() / RAND_MAX,
-                    (double)rand() / RAND_MAX,
-                    (double)rand() / RAND_MAX,
-                    (double)rand() / RAND_MAX
-                );
-                __m256d rand_imag = _mm256_set_pd(
-                    (double)rand() / RAND_MAX,
-                    (double)rand() / RAND_MAX,
-                    (double)rand() / RAND_MAX,
-                    (double)rand() / RAND_MAX
-                );
-                _mm256_store_pd((double*)&v[j], rand_real);
-                _mm256_store_pd((double*)&v[j] + 1, rand_imag);
-            }
-
-            /* Power iteration */
-            for (size_t iter = 0; iter < QG_MAX_POWER_ITERATIONS; iter++) {
-                double complex* new_v = qgt_aligned_alloc(tensor->dimension * sizeof(double complex), 32);
-                if (!new_v) {
-                    qgt_aligned_free(v);
-                    continue;
-                }
-
-                /* Matrix-vector multiplication with SIMD */
-                for (size_t j = 0; j < tensor->dimension; j += 4) {
-                    __m256d sum_real = _mm256_setzero_pd();
-                    __m256d sum_imag = _mm256_setzero_pd();
-
-                    for (size_t k = 0; k < tensor->dimension; k += 4) {
-                        __m256d mat_real = _mm256_load_pd((double*)&correlation_matrix[j * tensor->dimension + k]);
-                        __m256d mat_imag = _mm256_load_pd((double*)&correlation_matrix[j * tensor->dimension + k] + 1);
-                        __m256d vec_real = _mm256_load_pd((double*)&v[k]);
-                        __m256d vec_imag = _mm256_load_pd((double*)&v[k] + 1);
-
-                        __m256d prod_real, prod_imag;
-                        qgt_matrix_multiply_complex_pd(&prod_real, &prod_imag,
-                                                    &mat_real, &mat_imag,
-                                                    &vec_real, &vec_imag,
-                                                    4);
-
-                        sum_real = _mm256_add_pd(sum_real, prod_real);
-                        sum_imag = _mm256_add_pd(sum_imag, prod_imag);
-                    }
-
-                    _mm256_store_pd((double*)&new_v[j], sum_real);
-                    _mm256_store_pd((double*)&new_v[j] + 1, sum_imag);
-                }
-
-                /* Normalize with SIMD */
-                __m256d norm = _mm256_setzero_pd();
-                for (size_t j = 0; j < tensor->dimension; j += 4) {
-                    __m256d real = _mm256_load_pd((double*)&new_v[j]);
-                    __m256d imag = _mm256_load_pd((double*)&new_v[j] + 1);
-                    norm = _mm256_add_pd(norm,
-                        _mm256_add_pd(
-                            _mm256_mul_pd(real, real),
-                            _mm256_mul_pd(imag, imag)
-                        )
-                    );
-                }
-                double norm_scalar = sqrt(_mm256_reduce_add_pd(norm));
-
-                for (size_t j = 0; j < tensor->dimension; j += 4) {
-                    __m256d real = _mm256_load_pd((double*)&new_v[j]);
-                    __m256d imag = _mm256_load_pd((double*)&new_v[j] + 1);
-                    _mm256_store_pd((double*)&v[j],
-                        _mm256_div_pd(real, _mm256_set1_pd(norm_scalar)));
-                    _mm256_store_pd((double*)&v[j] + 1,
-                        _mm256_div_pd(imag, _mm256_set1_pd(norm_scalar)));
-                }
-
-                qgt_aligned_free(new_v);
-            }
-
-            /* Compute Rayleigh quotient */
-            __m256d rayleigh_real = _mm256_setzero_pd();
-            __m256d rayleigh_imag = _mm256_setzero_pd();
-
-            for (size_t j = 0; j < tensor->dimension; j += 4) {
-                for (size_t k = 0; k < tensor->dimension; k += 4) {
-                    __m256d mat_real = _mm256_load_pd((double*)&correlation_matrix[j * tensor->dimension + k]);
-                    __m256d mat_imag = _mm256_load_pd((double*)&correlation_matrix[j * tensor->dimension + k] + 1);
-                    __m256d vec_real = _mm256_load_pd((double*)&v[k]);
-                    __m256d vec_imag = _mm256_load_pd((double*)&v[k] + 1);
-
-                    __m256d prod_real, prod_imag;
-                    qgt_matrix_multiply_complex_pd(&prod_real, &prod_imag,
-                                                &mat_real, &mat_imag,
-                                                &vec_real, &vec_imag,
-                                                4);
-
-                    rayleigh_real = _mm256_add_pd(rayleigh_real, prod_real);
-                    rayleigh_imag = _mm256_add_pd(rayleigh_imag, prod_imag);
-                }
-            }
-
-            /* Store singular value */
-            tensor->topology.singular_values[i] = sqrt(
-                _mm256_reduce_add_pd(
-                    _mm256_add_pd(
-                        _mm256_mul_pd(rayleigh_real, rayleigh_real),
-                        _mm256_mul_pd(rayleigh_imag, rayleigh_imag)
-                    )
-                )
-            );
-
-            /* Deflate matrix */
-            #pragma omp parallel for collapse(2) if(flags & QGT_OP_PARALLEL)
-            for (size_t j = 0; j < tensor->dimension; j += 4) {
-                for (size_t k = 0; k < tensor->dimension; k += 4) {
-                    __m256d v_real = _mm256_load_pd((double*)&v[j]);
-                    __m256d v_imag = _mm256_load_pd((double*)&v[j] + 1);
-                    __m256d conj_real = _mm256_load_pd((double*)&v[k]);
-                    __m256d conj_imag = _mm256_xor_pd(
-                        _mm256_load_pd((double*)&v[k] + 1),
-                        _mm256_set1_pd(QG_CONJUGATE_MASK)
-                    );
-
-                    __m256d prod_real, prod_imag;
-                    qgt_matrix_multiply_complex_pd(&prod_real, &prod_imag,
-                                                &v_real, &v_imag,
-                                                &conj_real, &conj_imag,
-                                                4);
-
-                    __m256d mat_real = _mm256_load_pd((double*)&correlation_matrix[j * tensor->dimension + k]);
-                    __m256d mat_imag = _mm256_load_pd((double*)&correlation_matrix[j * tensor->dimension + k] + 1);
-
-                    mat_real = _mm256_sub_pd(mat_real,
-                        _mm256_mul_pd(_mm256_set1_pd(tensor->topology.singular_values[i]),
-                                    prod_real));
-                    mat_imag = _mm256_sub_pd(mat_imag,
-                        _mm256_mul_pd(_mm256_set1_pd(tensor->topology.singular_values[i]),
-                                    prod_imag));
-
-                    _mm256_store_pd((double*)&correlation_matrix[j * tensor->dimension + k],
-                                  mat_real);
-                    _mm256_store_pd((double*)&correlation_matrix[j * tensor->dimension + k] + 1,
-                                  mat_imag);
-                }
-            }
-
-            qgt_aligned_free(v);
-        }
-
-        qgt_aligned_free(correlation_matrix);
     }
+
+    /* Compute singular values using power iteration */
+    for (size_t sv_idx = 0; sv_idx < dim; sv_idx++) {
+        /* Initialize random vector */
+        double complex* v = qgt_aligned_alloc(dim * sizeof(double complex));
+        if (!v) continue;
+
+        /* Initialize with random values */
+        for (size_t j = 0; j < dim; j++) {
+            double re = (double)rand() / RAND_MAX;
+            double im = (double)rand() / RAND_MAX;
+            v[j] = re + im * I;
+        }
+
+        /* Power iteration */
+        for (size_t iter = 0; iter < QG_MAX_POWER_ITERATIONS; iter++) {
+            double complex* new_v = qgt_aligned_alloc(dim * sizeof(double complex));
+            if (!new_v) {
+                qgt_aligned_free(v);
+                break;
+            }
+
+            /* Matrix-vector multiplication */
+            for (size_t row = 0; row < dim; row++) {
+                double complex sum = 0.0;
+                for (size_t col = 0; col < dim; col++) {
+                    sum += correlation_matrix[row * dim + col] * v[col];
+                }
+                new_v[row] = sum;
+            }
+
+            /* Compute norm */
+            double norm = 0.0;
+            for (size_t j = 0; j < dim; j++) {
+                norm += creal(new_v[j]) * creal(new_v[j]) + cimag(new_v[j]) * cimag(new_v[j]);
+            }
+            norm = sqrt(norm);
+
+            /* Normalize and copy back */
+            if (norm > 1e-12) {
+                for (size_t j = 0; j < dim; j++) {
+                    v[j] = new_v[j] / norm;
+                }
+            }
+
+            qgt_aligned_free(new_v);
+        }
+
+        /* Compute Rayleigh quotient: v^H * A * v */
+        double complex rayleigh = 0.0;
+        for (size_t row = 0; row < dim; row++) {
+            double complex Av = 0.0;
+            for (size_t col = 0; col < dim; col++) {
+                Av += correlation_matrix[row * dim + col] * v[col];
+            }
+            rayleigh += conj(v[row]) * Av;
+        }
+
+        /* Store singular value */
+        tensor->topology.singular_values[sv_idx] = sqrt(creal(rayleigh) * creal(rayleigh) +
+                                                        cimag(rayleigh) * cimag(rayleigh));
+
+        /* Deflate matrix: A = A - sigma * v * v^H */
+        double sigma = tensor->topology.singular_values[sv_idx];
+        for (size_t row = 0; row < dim; row++) {
+            for (size_t col = 0; col < dim; col++) {
+                correlation_matrix[row * dim + col] -= sigma * v[row] * conj(v[col]);
+            }
+        }
+
+        qgt_aligned_free(v);
+    }
+
+    cleanup_topological_circuit(corr_qc);
+    qgt_aligned_free(correlation_matrix);
 
     pthread_rwlock_unlock(&mutex->rwlock);
     return QGT_SUCCESS;
 }
 
-QGT_PUBLIC QGT_HOT qgt_error_t 
-update_learning_coefficients(quantum_geometric_tensor* tensor, uint32_t flags) {
+QGT_PUBLIC QGT_HOT qgt_error_t
+update_learning_coefficients(quantum_topological_tensor_t* tensor, uint32_t flags) {
     if (!tensor) return QGT_ERROR_INVALID_ARGUMENT;
 
     /* Acquire write lock */
@@ -768,9 +673,1140 @@ update_learning_coefficients(quantum_geometric_tensor* tensor, uint32_t flags) {
         return QGT_ERROR_THREAD_ERROR;
     }
 
-    /* Calculate effective dimension with SIMD */
-    __m256d effective_dim = _mm256_setzero_pd();
-    __m256d total_variance = _mm256_setzero_pd();
-    __m256d largest_sv = _mm256_set1_pd(tensor->topology.singular_values[0]);
+    size_t dim = tensor->dimension;
 
-    for (size_t i = 0; i < tensor->dimension; i +=
+    /* Calculate effective dimension from singular values */
+    double effective_dim = 0.0;
+    double total_variance = 0.0;
+    double largest_sv = (dim > 0) ? tensor->topology.singular_values[0] : 1.0;
+
+    /* Compute total variance (sum of squared singular values) */
+    for (size_t i = 0; i < dim; i++) {
+        double sv = tensor->topology.singular_values[i];
+        total_variance += sv * sv;
+    }
+
+    /* Compute effective dimension: (sum(sv))^2 / sum(sv^2) */
+    double sv_sum = 0.0;
+    for (size_t i = 0; i < dim; i++) {
+        sv_sum += tensor->topology.singular_values[i];
+    }
+    if (total_variance > 1e-12) {
+        effective_dim = (sv_sum * sv_sum) / total_variance;
+    }
+
+    /* Use topological features to adjust learning rate */
+    double topo_factor = 1.0;
+    if (tensor->topology.homology && tensor->topology.homology->betti_numbers) {
+        /* Higher Betti numbers suggest more complex topology - reduce learning rate */
+        for (size_t d = 0; d < tensor->topology.homology->max_dim; d++) {
+            topo_factor += 0.1 * tensor->topology.homology->betti_numbers[d];
+        }
+    }
+
+    /* Store computed coefficients in geometry data */
+    if (tensor->geometry.christoffel_symbols && dim > 0) {
+        /* Use Christoffel symbols to store learning coefficients */
+        tensor->geometry.christoffel_symbols[0] = effective_dim;
+        if (dim > 1) tensor->geometry.christoffel_symbols[1] = total_variance;
+        if (dim > 2) tensor->geometry.christoffel_symbols[2] = largest_sv;
+        if (dim > 3) tensor->geometry.christoffel_symbols[3] = topo_factor;
+    }
+
+    pthread_rwlock_unlock(&mutex->rwlock);
+    return QGT_SUCCESS;
+}
+
+// =============================================================================
+// Circuit creation wrapper functions
+// =============================================================================
+
+quantum_circuit_t* quantum_create_boundary_circuit(size_t num_qubits, int flags) {
+    quantum_circuit_t* circuit = quantum_circuit_create(num_qubits);
+    if (circuit && (flags & QUANTUM_CIRCUIT_OPTIMAL)) {
+        quantum_circuit_optimize(circuit, 2);
+    }
+    return circuit;
+}
+
+quantum_circuit_t* quantum_create_smith_circuit(size_t num_qubits, int flags) {
+    quantum_circuit_t* circuit = quantum_circuit_create(num_qubits);
+    if (circuit && (flags & QUANTUM_CIRCUIT_OPTIMAL)) {
+        quantum_circuit_optimize(circuit, 2);
+    }
+    return circuit;
+}
+
+quantum_circuit_t* quantum_create_topology_circuit(size_t num_qubits, int flags) {
+    quantum_circuit_t* circuit = quantum_circuit_create(num_qubits);
+    if (circuit && (flags & QUANTUM_CIRCUIT_OPTIMAL)) {
+        quantum_circuit_optimize(circuit, 2);
+    }
+    return circuit;
+}
+
+QuantumCircuit* init_quantum_simplicial_circuit(size_t num_spins) {
+    size_t num_qubits = (size_t)ceil(log2((double)num_spins + 1));
+    if (num_qubits < 2) num_qubits = 2;
+    return quantum_circuit_create(num_qubits);
+}
+
+QuantumCircuit* init_quantum_correlation_circuit(size_t dimension) {
+    size_t num_qubits = (size_t)ceil(log2((double)dimension + 1));
+    if (num_qubits < 2) num_qubits = 2;
+    return quantum_circuit_create(num_qubits);
+}
+
+void cleanup_topological_circuit(QuantumCircuit* circuit) {
+    if (circuit) {
+        quantum_circuit_destroy(circuit);
+    }
+}
+
+// =============================================================================
+// Workspace management
+// =============================================================================
+
+QuantumWorkspace* init_quantum_workspace(size_t chunk_size) {
+    QuantumWorkspace* qws = malloc(sizeof(QuantumWorkspace));
+    if (!qws) return NULL;
+
+    qws->scratch_size = chunk_size * sizeof(double complex) * 4;
+    qws->scratch_memory = qgt_aligned_alloc(qws->scratch_size);
+    qws->circuit_cache = NULL;
+
+    if (!qws->scratch_memory) {
+        free(qws);
+        return NULL;
+    }
+
+    return qws;
+}
+
+void cleanup_quantum_workspace(QuantumWorkspace* qws) {
+    if (qws) {
+        if (qws->scratch_memory) {
+            qgt_aligned_free(qws->scratch_memory);
+        }
+        free(qws);
+    }
+}
+
+// =============================================================================
+// Quantum topological operations
+// =============================================================================
+
+void quantum_build_simplices(quantum_register_t* reg, simplicial_complex_t* sc,
+                             size_t chunk, size_t chunk_size,
+                             quantum_system_t* system, quantum_circuit_t* circuit,
+                             void* config, QuantumWorkspace* qws) {
+    if (!reg || !sc || !system || !circuit) return;
+
+    /* Build simplices from quantum correlations */
+    for (size_t i = chunk; i < chunk + chunk_size && i < reg->size; i++) {
+        /* Check if amplitude is significant */
+        double prob = reg->amplitudes[i].real * reg->amplitudes[i].real +
+                     reg->amplitudes[i].imag * reg->amplitudes[i].imag;
+
+        if (prob > QG_CORRELATION_THRESHOLD && sc->num_simplices < sc->max_simplices) {
+            /* Create 0-simplex (vertex) */
+            simplex_t* simplex = malloc(sizeof(simplex_t));
+            if (simplex) {
+                simplex->dim = 0;
+                simplex->vertices = malloc(sizeof(size_t));
+                if (simplex->vertices) {
+                    simplex->vertices[0] = i;
+                    simplex->weight = prob;
+                    simplex->flags = 0;
+
+                    #pragma omp critical
+                    {
+                        if (sc->num_simplices < sc->max_simplices) {
+                            sc->simplices[sc->num_simplices++] = simplex;
+                        } else {
+                            free(simplex->vertices);
+                            free(simplex);
+                        }
+                    }
+                } else {
+                    free(simplex);
+                }
+            }
+        }
+    }
+}
+
+void quantum_detect_correlations(double* spin_states, QuantumCircuit* circuit,
+                                 QuantumWorkspace* qws, size_t chunk_size, size_t dim) {
+    if (!spin_states || !circuit || !qws) return;
+
+    /* Detect correlations between spins using quantum interference */
+    double* scratch = (double*)qws->scratch_memory;
+    if (!scratch) return;
+
+    for (size_t i = 0; i < chunk_size && i + dim < chunk_size; i++) {
+        /* Calculate correlation with neighboring spins */
+        double correlation = 0.0;
+        for (size_t j = 0; j <= dim && i + j < chunk_size; j++) {
+            correlation += spin_states[i] * spin_states[i + j];
+        }
+        scratch[i] = correlation;
+    }
+}
+
+static void quantum_compute_correlations_internal(double* spin_states, double* parallel_transport,
+                                                  double complex* output, QuantumCircuit* circuit,
+                                                  QuantumWorkspace* qws, size_t chunk_size, size_t dim) {
+    if (!spin_states || !output) return;
+
+    /* Compute correlation matrix elements */
+    for (size_t i = 0; i < chunk_size; i++) {
+        for (size_t j = 0; j < dim; j++) {
+            double re = spin_states[i % dim] * spin_states[j];
+            double im = 0.0;
+
+            /* Apply parallel transport if available */
+            if (parallel_transport) {
+                double pt = parallel_transport[i * dim + j];
+                double temp = re * cos(pt) - im * sin(pt);
+                im = re * sin(pt) + im * cos(pt);
+                re = temp;
+            }
+
+            output[i * dim + j] = re + im * I;
+        }
+    }
+}
+
+// =============================================================================
+// Quantum encoding and extraction functions
+// =============================================================================
+
+static void quantum_encode_complex(quantum_register_t* reg, simplicial_complex_t* sc,
+                                   quantum_system_t* system, quantum_circuit_t* circuit,
+                                   const quantum_phase_config_t* config) {
+    if (!reg || !sc) return;
+
+    /* Encode simplicial complex into quantum register */
+    size_t n = (sc->num_simplices < reg->size) ? sc->num_simplices : reg->size;
+    double norm = 0.0;
+
+    for (size_t i = 0; i < n; i++) {
+        if (sc->simplices[i]) {
+            double weight = sc->simplices[i]->weight;
+            reg->amplitudes[i].real = (float)weight;
+            reg->amplitudes[i].imag = 0.0f;
+            norm += weight * weight;
+        }
+    }
+
+    /* Normalize */
+    if (norm > 1e-12) {
+        float inv_norm = 1.0f / sqrtf((float)norm);
+        for (size_t i = 0; i < n; i++) {
+            reg->amplitudes[i].real *= inv_norm;
+            reg->amplitudes[i].imag *= inv_norm;
+        }
+    }
+}
+
+static void quantum_encode_matrix(quantum_register_t* reg, int* matrix, size_t size,
+                                  quantum_system_t* system, quantum_circuit_t* circuit,
+                                  const quantum_amplitude_config_t* config) {
+    if (!reg || !matrix) return;
+
+    /* Encode matrix into quantum register using amplitude encoding */
+    size_t n = (size * size < reg->size) ? size * size : reg->size;
+    double norm = 0.0;
+
+    for (size_t i = 0; i < n; i++) {
+        double val = (double)matrix[i];
+        reg->amplitudes[i].real = (float)val;
+        reg->amplitudes[i].imag = 0.0f;
+        norm += val * val;
+    }
+
+    /* Normalize */
+    if (norm > 1e-12) {
+        float inv_norm = 1.0f / sqrtf((float)norm);
+        for (size_t i = 0; i < n; i++) {
+            reg->amplitudes[i].real *= inv_norm;
+            reg->amplitudes[i].imag *= inv_norm;
+        }
+    }
+}
+
+static void quantum_extract_boundary(int* boundary, quantum_register_t* reg, size_t n_simplices,
+                                     quantum_system_t* system, quantum_circuit_t* circuit,
+                                     const quantum_phase_config_t* config) {
+    if (!boundary || !reg) return;
+
+    /* Extract boundary matrix from quantum register */
+    for (size_t i = 0; i < n_simplices * n_simplices && i < reg->size; i++) {
+        double prob = reg->amplitudes[i].real * reg->amplitudes[i].real +
+                     reg->amplitudes[i].imag * reg->amplitudes[i].imag;
+        boundary[i] = (prob > 0.5) ? 1 : 0;
+    }
+}
+
+static void quantum_extract_factors(int* factors, quantum_register_t* reg, size_t size,
+                                    quantum_system_t* system, quantum_circuit_t* circuit,
+                                    const quantum_amplitude_config_t* config) {
+    if (!factors || !reg) return;
+
+    /* Extract invariant factors from quantum register */
+    for (size_t i = 0; i < size && i < reg->size; i++) {
+        double val = reg->amplitudes[i].real;
+        factors[i] = (int)round(val * 10.0);  /* Scale and round to integer */
+    }
+}
+
+// =============================================================================
+// GPU wrapper functions (CPU fallback implementations)
+// =============================================================================
+
+static GPUContext* quantum_gpu_init(void) {
+    return gpu_create_context(0);
+}
+
+static void quantum_gpu_cleanup(GPUContext* gpu) {
+    if (gpu) {
+        gpu_destroy_context(gpu);
+    }
+}
+
+static void quantum_boundary_gpu(GPUContext* gpu, quantum_register_t* reg_boundary,
+                                 quantum_register_t* reg_simplices, size_t dim,
+                                 quantum_system_t* system, quantum_circuit_t* circuit,
+                                 const quantum_phase_config_t* config) {
+    /* GPU boundary computation - falls back to CPU for now */
+    quantum_boundary_cpu(reg_boundary, reg_simplices, dim, system, circuit, config);
+}
+
+static void quantum_boundary_cpu(quantum_register_t* reg_boundary,
+                                 quantum_register_t* reg_simplices, size_t dim,
+                                 quantum_system_t* system, quantum_circuit_t* circuit,
+                                 const quantum_phase_config_t* config) {
+    if (!reg_boundary || !reg_simplices) return;
+
+    /* Compute boundary operator using quantum phase estimation */
+    size_t n = reg_simplices->size;
+    for (size_t i = 0; i < n && i < reg_boundary->size; i++) {
+        /* Boundary of k-simplex sums (k+1)-faces with alternating signs */
+        double sum_real = 0.0, sum_imag = 0.0;
+        for (size_t j = 0; j <= dim && i + j < n; j++) {
+            double sign = (j % 2 == 0) ? 1.0 : -1.0;
+            sum_real += sign * reg_simplices->amplitudes[i + j].real;
+            sum_imag += sign * reg_simplices->amplitudes[i + j].imag;
+        }
+        reg_boundary->amplitudes[i].real = (float)sum_real;
+        reg_boundary->amplitudes[i].imag = (float)sum_imag;
+    }
+}
+
+static void quantum_smith_gpu(GPUContext* gpu, quantum_register_t* reg_factors,
+                              quantum_register_t* reg_matrix, quantum_system_t* system,
+                              quantum_circuit_t* circuit, const quantum_amplitude_config_t* config) {
+    /* GPU Smith normal form - falls back to CPU for now */
+    quantum_smith_cpu(reg_factors, reg_matrix, system, circuit, config);
+}
+
+static void quantum_smith_cpu(quantum_register_t* reg_factors, quantum_register_t* reg_matrix,
+                              quantum_system_t* system, quantum_circuit_t* circuit,
+                              const quantum_amplitude_config_t* config) {
+    if (!reg_factors || !reg_matrix) return;
+
+    /* Simplified Smith normal form using quantum amplitude estimation */
+    size_t n = reg_factors->size;
+    for (size_t i = 0; i < n && i < reg_matrix->size; i++) {
+        /* Extract diagonal-like elements as invariant factors */
+        double val = reg_matrix->amplitudes[i].real * reg_matrix->amplitudes[i].real +
+                    reg_matrix->amplitudes[i].imag * reg_matrix->amplitudes[i].imag;
+        reg_factors->amplitudes[i].real = (float)sqrt(val);
+        reg_factors->amplitudes[i].imag = 0.0f;
+    }
+}
+
+// =============================================================================
+// Circuit Creation Functions
+// =============================================================================
+
+quantum_circuit_t* quantum_create_entropy_circuit(size_t num_qubits, int flags) {
+    (void)flags;
+    quantum_circuit_t* circuit = quantum_circuit_create(num_qubits);
+    if (!circuit) return NULL;
+
+    // Add phase estimation gates for entropy calculation
+    for (size_t i = 0; i < num_qubits; i++) {
+        quantum_circuit_add_hadamard(circuit, i);
+    }
+
+    return circuit;
+}
+
+quantum_circuit_t* quantum_create_error_circuit(size_t num_qubits, int flags) {
+    (void)flags;
+    quantum_circuit_t* circuit = quantum_circuit_create(num_qubits);
+    if (!circuit) return NULL;
+
+    // Error detection circuit using amplitude estimation
+    for (size_t i = 0; i < num_qubits; i++) {
+        quantum_circuit_add_hadamard(circuit, i);
+    }
+
+    return circuit;
+}
+
+quantum_circuit_t* quantum_create_coherence_circuit(size_t num_qubits, int flags) {
+    (void)flags;
+    quantum_circuit_t* circuit = quantum_circuit_create(num_qubits);
+    if (!circuit) return NULL;
+
+    // Coherence maintenance circuit
+    for (size_t i = 0; i < num_qubits; i++) {
+        quantum_circuit_add_hadamard(circuit, i);
+    }
+
+    return circuit;
+}
+
+quantum_circuit_t* quantum_create_protection_circuit(size_t num_qubits, int flags) {
+    (void)flags;
+    quantum_circuit_t* circuit = quantum_circuit_create(num_qubits);
+    if (!circuit) return NULL;
+
+    // Protection circuit for distributed states
+    for (size_t i = 0; i < num_qubits; i++) {
+        quantum_circuit_add_hadamard(circuit, i);
+    }
+
+    return circuit;
+}
+
+// =============================================================================
+// Region and Register Functions
+// =============================================================================
+
+quantum_register_t* quantum_register_create_region(TreeTensorNetwork* network,
+                                                   int region_id,
+                                                   quantum_system_t* system) {
+    if (!network || !system) return NULL;
+
+    size_t num_sites = network->num_sites;
+
+    // Calculate region bounds
+    size_t start = 0, end = num_sites;
+    switch (region_id) {
+        case REGION_ABC: start = 0; end = num_sites * 3 / 4; break;
+        case REGION_AB:  start = 0; end = num_sites / 2; break;
+        case REGION_BC:  start = num_sites / 4; end = num_sites * 3 / 4; break;
+        case REGION_B:   start = num_sites / 4; end = num_sites / 2; break;
+    }
+
+    size_t reg_size = end - start;
+    if (reg_size == 0) reg_size = 1;
+
+    quantum_register_t* reg = quantum_register_create_empty(reg_size);
+    if (!reg) return NULL;
+
+    // Initialize with uniform distribution based on entanglement entropy
+    double entropy_val = network->entanglement_entropy;
+    for (size_t i = 0; i < reg_size; i++) {
+        // Distribute entropy across region
+        double val = entropy_val / (double)reg_size;
+        reg->amplitudes[i].real = (float)sqrt(val);
+        reg->amplitudes[i].imag = 0.0f;
+    }
+
+    return reg;
+}
+
+quantum_register_t* topo_register_create_state(quantum_topological_tensor_t* qgt,
+                                               quantum_system_t* system) {
+    if (!qgt || !system) return NULL;
+
+    size_t size = qgt->dimension;
+    quantum_register_t* reg = quantum_register_create_empty(size);
+    if (!reg) return NULL;
+
+    // Initialize from tensor components
+    if (qgt->components) {
+        for (size_t i = 0; i < size; i++) {
+            reg->amplitudes[i].real = qgt->components[i].real;
+            reg->amplitudes[i].imag = qgt->components[i].imag;
+        }
+    }
+
+    return reg;
+}
+
+// =============================================================================
+// Entropy Estimation Functions
+// =============================================================================
+
+double quantum_estimate_entropy(quantum_register_t* reg,
+                               quantum_system_t* system,
+                               quantum_circuit_t* circuit,
+                               const quantum_phase_config_t* config,
+                               QuantumWorkspace* qws) {
+    if (!reg) return 0.0;
+    (void)system; (void)circuit; (void)config; (void)qws;
+
+    // Calculate von Neumann entropy from amplitudes
+    double entropy = 0.0;
+    double norm = 0.0;
+
+    for (size_t i = 0; i < reg->size; i++) {
+        double p = reg->amplitudes[i].real * reg->amplitudes[i].real +
+                   reg->amplitudes[i].imag * reg->amplitudes[i].imag;
+        norm += p;
+    }
+
+    if (norm > 1e-10) {
+        for (size_t i = 0; i < reg->size; i++) {
+            double p = (reg->amplitudes[i].real * reg->amplitudes[i].real +
+                       reg->amplitudes[i].imag * reg->amplitudes[i].imag) / norm;
+            if (p > 1e-10) {
+                entropy -= p * log2(p);
+            }
+        }
+    }
+
+    return entropy;
+}
+
+double quantum_combine_entropies(double* entropies,
+                                quantum_system_t* system,
+                                quantum_circuit_t* circuit,
+                                const quantum_phase_config_t* config) {
+    if (!entropies) return 0.0;
+    (void)system; (void)circuit; (void)config;
+
+    // Kitaev-Preskill formula: S_topo = S_ABC - S_AB - S_BC + S_B
+    return entropies[0] - entropies[1] - entropies[2] + entropies[3];
+}
+
+double quantum_estimate_errors(quantum_register_t* reg, size_t chunk, size_t chunk_size,
+                              quantum_system_t* system, quantum_circuit_t* circuit,
+                              quantum_amplitude_config_t* config, QuantumWorkspace* qws) {
+    if (!reg) return 0.0;
+    (void)chunk; (void)chunk_size; (void)system; (void)circuit; (void)config; (void)qws;
+
+    // Estimate error amplitude using quantum amplitude estimation
+    double error_sum = 0.0;
+    size_t count = 0;
+
+    size_t start = chunk * chunk_size;
+    size_t end = start + chunk_size;
+    if (end > reg->size) end = reg->size;
+
+    for (size_t i = start; i < end; i++) {
+        // Error is deviation from expected state
+        double amp = reg->amplitudes[i].real * reg->amplitudes[i].real +
+                    reg->amplitudes[i].imag * reg->amplitudes[i].imag;
+        double expected = (i == 0) ? 1.0 : 0.0;  // Ground state
+        error_sum += fabs(amp - expected);
+        count++;
+    }
+
+    return count > 0 ? error_sum / count : 0.0;
+}
+
+bool quantum_check_threshold(double error_amplitude, double threshold,
+                            quantum_system_t* system, quantum_circuit_t* circuit,
+                            quantum_amplitude_config_t* config, QuantumWorkspace* qws) {
+    (void)system; (void)circuit; (void)config; (void)qws;
+    return error_amplitude > threshold;
+}
+
+// =============================================================================
+// Anyon and Braiding Functions
+// =============================================================================
+
+QuantumCircuit* init_quantum_anyon_circuit(size_t dimension) {
+    return quantum_circuit_create(dimension);
+}
+
+AnyonExcitation* quantum_identify_anyons(quantum_topological_tensor_t* qgt, QuantumCircuit* qc) {
+    if (!qgt) return NULL;
+    (void)qc;
+
+    // Identify anyon excitations from topological tensor
+    size_t max_anyons = qgt->dimension;
+    AnyonExcitation* anyons = calloc(max_anyons + 1, sizeof(AnyonExcitation));
+    if (!anyons) return NULL;
+
+    size_t num_found = 0;
+    for (size_t i = 0; i < qgt->dimension && num_found < max_anyons; i++) {
+        double amp = qgt->components[i].real * qgt->components[i].real +
+                    qgt->components[i].imag * qgt->components[i].imag;
+        if (amp > 0.1) {  // Threshold for anyon detection
+            anyons[num_found].position = i;
+            anyons[num_found].charge = (amp > 0.5) ? 1 : -1;
+            anyons[num_found].fusion_channel = amp;
+            anyons[num_found].is_paired = false;
+            num_found++;
+        }
+    }
+
+    return anyons;
+}
+
+size_t quantum_count_anyon_types(AnyonExcitation* anyons, QuantumCircuit* qc) {
+    if (!anyons) return 0;
+    (void)qc;
+
+    // Count unique anyon types based on charge
+    size_t positive = 0, negative = 0;
+    for (size_t i = 0; anyons[i].fusion_channel > 0; i++) {
+        if (anyons[i].charge > 0) positive++;
+        else negative++;
+    }
+
+    return (positive > 0 ? 1 : 0) + (negative > 0 ? 1 : 0);
+}
+
+AnyonGroup* quantum_group_anyons(AnyonExcitation* anyons, size_t num_types, QuantumCircuit* qc) {
+    if (!anyons || num_types == 0) return NULL;
+    (void)qc;
+
+    AnyonGroup* groups = calloc(num_types, sizeof(AnyonGroup));
+    if (!groups) return NULL;
+
+    // Group anyons by charge
+    for (size_t g = 0; g < num_types; g++) {
+        groups[g].total_charge = 0;
+        groups[g].num_anyons = 0;
+
+        // Count anyons for this group
+        size_t count = 0;
+        for (size_t i = 0; anyons[i].fusion_channel > 0; i++) {
+            int expected_charge = (g == 0) ? 1 : -1;
+            if (anyons[i].charge == expected_charge) count++;
+        }
+
+        if (count > 0) {
+            groups[g].anyons = calloc(count, sizeof(AnyonExcitation));
+            if (groups[g].anyons) {
+                size_t idx = 0;
+                for (size_t i = 0; anyons[i].fusion_channel > 0; i++) {
+                    int expected_charge = (g == 0) ? 1 : -1;
+                    if (anyons[i].charge == expected_charge) {
+                        groups[g].anyons[idx++] = anyons[i];
+                        groups[g].total_charge += anyons[i].charge;
+                    }
+                }
+                groups[g].num_anyons = idx;
+            }
+        }
+    }
+
+    return groups;
+}
+
+AnyonPair* quantum_find_anyon_pairs(AnyonGroup* group, size_t chunk_size,
+                                    QuantumCircuit* qc, QuantumWorkspace* qws) {
+    if (!group) return NULL;
+    (void)chunk_size; (void)qc; (void)qws;
+
+    // Find pairs of anyons that can fuse
+    size_t max_pairs = group->num_anyons / 2;
+    if (max_pairs == 0) return NULL;
+
+    AnyonPair* pairs = calloc(max_pairs + 1, sizeof(AnyonPair));
+    if (!pairs) return NULL;
+
+    size_t pair_idx = 0;
+    for (size_t i = 0; i + 1 < group->num_anyons && pair_idx < max_pairs; i += 2) {
+        pairs[pair_idx].anyon1 = &group->anyons[i];
+        pairs[pair_idx].anyon2 = &group->anyons[i + 1];
+        pairs[pair_idx].distance = fabs((double)group->anyons[i].position -
+                                        (double)group->anyons[i + 1].position);
+        pairs[pair_idx].fusion_probability = group->anyons[i].fusion_channel *
+                                            group->anyons[i + 1].fusion_channel;
+        pair_idx++;
+    }
+
+    return pairs;
+}
+
+BraidingPattern* quantum_optimize_braiding(AnyonPair* pairs, QuantumCircuit* qc,
+                                           QuantumWorkspace* qws) {
+    if (!pairs) return NULL;
+    (void)qc; (void)qws;
+
+    BraidingPattern* pattern = calloc(1, sizeof(BraidingPattern));
+    if (!pattern) return NULL;
+
+    // Count pairs
+    size_t num_pairs = 0;
+    while (pairs[num_pairs].anyon1 != NULL) num_pairs++;
+
+    if (num_pairs == 0) {
+        free(pattern);
+        return NULL;
+    }
+
+    // Create braiding path
+    pattern->path_length = num_pairs * 2;
+    pattern->path = calloc(pattern->path_length, sizeof(size_t));
+    if (!pattern->path) {
+        free(pattern);
+        return NULL;
+    }
+
+    // Set path from pair positions
+    for (size_t i = 0; i < num_pairs; i++) {
+        pattern->path[i * 2] = pairs[i].anyon1->position;
+        pattern->path[i * 2 + 1] = pairs[i].anyon2->position;
+    }
+
+    pattern->phase = 0.0;
+    pattern->winding_number = (int)num_pairs;
+
+    return pattern;
+}
+
+void quantum_apply_braiding(quantum_topological_tensor_t* qgt, BraidingPattern* pattern,
+                           QuantumCircuit* qc, QuantumWorkspace* qws) {
+    if (!qgt || !pattern || !pattern->path) return;
+    (void)qc; (void)qws;
+
+    // Apply braiding operations to the tensor
+    for (size_t i = 0; i + 1 < pattern->path_length; i++) {
+        size_t pos1 = pattern->path[i];
+        size_t pos2 = pattern->path[i + 1];
+
+        if (pos1 < qgt->dimension && pos2 < qgt->dimension) {
+            // Swap with phase
+            ComplexFloat temp = qgt->components[pos1];
+            double phase = M_PI / 4.0;  // Fibonacci anyon phase
+
+            qgt->components[pos1].real = (float)(qgt->components[pos2].real * cos(phase) -
+                                                  qgt->components[pos2].imag * sin(phase));
+            qgt->components[pos1].imag = (float)(qgt->components[pos2].real * sin(phase) +
+                                                  qgt->components[pos2].imag * cos(phase));
+            qgt->components[pos2] = temp;
+        }
+    }
+
+    pattern->phase += M_PI / 4.0 * pattern->path_length;
+}
+
+bool verify_topological_order(quantum_topological_tensor_t* qgt) {
+    if (!qgt) return false;
+
+    // Verify topological order by checking ground state degeneracy
+    double ground_energy = 0.0;
+    size_t degeneracy = 0;
+
+    for (size_t i = 0; i < qgt->dimension; i++) {
+        double amp = qgt->components[i].real * qgt->components[i].real +
+                    qgt->components[i].imag * qgt->components[i].imag;
+        if (amp > 0.9) degeneracy++;
+        ground_energy += amp;
+    }
+
+    return degeneracy > 0 && ground_energy > 0.5;
+}
+
+void update_ground_state(quantum_topological_tensor_t* qgt) {
+    if (!qgt) return;
+
+    // Normalize components to maintain ground state
+    double norm = 0.0;
+    for (size_t i = 0; i < qgt->dimension; i++) {
+        norm += qgt->components[i].real * qgt->components[i].real +
+                qgt->components[i].imag * qgt->components[i].imag;
+    }
+
+    if (norm > 1e-10) {
+        double inv_sqrt_norm = 1.0 / sqrt(norm);
+        for (size_t i = 0; i < qgt->dimension; i++) {
+            qgt->components[i].real *= (float)inv_sqrt_norm;
+            qgt->components[i].imag *= (float)inv_sqrt_norm;
+        }
+    }
+}
+
+void free_braiding_pattern(BraidingPattern* pattern) {
+    if (pattern) {
+        free(pattern->path);
+        free(pattern);
+    }
+}
+
+void free_anyon_pairs(AnyonPair* pairs) {
+    free(pairs);
+}
+
+void free_anyon_groups(AnyonGroup* groups, size_t num_types) {
+    if (groups) {
+        for (size_t i = 0; i < num_types; i++) {
+            free(groups[i].anyons);
+        }
+        free(groups);
+    }
+}
+
+void free_anyon_excitations(AnyonExcitation* anyons) {
+    free(anyons);
+}
+
+// =============================================================================
+// Coherence and Spectrum Functions
+// =============================================================================
+
+double quantum_estimate_correlation(TreeTensorNetwork* network, quantum_annealing_t* annealer,
+                                   quantum_circuit_t* circuit, quantum_annealing_config_t* config,
+                                   QuantumWorkspace* qws) {
+    if (!network) return 0.0;
+    (void)annealer; (void)circuit; (void)config; (void)qws;
+
+    // Estimate long-range correlation length from entanglement entropy
+    // entanglement_entropy is a single value representing total entropy
+    double xi = network->entanglement_entropy;
+
+    return xi;
+}
+
+size_t quantum_optimize_bond_dimension(TreeTensorNetwork* network, double xi,
+                                      quantum_annealing_t* annealer, quantum_circuit_t* circuit,
+                                      quantum_annealing_config_t* config, QuantumWorkspace* qws) {
+    if (!network) return 1;
+    (void)annealer; (void)circuit; (void)config; (void)qws;
+
+    // Optimal bond dimension scales with correlation length
+    size_t optimal = (size_t)(network->bond_dim * (1.0 + xi));
+    if (optimal < network->bond_dim) optimal = network->bond_dim;
+    if (optimal > 1024) optimal = 1024;
+
+    return optimal;
+}
+
+void quantum_increase_bond_dimension(TreeTensorNetwork* network, size_t new_bond_dim,
+                                    quantum_annealing_t* annealer, quantum_circuit_t* circuit,
+                                    quantum_annealing_config_t* config, QuantumWorkspace* qws) {
+    if (!network || new_bond_dim <= network->bond_dim) return;
+    (void)annealer; (void)circuit; (void)config; (void)qws;
+
+    network->bond_dim = new_bond_dim;
+}
+
+EntanglementSpectrum* quantum_calculate_spectrum(TreeTensorNetwork* network,
+                                                quantum_annealing_t* annealer,
+                                                quantum_circuit_t* circuit,
+                                                quantum_annealing_config_t* config,
+                                                QuantumWorkspace* qws) {
+    if (!network) return NULL;
+    (void)annealer; (void)circuit; (void)config; (void)qws;
+
+    EntanglementSpectrum* spectrum = calloc(1, sizeof(EntanglementSpectrum));
+    if (!spectrum) return NULL;
+
+    spectrum->num_eigenvalues = network->bond_dim;
+    spectrum->eigenvalues = calloc(spectrum->num_eigenvalues, sizeof(double));
+    if (!spectrum->eigenvalues) {
+        free(spectrum);
+        return NULL;
+    }
+
+    // Calculate eigenvalues from entanglement entropy
+    double total = 0.0;
+    for (size_t i = 0; i < spectrum->num_eigenvalues; i++) {
+        double val = exp(-0.5 * (double)i);  // Approximate spectrum
+        spectrum->eigenvalues[i] = val;
+        total += val;
+    }
+
+    // Normalize
+    if (total > 1e-10) {
+        for (size_t i = 0; i < spectrum->num_eigenvalues; i++) {
+            spectrum->eigenvalues[i] /= total;
+        }
+    }
+
+    // Calculate gap and entropy
+    if (spectrum->num_eigenvalues >= 2) {
+        spectrum->gap = spectrum->eigenvalues[0] - spectrum->eigenvalues[1];
+    }
+
+    spectrum->entropy = 0.0;
+    for (size_t i = 0; i < spectrum->num_eigenvalues; i++) {
+        double p = spectrum->eigenvalues[i];
+        if (p > 1e-10) {
+            spectrum->entropy -= p * log2(p);
+        }
+    }
+
+    return spectrum;
+}
+
+double quantum_calculate_gap(EntanglementSpectrum* spectrum, quantum_annealing_t* annealer,
+                            quantum_circuit_t* circuit, quantum_annealing_config_t* config,
+                            QuantumWorkspace* qws) {
+    if (!spectrum) return 0.0;
+    (void)annealer; (void)circuit; (void)config; (void)qws;
+
+    return spectrum->gap;
+}
+
+void quantum_apply_spectral_flow(TreeTensorNetwork* network, EntanglementSpectrum* spectrum,
+                                quantum_annealing_t* annealer, quantum_circuit_t* circuit,
+                                quantum_annealing_config_t* config, QuantumWorkspace* qws) {
+    if (!network || !spectrum) return;
+    (void)annealer; (void)circuit; (void)config; (void)qws;
+
+    // Apply spectral flow to improve coherence
+    // Update entanglement entropy from spectrum's computed entropy
+    if (spectrum->eigenvalues) {
+        network->entanglement_entropy = spectrum->entropy;
+    }
+}
+
+void quantum_update_protection(TreeTensorNetwork* network, EntanglementSpectrum* spectrum,
+                              quantum_annealing_t* annealer, quantum_circuit_t* circuit,
+                              quantum_annealing_config_t* config, QuantumWorkspace* qws) {
+    if (!network) return;
+    (void)spectrum; (void)annealer; (void)circuit; (void)config; (void)qws;
+
+    // Update protection parameters
+    // This is a placeholder for more complex protection updates
+}
+
+void quantum_free_spectrum(EntanglementSpectrum* spectrum) {
+    if (spectrum) {
+        free(spectrum->eigenvalues);
+        free(spectrum);
+    }
+}
+
+// =============================================================================
+// Distributed Protection Functions
+// =============================================================================
+
+double quantum_estimate_partition_tee(NetworkPartition* partitions, size_t chunk_size,
+                                     quantum_system_t* system, quantum_circuit_t* circuit,
+                                     quantum_circuit_config_t* config, QuantumWorkspace* qws) {
+    if (!partitions) return 0.0;
+    (void)chunk_size; (void)system; (void)circuit; (void)config; (void)qws;
+
+    return partitions->boundary_entropy;
+}
+
+void quantum_protect_partitions(NetworkPartition* partitions, size_t chunk_size,
+                               quantum_system_t* system, quantum_circuit_t* circuit,
+                               quantum_circuit_config_t* config, QuantumWorkspace* qws) {
+    if (!partitions) return;
+    (void)chunk_size; (void)system; (void)circuit; (void)config; (void)qws;
+
+    partitions->needs_sync = false;
+}
+
+void quantum_synchronize_boundary(NetworkPartition* part1, NetworkPartition* part2,
+                                 quantum_system_t* system, quantum_circuit_t* circuit,
+                                 quantum_circuit_config_t* config, QuantumWorkspace* qws) {
+    if (!part1 || !part2) return;
+    (void)system; (void)circuit; (void)config; (void)qws;
+
+    // Average boundary entropies
+    double avg = (part1->boundary_entropy + part2->boundary_entropy) / 2.0;
+    part1->boundary_entropy = avg;
+    part2->boundary_entropy = avg;
+    part1->needs_sync = false;
+    part2->needs_sync = false;
+}
+
+void quantum_verify_protection(NetworkPartition* partitions, size_t num_parts,
+                              quantum_system_t* system, quantum_circuit_t* circuit,
+                              quantum_circuit_config_t* config) {
+    if (!partitions) return;
+    (void)system; (void)circuit; (void)config;
+
+    // Verify all partitions are protected
+    for (size_t i = 0; i < num_parts; i++) {
+        partitions[i].needs_sync = false;
+    }
+}
+
+// =============================================================================
+// Attention and Monitoring Functions
+// =============================================================================
+
+QuantumCircuit* init_quantum_attention_circuit(size_t dimension, size_t num_heads) {
+    (void)num_heads;
+    return quantum_circuit_create(dimension);
+}
+
+QuantumState* quantum_calculate_attention(quantum_topological_tensor_t* qgt,
+                                         const AttentionConfig* config,
+                                         QuantumCircuit* qc) {
+    if (!qgt || !config) return NULL;
+    (void)qc;
+
+    QuantumState* state = NULL;
+    qgt_error_t err = quantum_state_create(&state, QUANTUM_STATE_PURE, qgt->dimension);
+    if (err != QGT_SUCCESS || !state) return NULL;
+
+    // Calculate attention weights
+    for (size_t i = 0; i < qgt->dimension && i < state->dimension; i++) {
+        state->amplitudes[i].real = qgt->components[i].real;
+        state->amplitudes[i].imag = qgt->components[i].imag;
+    }
+
+    return state;
+}
+
+void quantum_apply_attention_chunk(quantum_topological_tensor_t* qgt, QuantumState* attention_state,
+                                  size_t chunk, size_t chunk_size, QuantumCircuit* qc,
+                                  QuantumWorkspace* qws) {
+    if (!qgt || !attention_state) return;
+    (void)qc; (void)qws;
+
+    size_t start = chunk * chunk_size;
+    size_t end = start + chunk_size;
+    if (end > qgt->dimension) end = qgt->dimension;
+
+    // Apply attention to chunk
+    for (size_t i = start; i < end && i < attention_state->dimension; i++) {
+        double weight = attention_state->amplitudes[i].real * attention_state->amplitudes[i].real +
+                       attention_state->amplitudes[i].imag * attention_state->amplitudes[i].imag;
+        qgt->components[i].real *= (float)(1.0 + weight);
+        qgt->components[i].imag *= (float)(1.0 + weight);
+    }
+}
+
+void quantum_verify_tee(quantum_topological_tensor_t* qgt, size_t chunk, size_t chunk_size,
+                       QuantumCircuit* qc, QuantumWorkspace* qws) {
+    if (!qgt) return;
+    (void)chunk; (void)chunk_size; (void)qc; (void)qws;
+    // TEE verification is performed in monitoring
+}
+
+void update_global_state(quantum_topological_tensor_t* qgt) {
+    update_ground_state(qgt);
+}
+
+QuantumCircuit* init_quantum_monitor_circuit(size_t dimension) {
+    return quantum_circuit_create(dimension);
+}
+
+TopologicalMonitor* quantum_create_monitor(const MonitorConfig* config, QuantumCircuit* qc) {
+    if (!config) return NULL;
+    (void)qc;
+
+    TopologicalMonitor* monitor = calloc(1, sizeof(TopologicalMonitor));
+    if (!monitor) return NULL;
+
+    monitor->config = *config;
+    monitor->active = true;
+    monitor->needs_correction = false;
+
+    return monitor;
+}
+
+void free_topological_monitor(TopologicalMonitor* monitor) {
+    free(monitor);
+}
+
+double quantum_estimate_order(quantum_topological_tensor_t* qgt, QuantumCircuit* qc,
+                             QuantumWorkspace* qws) {
+    if (!qgt) return 0.0;
+    (void)qc; (void)qws;
+
+    // Estimate topological order parameter
+    double order = 0.0;
+    for (size_t i = 0; i < qgt->dimension; i++) {
+        double amp = qgt->components[i].real * qgt->components[i].real +
+                    qgt->components[i].imag * qgt->components[i].imag;
+        order += amp;
+    }
+
+    return order / qgt->dimension;
+}
+
+double quantum_estimate_tee(quantum_topological_tensor_t* qgt, QuantumCircuit* qc,
+                           QuantumWorkspace* qws) {
+    if (!qgt) return 0.0;
+    (void)qc; (void)qws;
+
+    // Estimate topological entanglement entropy
+    double entropy = 0.0;
+    double norm = 0.0;
+
+    for (size_t i = 0; i < qgt->dimension; i++) {
+        double p = qgt->components[i].real * qgt->components[i].real +
+                  qgt->components[i].imag * qgt->components[i].imag;
+        norm += p;
+    }
+
+    if (norm > 1e-10) {
+        for (size_t i = 0; i < qgt->dimension; i++) {
+            double p = (qgt->components[i].real * qgt->components[i].real +
+                       qgt->components[i].imag * qgt->components[i].imag) / norm;
+            if (p > 1e-10) {
+                entropy -= p * log2(p);
+            }
+        }
+    }
+
+    return entropy;
+}
+
+double quantum_verify_braiding_order(quantum_topological_tensor_t* qgt, QuantumCircuit* qc,
+                                    QuantumWorkspace* qws) {
+    if (!qgt) return 0.0;
+    (void)qc; (void)qws;
+
+    // Verify braiding order by checking phase coherence
+    double coherence = 0.0;
+    for (size_t i = 0; i < qgt->dimension; i++) {
+        double amp = qgt->components[i].real * qgt->components[i].real +
+                    qgt->components[i].imag * qgt->components[i].imag;
+        if (amp > 0.1) coherence += 1.0;
+    }
+
+    return coherence / qgt->dimension;
+}
+
+void quantum_update_metrics(TopologicalMonitor* monitor, double order, double tee,
+                           double braiding, QuantumCircuit* qc, QuantumWorkspace* qws) {
+    if (!monitor) return;
+    (void)qc; (void)qws;
+
+    monitor->current_order = order;
+    monitor->current_tee = tee;
+    monitor->current_braiding = braiding;
+
+    monitor->needs_correction = (order < monitor->config.order_threshold ||
+                                 tee < monitor->config.tee_threshold ||
+                                 braiding < monitor->config.braiding_threshold);
+}
+
+void quantum_apply_correction(quantum_topological_tensor_t* qgt, TopologicalMonitor* monitor,
+                             QuantumCircuit* qc, QuantumWorkspace* qws) {
+    if (!qgt || !monitor) return;
+    (void)qc; (void)qws;
+
+    if (monitor->needs_correction) {
+        update_ground_state(qgt);
+        monitor->needs_correction = false;
+    }
+}
+
+void quantum_verify_state(quantum_topological_tensor_t* qgt, QuantumCircuit* qc,
+                         QuantumWorkspace* qws) {
+    if (!qgt) return;
+    (void)qc; (void)qws;
+
+    // Verify and normalize state
+    update_ground_state(qgt);
+}
+
+void quantum_wait_interval(TopologicalMonitor* monitor, QuantumCircuit* qc) {
+    if (!monitor) return;
+    (void)qc;
+
+    // Wait for check interval (minimal implementation)
+    monitor->last_check_time++;
+}

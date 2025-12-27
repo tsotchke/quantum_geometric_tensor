@@ -21,10 +21,7 @@
 #define OMP_PARALLEL_FOR_REDUCTION(op,var)
 #endif
 
-// Helper function
-static inline size_t min(size_t a, size_t b) {
-    return (a < b) ? a : b;
-}
+// min() is defined in numeric_utils.h (included via quantum_geometric_operations.h)
 
 // QML parameters
 #define MAX_EPOCHS 100
@@ -34,7 +31,7 @@ static inline size_t min(size_t a, size_t b) {
 // Forward declarations
 static quantum_circuit* create_quantum_neural_circuit(size_t num_qubits, const void* layers);
 static void initialize_parameters(double* parameters, size_t num_parameters);
-static double compute_loss(const double* outputs, const double* targets, QMLModelType type);
+static double compute_loss(const double* outputs, const double* targets, size_t output_size, QMLModelType type);
 static void adjust_learning_rate(QMLContext* ctx, size_t epoch);
 static double forward_pass(QMLContext* ctx, const double* inputs, const double* targets, size_t batch_size);
 static void backward_pass(QMLContext* ctx);
@@ -49,6 +46,8 @@ static double* apply_layer(ClassicalNetwork* network, size_t layer_idx, double* 
 static void compute_classification_gradients(ClassicalNetwork* network, double* gradients);
 static void compute_regression_gradients(ClassicalNetwork* network, double* gradients);
 static void compute_reconstruction_gradients(ClassicalNetwork* network, double* gradients);
+static void update_classical_parameters(ClassicalNetwork* network, OptimizationContext* optimizer);
+// update_quantum_parameters is declared in quantum_circuit_types.h
 
 // Private QMLContext implementation
 struct QMLContext {
@@ -106,9 +105,9 @@ QMLContext* init_qml_model(QMLModelType type,
         return NULL;
     }
     
-    // Initialize optimizer
+    // Initialize optimizer using classical ADAM optimizer
     ctx->optimizer = init_classical_optimizer(
-        convert_optimizer_type(0), // OPTIMIZER_ADAM is 0
+        OPTIMIZER_ADAM,
         ctx->num_parameters,
         ctx->use_gpu);
     
@@ -328,6 +327,7 @@ static double forward_pass(QMLContext* ctx,
         // Compute loss
         batch_loss += compute_loss(final_output,
             targets + i * ctx->classical_network->output_size,
+            ctx->classical_network->output_size,
             ctx->type);
         
         free(quantum_output);
@@ -410,17 +410,18 @@ static void initialize_parameters(double* parameters,
 
 static double compute_loss(const double* outputs,
                          const double* targets,
+                         size_t output_size,
                          QMLModelType type) {
     switch (type) {
         case QML_CLASSIFIER:
-            return compute_cross_entropy_loss(outputs, targets);
-            
+            return compute_cross_entropy_loss(outputs, targets, output_size);
+
         case QML_REGRESSOR:
-            return compute_mse_loss(outputs, targets);
-            
+            return compute_mse_loss(outputs, targets, output_size);
+
         case QML_AUTOENCODER:
-            return compute_reconstruction_loss(outputs, targets);
-            
+            return compute_reconstruction_loss(outputs, targets, output_size);
+
         default:
             return INFINITY;
     }
@@ -786,4 +787,297 @@ static void compute_reconstruction_gradients(ClassicalNetwork* network, double* 
 
         free(prev_gradients);
     }
+}
+
+// Update classical network parameters using optimizer
+static void update_classical_parameters(ClassicalNetwork* network, OptimizationContext* optimizer) {
+    if (!network || !optimizer) return;
+
+    size_t param_offset = 0;
+
+    // Apply optimizer update to each layer's parameters
+    for (size_t layer = 0; layer < network->num_layers; layer++) {
+        if (network->weights && network->weights[layer]) {
+            size_t layer_size = network->layer_sizes[layer];
+            size_t prev_size = (layer == 0) ? network->input_size
+                                            : network->layer_sizes[layer - 1];
+
+            // Apply Adam update to weights
+            for (size_t i = 0; i < layer_size * prev_size; i++) {
+                size_t idx = param_offset + i;
+                if (optimizer->gradients && idx < optimizer->num_parameters) {
+                    double grad = optimizer->gradients[idx];
+
+                    // Adam optimizer update
+                    if (optimizer->momentum) {
+                        optimizer->momentum[idx] = optimizer->beta1 * optimizer->momentum[idx]
+                                                 + (1.0 - optimizer->beta1) * grad;
+                    }
+                    if (optimizer->velocity) {
+                        optimizer->velocity[idx] = optimizer->beta2 * optimizer->velocity[idx]
+                                                 + (1.0 - optimizer->beta2) * grad * grad;
+                    }
+
+                    double m_hat = optimizer->momentum ? optimizer->momentum[idx] / (1.0 - optimizer->beta1) : grad;
+                    double v_hat = optimizer->velocity ? optimizer->velocity[idx] / (1.0 - optimizer->beta2) : 1.0;
+
+                    network->weights[layer][i] -= optimizer->learning_rate * m_hat / (sqrt(v_hat) + optimizer->epsilon);
+                }
+            }
+            param_offset += layer_size * prev_size;
+        }
+    }
+}
+
+// Implementation of update_quantum_parameters declared in quantum_circuit_types.h
+void update_quantum_parameters(quantum_circuit* circuit, void* optimizer_ptr) {
+    if (!circuit || !optimizer_ptr) return;
+
+    OptimizationContext* optimizer = (OptimizationContext*)optimizer_ptr;
+
+    // Update parameters stored in the circuit's gates
+    // Each gate may have rotation parameters that need to be optimized
+    if (circuit->num_gates > 0 && circuit->gates && optimizer->gradients) {
+        size_t param_idx = 0;
+        for (size_t g = 0; g < circuit->num_gates && param_idx < optimizer->num_parameters; g++) {
+            quantum_gate_t* gate = circuit->gates[g];
+            if (gate && gate->num_parameters > 0 && gate->parameters) {
+                for (size_t p = 0; p < gate->num_parameters && param_idx < optimizer->num_parameters; p++) {
+                    double grad = optimizer->gradients[param_idx];
+
+                    // Apply Adam-style update
+                    double m_hat = grad;
+                    double v_hat = 1.0;
+
+                    if (optimizer->momentum) {
+                        optimizer->momentum[param_idx] = optimizer->beta1 * optimizer->momentum[param_idx]
+                                                       + (1.0 - optimizer->beta1) * grad;
+                        m_hat = optimizer->momentum[param_idx] / (1.0 - optimizer->beta1);
+                    }
+                    if (optimizer->velocity) {
+                        optimizer->velocity[param_idx] = optimizer->beta2 * optimizer->velocity[param_idx]
+                                                       + (1.0 - optimizer->beta2) * grad * grad;
+                        v_hat = optimizer->velocity[param_idx] / (1.0 - optimizer->beta2);
+                    }
+
+                    gate->parameters[p] -= optimizer->learning_rate * m_hat / (sqrt(v_hat) + optimizer->epsilon);
+                    param_idx++;
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Loss Functions
+// =============================================================================
+
+/**
+ * @brief Compute cross-entropy loss for classification
+ *
+ * Computes the categorical cross-entropy loss between predicted probabilities
+ * and target one-hot encoded labels.
+ *
+ * L = -sum(target_i * log(output_i))
+ *
+ * @param outputs Predicted probabilities (should sum to 1 after softmax)
+ * @param targets One-hot encoded target labels
+ * @param size Number of classes/output dimensions
+ * @return Cross-entropy loss value
+ */
+double compute_cross_entropy_loss(const double* outputs,
+                                 const double* targets,
+                                 size_t size) {
+    if (!outputs || !targets || size == 0) return INFINITY;
+
+    double loss = 0.0;
+    const double epsilon = 1e-15;  // Numerical stability to prevent log(0)
+
+    // Accumulate cross-entropy loss across all classes
+    for (size_t i = 0; i < size; i++) {
+        // Clamp outputs to prevent log(0) and log(1) numerical issues
+        double clamped = outputs[i];
+        if (clamped < epsilon) clamped = epsilon;
+        if (clamped > 1.0 - epsilon) clamped = 1.0 - epsilon;
+
+        // Cross-entropy: -sum(target * log(output))
+        // Only non-zero targets contribute (one-hot encoding)
+        if (targets[i] > 0.0) {
+            loss -= targets[i] * log(clamped);
+        }
+    }
+
+    return loss;
+}
+
+/**
+ * @brief Compute Mean Squared Error loss for regression
+ *
+ * Computes the mean of squared differences between outputs and targets.
+ *
+ * L = (1/n) * sum((output_i - target_i)^2)
+ *
+ * @param outputs Predicted values
+ * @param targets Target values
+ * @param size Number of output dimensions
+ * @return MSE loss value
+ */
+double compute_mse_loss(const double* outputs,
+                       const double* targets,
+                       size_t size) {
+    if (!outputs || !targets || size == 0) return INFINITY;
+
+    double loss = 0.0;
+
+    // Sum squared differences
+    for (size_t i = 0; i < size; i++) {
+        double diff = outputs[i] - targets[i];
+        loss += diff * diff;
+    }
+
+    // Return mean
+    return loss / (double)size;
+}
+
+/**
+ * @brief Compute reconstruction loss for autoencoders
+ *
+ * Uses binary cross-entropy suitable for reconstructing normalized inputs
+ * in the [0, 1] range (e.g., normalized images).
+ *
+ * L = -(1/n) * sum(target_i * log(output_i) + (1 - target_i) * log(1 - output_i))
+ *
+ * @param outputs Reconstructed outputs (should be in [0, 1])
+ * @param targets Original input targets (should be in [0, 1])
+ * @param size Number of dimensions
+ * @return Reconstruction loss value
+ */
+double compute_reconstruction_loss(const double* outputs,
+                                  const double* targets,
+                                  size_t size) {
+    if (!outputs || !targets || size == 0) return INFINITY;
+
+    double loss = 0.0;
+    const double epsilon = 1e-15;  // Numerical stability
+
+    for (size_t i = 0; i < size; i++) {
+        // Clamp outputs to valid probability range
+        double out = outputs[i];
+        if (out < epsilon) out = epsilon;
+        if (out > 1.0 - epsilon) out = 1.0 - epsilon;
+
+        // Clamp targets similarly for numerical stability
+        double target = targets[i];
+        if (target < 0.0) target = 0.0;
+        if (target > 1.0) target = 1.0;
+
+        // Binary cross-entropy per element
+        loss -= target * log(out) + (1.0 - target) * log(1.0 - out);
+    }
+
+    // Return mean loss
+    return loss / (double)size;
+}
+
+// =============================================================================
+// Early Stopping
+// =============================================================================
+
+// State for early stopping
+static struct {
+    double best_loss;
+    size_t patience_counter;
+    bool initialized;
+} early_stopping_state = { INFINITY, 0, false };
+
+bool check_early_stopping(double validation_loss, const TrainingConfig* config) {
+    if (!config) return false;
+
+    // Initialize on first call
+    if (!early_stopping_state.initialized) {
+        early_stopping_state.best_loss = INFINITY;
+        early_stopping_state.patience_counter = 0;
+        early_stopping_state.initialized = true;
+    }
+
+    // Check if validation loss improved
+    double improvement = early_stopping_state.best_loss - validation_loss;
+
+    if (improvement > config->early_stopping_threshold) {
+        // Loss improved significantly
+        early_stopping_state.best_loss = validation_loss;
+        early_stopping_state.patience_counter = 0;
+        return false;  // Continue training
+    } else {
+        // Loss did not improve enough
+        early_stopping_state.patience_counter++;
+
+        if (early_stopping_state.patience_counter >= config->patience) {
+            // Reset state for next training run
+            early_stopping_state.initialized = false;
+            return true;  // Stop training
+        }
+        return false;  // Continue training
+    }
+}
+
+// =============================================================================
+// Model Evaluation
+// =============================================================================
+
+double evaluate_model(const QMLContext* ctx, const DataSet* data) {
+    if (!ctx || !data) return INFINITY;
+
+    double total_loss = 0.0;
+    size_t num_samples = data->size;
+
+    // Evaluate on all samples
+    for (size_t i = 0; i < num_samples; i++) {
+        // Get input and target pointers for this sample
+        const double* input = data->inputs + i * data->input_dim;
+        const double* target = data->targets + i * data->target_dim;
+
+        // Forward pass through quantum circuit
+        struct quantum_state* quantum_state = encode_input(input, ctx->quantum_circuit);
+        if (!quantum_state) continue;
+
+        apply_quantum_layers(ctx->quantum_circuit, quantum_state);
+
+        double* quantum_output = measure_quantum_state(quantum_state);
+        if (!quantum_output) {
+            cleanup_quantum_state(quantum_state);
+            continue;
+        }
+
+        // Forward pass through classical network
+        double* final_output = classical_forward_pass(ctx->classical_network, quantum_output);
+        if (!final_output) {
+            free(quantum_output);
+            cleanup_quantum_state(quantum_state);
+            continue;
+        }
+
+        // Compute loss based on model type
+        double sample_loss = 0.0;
+        switch (ctx->type) {
+            case QML_CLASSIFIER:
+                sample_loss = compute_cross_entropy_loss(final_output, target, data->target_dim);
+                break;
+            case QML_REGRESSOR:
+                sample_loss = compute_mse_loss(final_output, target, data->target_dim);
+                break;
+            case QML_AUTOENCODER:
+                sample_loss = compute_reconstruction_loss(final_output, target, data->target_dim);
+                break;
+        }
+
+        total_loss += sample_loss;
+
+        // Cleanup
+        free(final_output);
+        free(quantum_output);
+        cleanup_quantum_state(quantum_state);
+    }
+
+    return total_loss / (double)num_samples;
 }

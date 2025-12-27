@@ -17,8 +17,12 @@ static bool update_correction_channels(CorrectionState* state,
                                    const FusionChannels* channels);
 static bool detect_correction_patterns(CorrectionState* state);
 
-bool init_error_correction(CorrectionState* state,
-                         const CorrectionConfig* config) {
+// Forward declaration
+void cleanup_anyon_correction(CorrectionState* state);
+
+// Renamed to avoid conflict with quantum_error_correction.c
+bool init_anyon_error_correction(CorrectionState* state,
+                                 const CorrectionConfig* config) {
     if (!state || !config) {
         return false;
     }
@@ -30,7 +34,7 @@ bool init_error_correction(CorrectionState* state,
     // Initialize cache
     state->cache = malloc(sizeof(CorrectionCache));
     if (!state->cache || !initialize_correction_cache(state->cache, config)) {
-        cleanup_error_correction(state);
+        cleanup_anyon_correction(state);
         return false;
     }
 
@@ -42,7 +46,8 @@ bool init_error_correction(CorrectionState* state,
     return true;
 }
 
-void cleanup_error_correction(CorrectionState* state) {
+// Renamed to avoid conflict with quantum_error_correction.c:cleanup_error_correction
+void cleanup_anyon_correction(CorrectionState* state) {
     if (state) {
         if (state->cache) {
             cleanup_correction_cache(state->cache);

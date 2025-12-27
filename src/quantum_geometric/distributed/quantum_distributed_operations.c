@@ -1,8 +1,44 @@
 #include "quantum_geometric/distributed/quantum_distributed_operations.h"
 #include "quantum_geometric/core/quantum_geometric_operations.h"
 #include "quantum_geometric/hardware/quantum_geometric_gpu.h"
+#ifndef HAS_MPI
+#ifndef NO_MPI
+#define NO_MPI
+#endif
+#endif
+
+#ifndef NO_MPI
 #include <mpi.h>
+#else
+// MPI type stubs for non-MPI builds
+typedef int MPI_Comm;
+typedef int MPI_Status;
+typedef int MPI_Datatype;
+#define MPI_COMM_WORLD 0
+#define MPI_COMM_NULL 0
+#define MPI_BYTE 0
+#define MPI_SUCCESS 0
+
+// Stub MPI functions
+static inline int MPI_Comm_rank(MPI_Comm comm, int* rank) { (void)comm; *rank = 0; return 0; }
+static inline int MPI_Comm_size(MPI_Comm comm, int* size) { (void)comm; *size = 1; return 0; }
+static inline int MPI_Sendrecv(const void* sb, int sc, MPI_Datatype st, int d, int stag,
+                               void* rb, int rc, MPI_Datatype rt, int s, int rtag,
+                               MPI_Comm comm, MPI_Status* status) {
+    (void)sb; (void)sc; (void)st; (void)d; (void)stag;
+    (void)rb; (void)rc; (void)rt; (void)s; (void)rtag;
+    (void)comm; (void)status;
+    return 0;
+}
+static inline int MPI_Barrier(MPI_Comm comm) { (void)comm; return 0; }
+static inline int MPI_Allreduce(const void* sb, void* rb, int c, MPI_Datatype dt, int op, MPI_Comm comm) {
+    (void)sb; (void)rb; (void)c; (void)dt; (void)op; (void)comm; return 0;
+}
+#endif
+
+#ifdef _OPENMP
 #include <omp.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 

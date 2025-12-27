@@ -93,7 +93,8 @@ static void update_load_factors_internal(LoadBalancer* balancer, int device,
 // Performance Monitor Implementation
 // ============================================================================
 
-PerformanceMonitor* init_performance_monitor(size_t num_devices) {
+// Renamed to avoid conflict with core/performance_monitor.c
+PerformanceMonitor* init_workload_performance_monitor(size_t num_devices) {
     PerformanceMonitor* monitor = calloc(1, sizeof(PerformanceMonitor));
     if (!monitor) return NULL;
 
@@ -111,7 +112,8 @@ PerformanceMonitor* init_performance_monitor(size_t num_devices) {
     return monitor;
 }
 
-void cleanup_performance_monitor(PerformanceMonitor* monitor) {
+// Renamed to avoid conflict with core/performance_monitor.c
+void cleanup_workload_performance_monitor(PerformanceMonitor* monitor) {
     if (!monitor) return;
     free(monitor->device_stats);
     free(monitor);
@@ -160,7 +162,7 @@ void detect_gpu_capabilities(void* devices_ptr, int* count) {
     DeviceCapabilities* devices = (DeviceCapabilities*)devices_ptr;
     if (!devices || !count) return;
 
-#ifdef QGTL_HAS_CUDA
+#ifdef QGT_HAS_CUDA
     // Would enumerate CUDA devices here
     int idx = *count;
     if (idx < MAX_DEVICES) {
@@ -174,7 +176,7 @@ void detect_gpu_capabilities(void* devices_ptr, int* count) {
     }
 #endif
 
-#ifdef QGTL_HAS_METAL
+#ifdef QGT_HAS_METAL
     // Metal is available on this system (detected at cmake time)
     int idx = *count;
     if (idx < MAX_DEVICES) {
@@ -189,13 +191,8 @@ void detect_gpu_capabilities(void* devices_ptr, int* count) {
 #endif
 }
 
-void detect_quantum_capabilities(void* devices_ptr, int* count) {
-    // Quantum device detection - check for backend connections
-    // This would interface with quantum hardware backends when available
-    (void)devices_ptr;
-    (void)count;
-    // Quantum devices are added dynamically when backends connect
-}
+// detect_quantum_capabilities() - Canonical implementation in quantum_hardware_capabilities.c
+// (removed: stub)
 
 void analyze_device_performance(void* device_ptr) {
     DeviceCapabilities* device = (DeviceCapabilities*)device_ptr;
@@ -482,7 +479,7 @@ LoadBalancer* init_load_balancer(const BalancerConfig* config) {
         return NULL;
     }
 
-    balancer->monitor = init_performance_monitor((size_t)balancer->num_devices);
+    balancer->monitor = init_workload_performance_monitor((size_t)balancer->num_devices);
 
     balancer->chunk_capacity = MAX_CHUNKS;
     balancer->chunks = calloc(MAX_CHUNKS, sizeof(WorkloadChunk*));
@@ -497,8 +494,9 @@ LoadBalancer* init_load_balancer(const BalancerConfig* config) {
     return balancer;
 }
 
-void distribute_workload(LoadBalancer* balancer, void* data, size_t size,
-                        WorkloadType type) {
+// Renamed to avoid conflict with workload_distribution.c (this uses LoadBalancer)
+void distribute_workload_balanced(LoadBalancer* balancer, void* data, size_t size,
+                                  WorkloadType type) {
     if (!balancer || !data || size == 0) return;
 
     if (should_rebalance(balancer)) {
@@ -542,7 +540,8 @@ void rebalance_workload(LoadBalancer* balancer) {
     balancer->needs_rebalancing = false;
 }
 
-void monitor_performance(LoadBalancer* balancer) {
+// Renamed to avoid conflict with geometric_processor.c
+void workload_monitor_performance(LoadBalancer* balancer) {
     if (!balancer) return;
 
     for (int i = 0; i < balancer->num_devices; i++) {
@@ -578,7 +577,7 @@ void cleanup_load_balancer(LoadBalancer* balancer) {
         free(balancer->chunks);
     }
 
-    cleanup_performance_monitor(balancer->monitor);
+    cleanup_workload_performance_monitor(balancer->monitor);
 
     if (balancer->comm_optimizer) {
         cleanup_communication_optimizer(balancer->comm_optimizer);

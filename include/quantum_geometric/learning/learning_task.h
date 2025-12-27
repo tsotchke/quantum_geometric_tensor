@@ -22,19 +22,19 @@ typedef enum {
     MODEL_QUANTUM_ENSEMBLE
 } model_type_t;
 
-// Optimization methods
+// Quantum optimization methods (distinct from classical optimizer_type_t)
 typedef enum {
-    OPTIMIZER_QUANTUM_GRADIENT_DESCENT,
-    OPTIMIZER_QUANTUM_ADAM,
-    OPTIMIZER_QUANTUM_NATURAL_GRADIENT,
-    OPTIMIZER_QUANTUM_EVOLUTION
-} optimizer_type_t;
+    QUANTUM_OPTIMIZER_GRADIENT_DESCENT,
+    QUANTUM_OPTIMIZER_ADAM,
+    QUANTUM_OPTIMIZER_NATURAL_GRADIENT,
+    QUANTUM_OPTIMIZER_EVOLUTION
+} quantum_optimizer_type_t;
 
 // Task configuration
 typedef struct {
-    task_type_t task_type;              // Type of learning task
-    model_type_t model_type;            // Type of quantum model
-    optimizer_type_t optimizer_type;     // Type of optimizer
+    task_type_t task_type;                      // Type of learning task
+    model_type_t model_type;                    // Type of quantum model
+    quantum_optimizer_type_t optimizer_type;    // Type of quantum optimizer
     size_t input_dim;                   // Input dimension
     size_t output_dim;                  // Output dimension
     size_t latent_dim;                  // Latent space dimension

@@ -15,6 +15,7 @@
 
 #include "hardware_capabilities.h"
 #include "quantum_backend_types.h"
+#include "quantum_geometric/supercomputer/compute_types.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -53,7 +54,7 @@ typedef enum {
     CAP_AMX = 1 << 15
 } HardwareCapabilityFlags;
 
-// Hardware backend types
+// Hardware backend types (quantum hardware only)
 typedef enum {
     HARDWARE_NONE,
     HARDWARE_IBM,
@@ -98,16 +99,21 @@ typedef struct IBMBackendConfig {
 } IBMBackendConfig;
 #endif
 
-// IBM backend state
+// IBM backend state (extended for optimized backend)
 typedef struct IBMBackendState {
-    bool initialized;
-    bool connected;
-    IBMBackendConfig config;
-    double* error_rates;
-    double* readout_errors;
-    size_t num_qubits;
-    void* api_handle;
+    bool initialized;                 // Backend initialization status
+    bool connected;                   // Connection status
+    IBMBackendConfig config;          // Backend configuration
+    double* error_rates;              // Per-qubit error rates
+    double* readout_errors;           // Per-qubit readout error rates
+    size_t num_qubits;                // Number of qubits
+    void* api_handle;                 // API handle
     struct IBMResultData* last_result_data;  // Last execution result data
+    // Extended fields for optimized backend
+    double* calibration_data;         // Full calibration data array
+    bool* qubit_availability;         // Per-qubit availability status
+    size_t* measurement_order;        // Optimized measurement order
+    double** coupling_map;            // Qubit coupling strength matrix
 } IBMBackendState;
 
 // Quantum hardware capabilities
@@ -123,6 +129,9 @@ typedef struct QuantumHardwareCapabilities {
     bool supports_gates;              // Gate-based quantum operations
     bool supports_measurement;        // Measurement support
     bool supports_annealing;          // Quantum annealing support
+    bool supports_conditional;        // Conditional operations
+    bool supports_parallel;           // Parallel execution
+    bool supports_error_correction;   // Quantum error correction
     uint32_t max_qubits;              // Maximum number of qubits
     uint32_t max_gates;               // Maximum number of gates
     uint32_t max_depth;               // Maximum circuit depth
@@ -132,10 +141,13 @@ typedef struct QuantumHardwareCapabilities {
     double coherence_time;            // Qubit coherence time
     double gate_time;                 // Gate operation time
     double readout_time;              // Measurement readout time
+    double* connectivity;             // Qubit connectivity matrix
+    size_t connectivity_size;         // Size of connectivity matrix
     size_t num_gates;                 // Number of available gates
     char** available_gates;           // Names of available gates
     void* extensions;                 // Backend-specific extensions
     void* device_specific;            // Device-specific data
+    void* backend_specific;           // Backend-specific capabilities
 } QuantumHardwareCapabilities;
 
 // Alias for HardwareCapabilities used in abstraction layer
@@ -160,6 +172,74 @@ struct NoiseModel {
     double* decoherence_rates;     // Decoherence rates
     void* backend_specific_noise;  // Backend-specific noise parameters
 };
+
+// ============================================================================
+// Unified HardwareProfile - single source of truth for all hardware profiling
+// ============================================================================
+
+#ifndef HARDWARE_PROFILE_DEFINED
+#define HARDWARE_PROFILE_DEFINED
+
+/**
+ * @brief Comprehensive hardware profile for quantum operations
+ *
+ * This is the unified struct for all hardware profiling needs.
+ * All files should include quantum_hardware_types.h and use this definition.
+ */
+typedef struct HardwareProfile {
+    // Basic hardware info
+    size_t num_qubits;                  // Number of qubits
+
+    // Fidelity metrics (per-qubit arrays)
+    double* gate_fidelities;            // Gate fidelity per qubit
+    double* measurement_fidelities;     // Measurement fidelity per qubit
+    double* readout_fidelities;         // Alias for measurement_fidelities (readout)
+
+    // Single-value fidelity metrics (averages)
+    double gate_fidelity;               // Average gate fidelity
+    double measurement_fidelity;        // Average measurement fidelity
+
+    // Coherence times (per-qubit arrays)
+    double* t1_times;                   // T1 relaxation times per qubit
+    double* t2_times;                   // T2 dephasing times per qubit
+    double coherence_time;              // Average coherence time
+
+    // Coupling and crosstalk
+    double* coupling_map;               // Coupling strength matrix
+    double* crosstalk_matrix;           // Crosstalk coefficients
+
+    // Noise parameters
+    double thermal_noise;               // Thermal noise level
+    double readout_noise;               // Readout noise level
+    double gate_noise;                  // Gate operation noise
+    double noise_scale;                 // Overall noise scaling factor
+
+    // Timing parameters
+    double measurement_time;            // Measurement duration (us)
+    double gate_time;                   // Single-qubit gate time (ns)
+    double two_qubit_gate_time;         // Two-qubit gate time (ns)
+
+    // Calibration data
+    double last_calibration_time;       // Timestamp of last calibration
+    double phase_calibration;           // Phase calibration factor
+    bool calibration_valid;             // Whether calibration is current
+
+    // Error mitigation parameters
+    double min_reliability_threshold;   // Minimum reliability for corrections
+    double min_confidence_threshold;    // Minimum confidence threshold
+    double error_rate_learning_rate;    // Learning rate for error updates
+    double confidence_scale_factor;     // Scaling factor for confidence
+
+    // Pattern detection parameters
+    double learning_rate;               // General learning rate for updates
+    double spatial_scale;               // Spatial decay scale for correlations
+    double pattern_scale_factor;        // Scaling factor for pattern detection
+
+    // Capability flags
+    bool supports_parallel_measurement; // Supports parallel measurement
+} HardwareProfile;
+
+#endif // HARDWARE_PROFILE_DEFINED
 
 // Generic gate structure (for named gates)
 typedef struct {
@@ -283,9 +363,6 @@ typedef struct {
 // Hardware Abstraction Types
 // ============================================================================
 
-// HARDWARE_METAL is a backend type for Apple Metal GPU acceleration
-#define HARDWARE_METAL 4
-
 // Circuit validation result
 typedef struct ValidationResult {
     bool is_valid;                    // Whether the circuit is valid
@@ -370,7 +447,8 @@ typedef struct ErrorRates {
 
 // Unified quantum hardware structure
 typedef struct QuantumHardware {
-    HardwareBackendType type;         // Backend type (IBM, Rigetti, etc.)
+    HardwareBackendType type;         // Quantum backend type (IBM, Rigetti, etc.)
+    ComputeBackendType compute_backend;  // Compute acceleration (Metal, CUDA, etc.)
     QuantumHardwareCapabilities capabilities;  // Hardware capabilities
     ConnectivityMap connectivity;     // Qubit connectivity
     ErrorRates error_rates;           // Error rates

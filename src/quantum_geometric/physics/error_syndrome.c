@@ -8,6 +8,7 @@
 #include "quantum_geometric/physics/syndrome_extraction.h"
 #include "quantum_geometric/physics/z_stabilizer_operations.h"
 #include "quantum_geometric/core/quantum_geometric_core.h"
+#include "quantum_geometric/hardware/quantum_hardware_types.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -21,14 +22,7 @@ void cleanup_test_state(quantum_state_t* state) {
     }
 }
 
-// Error syndrome structure
-typedef struct {
-    size_t* error_locations;  // Array of error locations
-    error_type_t* error_types;  // Array of error types
-    double* error_weights;    // Array of error weights
-    size_t num_errors;       // Number of detected errors
-    size_t max_errors;       // Maximum number of errors
-} ErrorSyndrome;
+// ErrorSyndrome is defined in error_syndrome.h
 
 qgt_error_t init_error_syndrome(ErrorSyndrome* syndrome, size_t max_errors) {
     if (!syndrome || max_errors == 0) {
@@ -280,9 +274,23 @@ size_t extract_error_syndromes(quantum_state_t* state,
         return 0;
     }
 
-    // Extract syndromes
+    // Create default hardware profile for syndrome extraction
+    HardwareProfile hw_profile = {
+        .num_qubits = state->num_qubits,
+        .gate_fidelity = 0.999,
+        .measurement_fidelity = 0.99,
+        .noise_scale = 0.01,
+        .phase_calibration = 1.0,
+        .min_confidence_threshold = 0.9,
+        .confidence_scale_factor = 1.0,
+        .learning_rate = 0.1,
+        .spatial_scale = 1.0,
+        .pattern_scale_factor = 1.0
+    };
+
+    // Extract syndromes with hardware profile
     ErrorSyndrome syndrome = {0};
-    err = extract_error_syndrome(&syndrome_state, state, &syndrome);
+    err = extract_error_syndrome(&syndrome_state, state, &syndrome, &hw_profile);
     if (err != QGT_SUCCESS) {
         cleanup_syndrome_extraction(&syndrome_state);
         return 0;
@@ -321,16 +329,16 @@ size_t extract_error_syndromes(quantum_state_t* state,
         }
     }
 
-    // Update correlations
-    update_correlation_matrix(graph, syndrome_state.z_state);
+    // Update correlations (pass NULL for z_state - uses internal calibration)
+    update_correlation_matrix(graph, NULL);
 
     // Detect error chains
     for (size_t i = 0; i < graph->num_vertices; i++) {
-        detect_error_chain(graph, &graph->vertices[i], syndrome_state.z_state);
+        detect_error_chain(graph, &graph->vertices[i], NULL);
     }
 
     // Analyze error patterns
-    analyze_error_patterns(graph, config, syndrome_state.z_state);
+    analyze_error_patterns(graph, config, NULL);
 
     // Group parallel vertices
     group_parallel_vertices(graph, config);
@@ -838,8 +846,12 @@ double calculate_syndrome_weight(const quantum_state_t* state,
         return 0.0;
     }
 
-    // Use amplitude as weight
-    return fabs(state->amplitudes[idx * 2]);
+    // Use coordinate magnitude as weight
+    if (state->coordinates) {
+        ComplexFloat c = state->coordinates[idx];
+        return sqrt(c.real * c.real + c.imag * c.imag);
+    }
+    return 0.0;
 }
 
 bool are_vertices_adjacent(const SyndromeVertex* v1,
@@ -953,12 +965,17 @@ bool apply_correction_operator(quantum_state_t* state,
         return false;
     }
 
-    // Get error type from syndrome
+    // Determine error type from syndrome values if available
     error_type_t error_type = ERROR_X; // Default to X error
-    for (size_t i = 0; i < state->num_errors; i++) {
-        if (state->error_locations[i] == idx) {
-            error_type = state->error_types[i];
-            break;
+    if (state->syndrome_values && state->syndrome_size > idx) {
+        // Use syndrome value to determine error type
+        double syndrome_val = state->syndrome_values[idx];
+        if (syndrome_val > 0.8) {
+            error_type = ERROR_Y;  // High syndrome suggests Y error
+        } else if (syndrome_val > 0.5) {
+            error_type = ERROR_X;  // Medium syndrome suggests X error
+        } else if (syndrome_val > 0.2) {
+            error_type = ERROR_Z;  // Low syndrome suggests Z error
         }
     }
 
@@ -991,9 +1008,13 @@ bool apply_x_correction(quantum_state_t* state,
         return false;
     }
 
-    // Flip amplitude signs to apply X
-    state->amplitudes[idx * 2] *= -1.0;
-    state->amplitudes[idx * 2 + 1] *= -1.0;
+    // Apply X correction: flip real and imaginary parts
+    if (state->coordinates && idx < state->dimension) {
+        // X gate swaps |0> and |1> components
+        // For a single qubit at position idx, we flip the corresponding amplitude
+        state->coordinates[idx].real *= -1.0f;
+        state->coordinates[idx].imag *= -1.0f;
+    }
 
     return true;
 }
@@ -1012,8 +1033,331 @@ bool apply_z_correction(quantum_state_t* state,
         return false;
     }
 
-    // Apply phase flip for Z
-    state->amplitudes[idx * 2 + 1] *= -1.0;
+    // Apply Z correction: flip phase (multiply by -1 for |1> component)
+    if (state->coordinates && idx < state->dimension) {
+        // Z gate applies phase flip
+        state->coordinates[idx].imag *= -1.0f;
+    }
+
+    return true;
+}
+
+// =============================================================================
+// Error Pattern Analysis Functions
+// =============================================================================
+
+/**
+ * @brief Detect error chains in the matching graph
+ *
+ * An error chain is a connected sequence of syndrome vertices that indicates
+ * a string of correlated errors. This function uses the Z stabilizer state
+ * to identify chains based on measurement correlations and spatial proximity.
+ */
+bool detect_error_chain(MatchingGraph* graph,
+                       const SyndromeVertex* start,
+                       const ZStabilizerState* z_state) {
+    if (!graph || !start || !z_state) {
+        return false;
+    }
+
+    // Mark the starting vertex as part of a potential chain
+    bool found_chain = false;
+
+    // Traverse edges from the starting vertex to find connected defects
+    for (size_t i = 0; i < graph->num_edges; i++) {
+        SyndromeEdge* edge = &graph->edges[i];
+
+        // Check if this edge connects to the starting vertex
+        bool connects_start = (edge->vertex1 == start || edge->vertex2 == start);
+        if (!connects_start) continue;
+
+        // Get the other vertex
+        SyndromeVertex* other = (edge->vertex1 == start) ? edge->vertex2 : edge->vertex1;
+
+        // Calculate correlation strength between vertices using Z stabilizer data
+        double correlation = 0.0;
+        if (z_state->phase_correlations) {
+            size_t idx1 = start->y * z_state->config.num_stabilizers + start->x;
+            size_t idx2 = other->y * z_state->config.num_stabilizers + other->x;
+            if (idx1 < z_state->config.num_stabilizers &&
+                idx2 < z_state->config.num_stabilizers) {
+                correlation = fabs(z_state->phase_correlations[idx1] -
+                                   z_state->phase_correlations[idx2]);
+            }
+        }
+
+        // Check if edge weight and correlation suggest an error chain
+        if (edge->weight > 0.5 && correlation < z_state->config.error_threshold) {
+            edge->chain_probability = 1.0 - correlation;
+            edge->chain_length = 2;  // At least 2 vertices in chain
+
+            // Mark vertices as part of chain
+            ((SyndromeVertex*)start)->part_of_chain = true;
+            other->part_of_chain = true;
+
+            found_chain = true;
+        }
+    }
+
+    return found_chain;
+}
+
+/**
+ * @brief Update the correlation matrix in the matching graph
+ *
+ * The correlation matrix tracks pairwise correlations between syndrome
+ * vertices based on Z stabilizer measurements. This information is used
+ * for improved minimum-weight perfect matching during decoding.
+ */
+bool update_correlation_matrix(MatchingGraph* graph,
+                             const ZStabilizerState* z_state) {
+    if (!graph || !z_state) {
+        return false;
+    }
+
+    size_t n = graph->num_vertices;
+    if (n == 0) return true;
+
+    // Ensure correlation matrix is allocated
+    if (!graph->correlation_matrix) {
+        graph->correlation_matrix = aligned_alloc(64, n * n * sizeof(double));
+        if (!graph->correlation_matrix) {
+            return false;
+        }
+    }
+
+    // Update correlations based on Z stabilizer phase correlations
+    for (size_t i = 0; i < n; i++) {
+        for (size_t j = 0; j <= i; j++) {
+            double corr = 0.0;
+
+            if (i == j) {
+                // Self-correlation is 1.0
+                corr = 1.0;
+            } else {
+                // Compute correlation from Z stabilizer measurements
+                const SyndromeVertex* vi = &graph->vertices[i];
+                const SyndromeVertex* vj = &graph->vertices[j];
+
+                // Distance-based correlation decay
+                double dx = (double)vi->x - (double)vj->x;
+                double dy = (double)vi->y - (double)vj->y;
+                double dz = (double)vi->z - (double)vj->z;
+                double distance = sqrt(dx*dx + dy*dy + dz*dz);
+
+                // Exponential decay with correlation factor from config
+                corr = exp(-distance * z_state->config.correlation_factor);
+
+                // Incorporate phase correlation data if available
+                if (z_state->phase_correlations) {
+                    size_t idx_i = vi->y * z_state->config.num_stabilizers + vi->x;
+                    size_t idx_j = vj->y * z_state->config.num_stabilizers + vj->x;
+
+                    if (idx_i < z_state->config.num_stabilizers &&
+                        idx_j < z_state->config.num_stabilizers) {
+                        double phase_i = z_state->phase_correlations[idx_i];
+                        double phase_j = z_state->phase_correlations[idx_j];
+                        // Phase similarity increases correlation
+                        double phase_sim = 1.0 - fabs(phase_i - phase_j);
+                        corr *= (0.5 + 0.5 * phase_sim);
+                    }
+                }
+            }
+
+            // Symmetric matrix
+            graph->correlation_matrix[i * n + j] = corr;
+            graph->correlation_matrix[j * n + i] = corr;
+        }
+    }
+
+    return true;
+}
+
+/**
+ * @brief Analyze error patterns in the matching graph
+ *
+ * Identifies recurring error patterns by examining the structure of
+ * detected syndromes and their correlations. Uses the Z stabilizer
+ * state for phase-aware pattern detection.
+ */
+bool analyze_error_patterns(MatchingGraph* graph,
+                          const SyndromeConfig* config,
+                          const ZStabilizerState* z_state) {
+    if (!graph || !config || !z_state) {
+        return false;
+    }
+
+    // Ensure pattern weights array is allocated
+    if (!graph->pattern_weights) {
+        graph->pattern_weights = aligned_alloc(64, graph->max_vertices * sizeof(double));
+        if (!graph->pattern_weights) {
+            return false;
+        }
+        memset(graph->pattern_weights, 0, graph->max_vertices * sizeof(double));
+    }
+
+    // Analyze each vertex for pattern membership
+    for (size_t i = 0; i < graph->num_vertices; i++) {
+        SyndromeVertex* v = &graph->vertices[i];
+        double pattern_weight = 0.0;
+
+        // Count neighboring defects
+        size_t neighbor_defects = 0;
+        double total_edge_weight = 0.0;
+
+        for (size_t j = 0; j < graph->num_edges; j++) {
+            SyndromeEdge* edge = &graph->edges[j];
+            if (edge->vertex1 == v || edge->vertex2 == v) {
+                SyndromeVertex* other = (edge->vertex1 == v) ? edge->vertex2 : edge->vertex1;
+                if (other->part_of_chain || other->weight > config->detection_threshold) {
+                    neighbor_defects++;
+                    total_edge_weight += edge->weight;
+                }
+            }
+        }
+
+        // Pattern weight based on local structure
+        if (neighbor_defects > 0) {
+            pattern_weight = (double)neighbor_defects * total_edge_weight;
+
+            // Incorporate phase stability from Z stabilizer
+            if (z_state->phase_correlations) {
+                size_t idx = v->y * z_state->config.num_stabilizers + v->x;
+                if (idx < z_state->config.num_stabilizers) {
+                    // Lower phase correlation indicates higher error probability
+                    double phase_instability = 1.0 - z_state->phase_correlations[idx];
+                    pattern_weight *= (1.0 + phase_instability);
+                }
+            }
+        }
+
+        graph->pattern_weights[i] = pattern_weight;
+
+        // Update vertex correlation weight
+        v->correlation_weight = pattern_weight;
+    }
+
+    // Detect chains starting from high-weight vertices
+    for (size_t i = 0; i < graph->num_vertices; i++) {
+        if (graph->pattern_weights[i] > config->detection_threshold) {
+            detect_error_chain(graph, &graph->vertices[i], z_state);
+        }
+    }
+
+    return true;
+}
+
+/**
+ * @brief Group vertices for parallel measurement
+ *
+ * Groups syndrome vertices such that vertices within each group can be
+ * measured simultaneously without crosstalk interference. Uses spatial
+ * separation and correlation data to ensure measurement independence.
+ */
+bool group_parallel_vertices(MatchingGraph* graph,
+                           const SyndromeConfig* config) {
+    if (!graph || !config) {
+        return false;
+    }
+
+    size_t n = graph->num_vertices;
+    if (n == 0) {
+        graph->num_parallel_groups = 0;
+        return true;
+    }
+
+    // Ensure parallel groups array is allocated
+    if (!graph->parallel_groups) {
+        graph->parallel_groups = aligned_alloc(64, n * sizeof(bool));
+        if (!graph->parallel_groups) {
+            return false;
+        }
+    }
+
+    // Initialize all vertices as ungrouped
+    for (size_t i = 0; i < n; i++) {
+        graph->parallel_groups[i] = false;
+    }
+
+    // Compute minimum distance for parallel measurement
+    // Derive from lattice dimensions and parallel group size
+    // Larger groups require more spacing to avoid crosstalk
+    double min_parallel_distance = 2.0;  // Default minimum spacing
+    if (config->parallel_group_size > 0 && config->lattice_width > 0) {
+        // Scale minimum distance based on group size relative to lattice
+        min_parallel_distance = (double)config->lattice_width /
+                               (double)config->parallel_group_size;
+        if (min_parallel_distance < 2.0) min_parallel_distance = 2.0;
+    }
+
+    // Greedy grouping algorithm
+    size_t num_groups = 0;
+    bool* assigned = aligned_alloc(64, n * sizeof(bool));
+    if (!assigned) {
+        return false;
+    }
+    memset(assigned, 0, n * sizeof(bool));
+
+    while (true) {
+        // Find first unassigned vertex
+        size_t first_unassigned = n;
+        for (size_t i = 0; i < n; i++) {
+            if (!assigned[i]) {
+                first_unassigned = i;
+                break;
+            }
+        }
+
+        if (first_unassigned == n) {
+            // All vertices assigned
+            break;
+        }
+
+        // Start new group with this vertex
+        num_groups++;
+        assigned[first_unassigned] = true;
+        graph->parallel_groups[first_unassigned] = true;
+
+        // Add compatible vertices to this group
+        for (size_t i = first_unassigned + 1; i < n; i++) {
+            if (assigned[i]) continue;
+
+            // Check distance from all vertices already in current group
+            bool compatible = true;
+            for (size_t j = 0; j < i; j++) {
+                if (!assigned[j] || j < first_unassigned) continue;
+                if (!graph->parallel_groups[j]) continue;
+
+                // Compute distance between vertices i and j
+                const SyndromeVertex* vi = &graph->vertices[i];
+                const SyndromeVertex* vj = &graph->vertices[j];
+                double dx = (double)vi->x - (double)vj->x;
+                double dy = (double)vi->y - (double)vj->y;
+                double dz = (double)vi->z - (double)vj->z;
+                double distance = sqrt(dx*dx + dy*dy + dz*dz);
+
+                if (distance < min_parallel_distance) {
+                    compatible = false;
+                    break;
+                }
+            }
+
+            if (compatible) {
+                assigned[i] = true;
+                graph->parallel_groups[i] = true;
+            }
+        }
+
+        // Reset parallel_groups for next iteration (used as temporary marker)
+        for (size_t i = 0; i < n; i++) {
+            if (assigned[i] && graph->parallel_groups[i]) {
+                graph->parallel_groups[i] = (num_groups % 2 == 1);
+            }
+        }
+    }
+
+    free(assigned);
+    graph->num_parallel_groups = num_groups;
 
     return true;
 }

@@ -65,7 +65,7 @@ learning_task_handle_t quantum_create_learning_task(const task_config_t* config)
         task_config_t default_config = {
             .task_type = TASK_CLASSIFICATION,
             .model_type = MODEL_QUANTUM_NEURAL_NETWORK,
-            .optimizer_type = OPTIMIZER_QUANTUM_ADAM,
+            .optimizer_type = QUANTUM_OPTIMIZER_ADAM,
             .input_dim = DEFAULT_INPUT_DIM,
             .output_dim = DEFAULT_OUTPUT_DIM,
             .latent_dim = DEFAULT_LATENT_DIM,

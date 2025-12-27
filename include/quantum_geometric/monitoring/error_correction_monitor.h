@@ -4,6 +4,10 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <time.h>
+#include <stdio.h>
+
+// Maximum history buffer length
+#define MAX_HISTORY_LENGTH 1024
 
 // Error types for pattern detection
 typedef enum {
@@ -18,6 +22,14 @@ typedef enum {
     TREND_STABLE,
     TREND_DECLINING
 } trend_direction_t;
+
+// Alert levels for monitoring
+typedef enum {
+    ALERT_INFO,
+    ALERT_WARNING,
+    ALERT_ERROR,
+    ALERT_CRITICAL
+} AlertLevel;
 
 // Configuration for the error correction monitor
 typedef struct {
@@ -40,10 +52,14 @@ typedef struct {
 
 // Metrics for correction performance
 typedef struct {
+    time_t timestamp;             // Timestamp of the metrics
     double success_rate;          // Success rate for the period
     double error_rate;            // Error rate for the period
+    double avg_correction_time;   // Average correction time
     double latency;               // Average correction latency
     size_t correction_count;      // Number of corrections in period
+    size_t total_corrections;     // Total number of corrections
+    size_t failed_corrections;    // Number of failed corrections
 } CorrectionMetrics;
 
 // Performance trend analysis
@@ -92,13 +108,41 @@ typedef struct {
     double avg_cycle_time;       // Average cycle time
 } PipelineStats;
 
-// Opaque monitor state structure
-typedef struct MonitorState MonitorState;
+// Alert information structure
+typedef struct {
+    AlertLevel level;            // Alert severity level
+    time_t timestamp;            // When alert was generated
+    CorrectionMetrics metrics;   // Metrics at time of alert
+    const char* message;         // Alert message
+} AlertInfo;
+
+// Full monitor state structure
+typedef struct MonitorState {
+    MonitorConfig config;                  // Configuration
+    CorrectionMetrics current;             // Current metrics
+    CorrectionMetrics* history;            // History buffer
+    size_t history_count;                  // Number of history entries
+    double cumulative_success_rate;        // Cumulative success rate
+    double peak_correction_time;           // Peak correction time observed
+    time_t start_time;                     // Start time of monitoring
+    FILE* log_file;                        // Log file handle
+    bool real_time_active;                 // Real-time monitoring active
+    ResourceMetrics resource_history[MAX_HISTORY_LENGTH];  // Resource history
+    size_t resource_history_count;         // Resource history count
+    ErrorPattern detected_patterns[64];    // Detected error patterns
+    size_t pattern_count;                  // Number of detected patterns
+} MonitorState;
 
 // Core monitoring functions
 bool init_correction_monitor(MonitorState* state, const MonitorConfig* config);
 void cleanup_correction_monitor(MonitorState* state);
 bool record_correction_metrics(MonitorState* state, const CorrectionState* correction_state, double latency);
+
+// Alert functions
+bool generate_correction_alert(const MonitorState* state, AlertInfo* alert);
+bool generate_correction_report(const MonitorState* state, time_t start_time, time_t end_time, const char* report_path);
+bool get_current_metrics(const MonitorState* state, CorrectionMetrics* metrics);
+bool check_correction_health(const MonitorState* state);
 
 // Performance analysis functions
 bool analyze_performance_trend(const MonitorState* state, PerformanceTrend* trend);

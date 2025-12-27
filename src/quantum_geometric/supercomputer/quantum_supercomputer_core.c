@@ -1,8 +1,21 @@
+/**
+ * quantum_supercomputer_core.c - Supercomputer-scale quantum computing
+ *
+ * CUDA/MPI-based implementation for executing quantum operations
+ * across supercomputer-class distributed systems.
+ */
+
 #include "quantum_geometric/supercomputer/quantum_supercomputer_core.h"
+
+// Only compile if CUDA is available
+#if QSC_HAS_CUDA
+
 #include "quantum_geometric/core/quantum_geometric_operations.h"
 #include <stdlib.h>
 #include <mpi.h>
 #include <cuda_runtime.h>
+#include <cublas_v2.h>
+#include <cusparse.h>
 
 // Hardware parameters
 #define MAX_NODES 1024
@@ -270,7 +283,7 @@ void cleanup_supercomputer(SupercomputerContext* ctx) {
     free(ctx->gpu_memory);
     
     // Clean up monitoring
-    cleanup_performance_monitor(ctx->monitor);
+    cleanup_performance_monitor_distributed(ctx->monitor);
     
     // Clean up MPI
     MPI_Comm_free(&ctx->world_comm);
@@ -278,6 +291,8 @@ void cleanup_supercomputer(SupercomputerContext* ctx) {
     MPI_Comm_free(&ctx->gpu_comm);
     
     free(ctx);
-    
+
     MPI_Finalize();
 }
+
+#endif // QSC_HAS_CUDA

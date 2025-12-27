@@ -14,7 +14,7 @@
 static bool initialize_mitigation_cache(MitigationCache* cache,
                                      const MitigationConfig* config);
 static void cleanup_mitigation_cache(MitigationCache* cache);
-static bool apply_readout_correction(quantum_state* state,
+static bool apply_readout_correction(quantum_state_t* state,
                                    const MitigationCache* cache,
                                    const HardwareProfile* hw_profile);
 static bool update_error_model(MitigationCache* cache,
@@ -27,9 +27,24 @@ static bool update_calibration_matrix(MitigationCache* cache,
                                     const HardwareProfile* hw_profile);
 static double calculate_confidence_weight(const measurement_result* result,
                                        const HardwareProfile* hw_profile);
+void cleanup_stabilizer_mitigation(MitigationState* state);
 
-bool init_error_mitigation(MitigationState* state,
-                          const MitigationConfig* config) {
+// Helper to compute probability from complex amplitude
+static inline double complex_amplitude_to_prob(ComplexFloat amp) {
+    return (double)(amp.real * amp.real + amp.imag * amp.imag);
+}
+
+// Helper to scale complex amplitude by real factor
+static inline ComplexFloat scale_complex(ComplexFloat amp, double scale) {
+    ComplexFloat result;
+    result.real = amp.real * (float)scale;
+    result.imag = amp.imag * (float)scale;
+    return result;
+}
+
+// Renamed to avoid conflict with quantum_error_mitigation.c
+bool init_stabilizer_mitigation(MitigationState* state,
+                                const MitigationConfig* config) {
     if (!state || !config) {
         return false;
     }
@@ -41,7 +56,7 @@ bool init_error_mitigation(MitigationState* state,
     // Initialize cache
     state->cache = malloc(sizeof(MitigationCache));
     if (!state->cache || !initialize_mitigation_cache(state->cache, config)) {
-        cleanup_error_mitigation(state);
+        cleanup_stabilizer_mitigation(state);
         return false;
     }
 
@@ -54,7 +69,8 @@ bool init_error_mitigation(MitigationState* state,
     return true;
 }
 
-void cleanup_error_mitigation(MitigationState* state) {
+// Renamed to avoid conflict with quantum_error_mitigation.c:cleanup_error_mitigation
+void cleanup_stabilizer_mitigation(MitigationState* state) {
     if (state) {
         if (state->cache) {
             cleanup_mitigation_cache(state->cache);
@@ -65,7 +81,7 @@ void cleanup_error_mitigation(MitigationState* state) {
 }
 
 bool mitigate_measurement_errors(MitigationState* state,
-                               quantum_state* qstate,
+                               quantum_state_t* qstate,
                                const measurement_result* results,
                                size_t num_results,
                                const HardwareProfile* hw_profile) {
@@ -191,20 +207,21 @@ static void cleanup_mitigation_cache(MitigationCache* cache) {
     }
 }
 
-static bool apply_readout_correction(quantum_state* state,
+static bool apply_readout_correction(quantum_state_t* state,
                                    const MitigationCache* cache,
                                    const HardwareProfile* hw_profile) {
-    if (!state || !cache || !hw_profile) {
+    if (!state || !state->coordinates || !cache || !hw_profile) {
         return false;
     }
 
     // Apply calibration matrix to measurement results with hardware factors
-    for (size_t i = 0; i < cache->num_qubits; i++) {
+    // For each qubit, we correct the corresponding basis state amplitudes
+    for (size_t i = 0; i < cache->num_qubits && i < state->num_qubits; i++) {
         // Get hardware-specific factors
         double qubit_reliability = get_qubit_reliability(i);
         double measurement_fidelity = get_measurement_fidelity(i);
         double noise_factor = get_noise_factor();
-        
+
         // Skip if reliability is too low
         if (qubit_reliability < hw_profile->min_reliability_threshold) {
             continue;
@@ -215,23 +232,50 @@ static bool apply_readout_correction(quantum_state* state,
         double p01 = cache->calibration_matrix[i * 4 + 1]; // P(0|1)
         double p10 = cache->calibration_matrix[i * 4 + 2]; // P(1|0)
         double p11 = cache->calibration_matrix[i * 4 + 3]; // P(1|1)
-        
+
         // Apply hardware corrections
         p00 *= qubit_reliability * measurement_fidelity * (1.0 - noise_factor);
         p11 *= qubit_reliability * measurement_fidelity * (1.0 - noise_factor);
         p01 *= (1.0 - qubit_reliability * measurement_fidelity);
         p10 *= (1.0 - qubit_reliability * measurement_fidelity);
 
-        // Get current amplitudes
-        double p0 = state->amplitudes[i * 2];
-        double p1 = state->amplitudes[i * 2 + 1];
-        
-        // Apply correction with confidence weighting
+        // For single-qubit error mitigation, we apply corrections to amplitude pairs
+        // in the computational basis. For qubit i, states differ in bit i.
+        size_t stride = (size_t)1 << i;  // 2^i
+        size_t num_pairs = state->dimension / (2 * stride);
+
         double confidence = cache->confidence_weights[i];
-        state->amplitudes[i * 2] = confidence * (p0 * p00 + p1 * p01) + 
-                                  (1.0 - confidence) * p0;
-        state->amplitudes[i * 2 + 1] = confidence * (p0 * p10 + p1 * p11) + 
-                                      (1.0 - confidence) * p1;
+
+        for (size_t block = 0; block < num_pairs; block++) {
+            for (size_t j = 0; j < stride; j++) {
+                size_t idx0 = block * 2 * stride + j;           // |...0_i...>
+                size_t idx1 = block * 2 * stride + stride + j;  // |...1_i...>
+
+                if (idx0 >= state->dimension || idx1 >= state->dimension) {
+                    continue;
+                }
+
+                // Get current probabilities from complex amplitudes
+                double prob0 = complex_amplitude_to_prob(state->coordinates[idx0]);
+                double prob1 = complex_amplitude_to_prob(state->coordinates[idx1]);
+
+                // Apply correction with confidence weighting
+                double new_prob0 = confidence * (prob0 * p00 + prob1 * p01) +
+                                  (1.0 - confidence) * prob0;
+                double new_prob1 = confidence * (prob0 * p10 + prob1 * p11) +
+                                  (1.0 - confidence) * prob1;
+
+                // Scale amplitudes to match corrected probabilities (preserve phase)
+                if (prob0 > 1e-12) {
+                    double scale0 = sqrt(new_prob0 / prob0);
+                    state->coordinates[idx0] = scale_complex(state->coordinates[idx0], scale0);
+                }
+                if (prob1 > 1e-12) {
+                    double scale1 = sqrt(new_prob1 / prob1);
+                    state->coordinates[idx1] = scale_complex(state->coordinates[idx1], scale1);
+                }
+            }
+        }
     }
 
     return true;

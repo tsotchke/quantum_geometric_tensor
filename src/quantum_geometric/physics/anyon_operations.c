@@ -11,6 +11,7 @@
 
 #include "quantum_geometric/physics/anyon_detection.h"
 #include "quantum_geometric/core/quantum_geometric_core.h"
+#include "quantum_geometric/core/quantum_complex.h"
 #include "quantum_geometric/physics/quantum_state_operations.h"
 #include <stdlib.h>
 #include <string.h>
@@ -1188,18 +1189,13 @@ static inline ComplexFloat complex_float_from_polar(double mag, double phase) {
     return c;
 }
 
-static inline ComplexFloat complex_float_multiply(ComplexFloat a, ComplexFloat b) {
-    ComplexFloat c;
-    c.real = a.real * b.real - a.imag * b.imag;
-    c.imag = a.real * b.imag + a.imag * b.real;
-    return c;
-}
+// Note: complex_float_multiply is provided by quantum_complex.h
 
 // ============================================================================
 // Quantum State Management
 // ============================================================================
 
-quantum_state* create_quantum_state(size_t size) {
+quantum_state* create_anyon_state(size_t size) {
     if (size == 0) {
         return NULL;
     }
@@ -1244,7 +1240,7 @@ quantum_state* create_quantum_state(size_t size) {
     return state;
 }
 
-void destroy_quantum_state(quantum_state* state) {
+void destroy_anyon_state(quantum_state* state) {
     if (!state) {
         return;
     }
@@ -1627,7 +1623,8 @@ void cleanup_anyon_detection(AnyonState* state) {
     state->total_anyons = 0;
 }
 
-bool detect_and_track_anyons(AnyonState* state, const quantum_state* qstate) {
+// Renamed to avoid conflict with anyon_detection.c (this version uses 1D phase analysis)
+bool detect_anyons_from_quantum_state(AnyonState* state, const quantum_state* qstate) {
     if (!state || !state->grid || !qstate) {
         return false;
     }
@@ -1670,47 +1667,8 @@ bool detect_and_track_anyons(AnyonState* state, const quantum_state* qstate) {
     return true;
 }
 
-size_t count_anyons(const AnyonGrid* grid) {
-    if (!grid || !grid->cells) {
-        return 0;
-    }
+// count_anyons() - Canonical implementation in anyon_detection.c
+// (removed: this version lacks is_fused filter, canonical correctly filters fused anyons)
 
-    size_t count = 0;
-    size_t total_cells = grid->width * grid->height * grid->depth;
-
-    for (size_t i = 0; i < total_cells; i++) {
-        if (grid->cells[i].type != ANYON_NONE) {
-            count++;
-        }
-    }
-
-    return count;
-}
-
-bool get_anyon_positions(const AnyonGrid* grid, AnyonPosition* positions) {
-    if (!grid || !grid->cells || !positions) {
-        return false;
-    }
-
-    size_t pos_idx = 0;
-
-    for (size_t z = 0; z < grid->depth; z++) {
-        for (size_t y = 0; y < grid->height; y++) {
-            for (size_t x = 0; x < grid->width; x++) {
-                size_t cell_idx = z * grid->width * grid->height + y * grid->width + x;
-                AnyonCell* cell = &grid->cells[cell_idx];
-
-                if (cell->type != ANYON_NONE) {
-                    positions[pos_idx].x = x;
-                    positions[pos_idx].y = y;
-                    positions[pos_idx].z = z;
-                    positions[pos_idx].type = cell->type;
-                    positions[pos_idx].stability = cell->confidence;
-                    pos_idx++;
-                }
-            }
-        }
-    }
-
-    return true;
-}
+// get_anyon_positions() - Canonical implementation in anyon_detection.c
+// (removed: this version lacks is_fused filter, canonical correctly filters fused anyons)

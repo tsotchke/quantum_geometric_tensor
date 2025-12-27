@@ -266,9 +266,11 @@ struct quantum_geometric_state_t {
     geometric_state_type_t type;    // State type
     size_t dimension;               // State dimension
     size_t manifold_dim;           // Manifold dimension
+    size_t num_qubits;             // Number of qubits (log2 of dimension)
     ComplexFloat* coordinates;      // State coordinates
     ComplexFloat* metric;          // Metric tensor
     ComplexFloat* connection;      // Connection coefficients
+    double* error_rates;           // Per-qubit error rates for stabilizer ops
     void* auxiliary_data;          // Additional state data
     bool is_normalized;            // Normalization flag
     HardwareType hardware;   // Hardware location
@@ -285,17 +287,67 @@ struct quantum_geometric_operator_t {
     HardwareType hardware;   // Hardware location
 };
 
-// Geometric tensor structure
+// Memory allocation types
+#ifndef QGT_MEMORY_TYPE_DEFINED
+#define QGT_MEMORY_TYPE_DEFINED
+typedef enum {
+    QGT_MEM_STANDARD = 0,     // Standard memory allocation
+    QGT_MEM_HUGE_PAGES,       // Huge pages for large tensors
+    QGT_MEM_PINNED,           // Pinned memory for GPU transfers
+    QGT_MEM_UNIFIED           // Unified memory (accessible by CPU and GPU)
+} qgt_memory_type_t;
+#endif
+
+// Spin system and geometry types are defined in advanced_geometry_types.h
+// Forward declare them here if that header hasn't been included yet
+#ifndef QGT_SPIN_SYSTEM_DEFINED
+#define QGT_SPIN_SYSTEM_DEFINED
+struct qgt_spin_system;
+typedef struct qgt_spin_system qgt_spin_system_t;
+#endif
+
+#ifndef QGT_GEOMETRY_DEFINED
+#define QGT_GEOMETRY_DEFINED
+struct qgt_geometry;
+typedef struct qgt_geometry qgt_geometry_t;
+#endif
+
+// Physical constraints for tensor operations
+#ifndef PHYSICAL_CONSTRAINTS_DEFINED
+#define PHYSICAL_CONSTRAINTS_DEFINED
+typedef struct PhysicalConstraints {
+    double energy_threshold;         // Energy threshold
+    double fidelity_threshold;       // Fidelity threshold
+    double symmetry_tolerance;       // Symmetry preservation tolerance
+    double conservation_tolerance;   // Conservation law tolerance
+    double gauge_tolerance;          // Gauge invariance tolerance
+    double locality_tolerance;       // Locality constraint tolerance
+    double renormalization_scale;    // Renormalization scale
+    double causality_tolerance;      // Causality preservation tolerance
+} PhysicalConstraints;
+#endif
+
+// Geometric tensor structure (unified definition for all modules)
 struct quantum_geometric_tensor_t {
+    // Core tensor properties
     geometric_tensor_type_t type;   // Tensor type
-    size_t* dimensions;            // Tensor dimensions
+    size_t* dimensions;            // Tensor dimensions array
     size_t rank;                   // Tensor rank
+    size_t dimension;              // Primary dimension (for square tensors)
     ComplexFloat* components;      // Tensor components
+
+    // Spin and geometry data (for physics operations)
+    size_t num_spins;              // Number of spins (if applicable)
+
+    // Tensor properties
     void* auxiliary_data;          // Additional tensor data
     bool is_symmetric;            // Symmetry flag
     bool is_unitary;              // Unitary flag
     bool is_hermitian;            // Hermitian flag
+
+    // Memory and hardware
     HardwareType hardware;         // Hardware location
+    qgt_memory_type_t mem_type;   // Memory allocation type
     size_t total_elements;        // Total number of elements
     size_t aligned_elements;      // Number of elements after alignment
 };
@@ -308,6 +360,8 @@ typedef enum {
     GEOMETRIC_TRANSFORM_SHEAR,              // Shear transformation
     GEOMETRIC_TRANSFORM_REFLECTION,         // Reflection transformation
     GEOMETRIC_TRANSFORM_ERROR_CORRECTION,   // Error correction transformation
+    GEOMETRIC_TRANSFORM_EVOLUTION,          // Time evolution transformation
+    GEOMETRIC_TRANSFORM_PROJECTION,         // Projection transformation
     GEOMETRIC_TRANSFORM_CUSTOM              // Custom transformation
 } geometric_transform_type_t;
 

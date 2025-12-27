@@ -17,7 +17,13 @@ typedef enum {
     QEC_CODE_ROTATED = 5,    // Rotated surface code
     QEC_CODE_HEAVY_HEX = 6,  // Heavy hexagon code
     QEC_CODE_FLOQUET = 7,    // Floquet code
-    QEC_CODE_CUSTOM = 8      // Custom error correction code
+    QEC_CODE_CUSTOM = 8,     // Custom error correction code
+
+    // Qubit-based error correction codes
+    QEC_CODE_THREE_QUBIT = 103,  // 3-qubit repetition code
+    QEC_CODE_FIVE_QUBIT = 105,   // 5-qubit perfect code
+    QEC_CODE_SEVEN_QUBIT = 107,  // 7-qubit Steane code
+    QEC_CODE_NINE_QUBIT = 109    // 9-qubit Shor code
 } quantum_error_code_t;
 
 // Error correction thresholds

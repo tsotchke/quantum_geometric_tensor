@@ -143,13 +143,13 @@ void store_regression(EffectivenessAnalyzer* analyzer, EffRegression* regression
 void add_regression_finding(EffectivenessReport* report, EffRegression* regression, EffSuggestionType type);
 void generate_regression_mitigations(EffectivenessAnalyzer* analyzer, EffRegression* regression, EffectivenessReport* report);
 
-// ML model functions
-EffMLModel* init_pattern_recognition_model(void);
-void cleanup_pattern_recognition_model(EffMLModel* model);
+// ML model functions (eff_ prefix to avoid conflict with pattern_recognition_model.c)
+EffMLModel* eff_init_pattern_recognition_model(void);
+void eff_cleanup_pattern_recognition_model(EffMLModel* model);
 
-// Insight generator functions
-EffInsightGenerator* init_insight_generator(void);
-void cleanup_insight_generator(EffInsightGenerator* generator);
+// Insight generator functions (eff_ prefix to avoid conflict with insight_generator.c)
+EffInsightGenerator* eff_init_insight_generator(void);
+void eff_cleanup_insight_generator(EffInsightGenerator* generator);
 
 // Report functions
 EffectivenessReport* create_effectiveness_report(void);

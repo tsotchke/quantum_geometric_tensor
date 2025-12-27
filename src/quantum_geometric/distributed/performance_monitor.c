@@ -17,33 +17,7 @@
 #ifdef __APPLE__
 #include <mach/mach.h>
 #include <mach/mach_host.h>
-#include <sys/sysctl.h>
-#include <sys/socket.h>
-#include <net/if.h>
-#include <net/route.h>
-#include <net/if_var.h>
-#include <IOKit/IOKitLib.h>
-#include <IOKit/storage/IOBlockStorageDriver.h>
-#include <CoreFoundation/CoreFoundation.h>
-#else
-#include <sys/statvfs.h>
 #endif
-
-// GPU monitoring state
-static struct {
-    double last_sample_time;
-    uint64_t last_bytes_rx;
-    uint64_t last_bytes_tx;
-    uint64_t last_io_reads;
-    uint64_t last_io_writes;
-} g_perf_state = {0};
-
-// Forward declarations for metric collection
-static double get_gpu_usage(void);
-static double get_network_bandwidth(void);
-static double get_disk_io(void);
-static double get_quantum_usage(int device_id);
-static void get_device_metrics_impl(int device_id, DeviceMetrics* metrics);
 
 // Internal constants
 #define UPDATE_INTERVAL_US (PERF_MON_SAMPLING_INTERVAL_MS * 1000)
@@ -93,8 +67,8 @@ static double get_memory_usage(void);
 static DeviceState analyze_device_state(const DeviceMetrics* metrics);
 static void trigger_alert(PerformanceMonitor* monitor, AlertType type, int device_id, double value, double threshold, const char* message);
 
-// Initialize performance monitor
-PerformanceMonitor* init_performance_monitor(const MonitorConfig* config) {
+// Initialize distributed performance monitor
+PerformanceMonitor* init_distributed_performance_monitor(const MonitorConfig* config) {
     PerformanceMonitor* monitor = calloc(1, sizeof(PerformanceMonitor));
     if (!monitor) return NULL;
 
@@ -216,416 +190,6 @@ static double get_memory_usage(void) {
 #endif
 }
 
-// Get GPU usage - platform specific implementation
-static double get_gpu_usage(void) {
-#ifdef __APPLE__
-    // macOS: Query GPU via IOKit
-    io_iterator_t iterator;
-    io_object_t device;
-    double gpu_usage = 0.0;
-
-    CFMutableDictionaryRef match = IOServiceMatching("IOAccelerator");
-    if (IOServiceGetMatchingServices(kIOMainPortDefault, match, &iterator) == KERN_SUCCESS) {
-        while ((device = IOIteratorNext(iterator))) {
-            CFMutableDictionaryRef properties = NULL;
-            if (IORegistryEntryCreateCFProperties(device, &properties,
-                                                  kCFAllocatorDefault, 0) == KERN_SUCCESS) {
-                // Look for performance statistics
-                CFTypeRef perf_stats = CFDictionaryGetValue(properties,
-                    CFSTR("PerformanceStatistics"));
-                if (perf_stats && CFGetTypeID(perf_stats) == CFDictionaryGetTypeID()) {
-                    CFDictionaryRef stats = (CFDictionaryRef)perf_stats;
-
-                    // Get device utilization
-                    CFTypeRef util = CFDictionaryGetValue(stats,
-                        CFSTR("Device Utilization %"));
-                    if (util && CFGetTypeID(util) == CFNumberGetTypeID()) {
-                        int64_t value;
-                        if (CFNumberGetValue((CFNumberRef)util, kCFNumberSInt64Type, &value)) {
-                            gpu_usage = (double)value / 100.0;
-                        }
-                    }
-
-                    // Alternative: GPU Activity
-                    if (gpu_usage == 0.0) {
-                        CFTypeRef activity = CFDictionaryGetValue(stats,
-                            CFSTR("GPU Activity(%)"));
-                        if (activity && CFGetTypeID(activity) == CFNumberGetTypeID()) {
-                            int64_t value;
-                            if (CFNumberGetValue((CFNumberRef)activity, kCFNumberSInt64Type, &value)) {
-                                gpu_usage = (double)value / 100.0;
-                            }
-                        }
-                    }
-                }
-                CFRelease(properties);
-            }
-            IOObjectRelease(device);
-            if (gpu_usage > 0.0) break;  // Found valid GPU
-        }
-        IOObjectRelease(iterator);
-    }
-    return gpu_usage;
-#else
-    // Linux: Query nvidia-smi or read from sysfs
-    FILE* fp = popen("nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null", "r");
-    if (fp) {
-        char buffer[64];
-        if (fgets(buffer, sizeof(buffer), fp)) {
-            double usage = atof(buffer) / 100.0;
-            pclose(fp);
-            return usage;
-        }
-        pclose(fp);
-    }
-
-    // Fallback: Try AMD ROCm
-    fp = popen("rocm-smi --showuse 2>/dev/null | grep GPU | awk '{print $3}'", "r");
-    if (fp) {
-        char buffer[64];
-        if (fgets(buffer, sizeof(buffer), fp)) {
-            double usage = atof(buffer) / 100.0;
-            pclose(fp);
-            return usage;
-        }
-        pclose(fp);
-    }
-
-    return 0.0;
-#endif
-}
-
-// Get network bandwidth usage
-static double get_network_bandwidth(void) {
-#ifdef __APPLE__
-    // macOS: Use sysctl for network interface stats
-    int mib[6] = {CTL_NET, PF_ROUTE, 0, 0, NET_RT_IFLIST2, 0};
-    size_t len;
-
-    if (sysctl(mib, 6, NULL, &len, NULL, 0) < 0) return 0.0;
-
-    char* buf = malloc(len);
-    if (!buf) return 0.0;
-
-    if (sysctl(mib, 6, buf, &len, NULL, 0) < 0) {
-        free(buf);
-        return 0.0;
-    }
-
-    uint64_t total_bytes_rx = 0, total_bytes_tx = 0;
-    char* end = buf + len;
-    char* ptr = buf;
-
-    while (ptr < end) {
-        struct if_msghdr* ifm = (struct if_msghdr*)ptr;
-        if (ifm->ifm_type == RTM_IFINFO2) {
-            struct if_msghdr2* ifm2 = (struct if_msghdr2*)ifm;
-            total_bytes_rx += ifm2->ifm_data.ifi_ibytes;
-            total_bytes_tx += ifm2->ifm_data.ifi_obytes;
-        }
-        ptr += ifm->ifm_msglen;
-    }
-    free(buf);
-
-    // Calculate bandwidth (delta from last sample)
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    double current_time = now.tv_sec + now.tv_nsec / 1e9;
-
-    double bandwidth = 0.0;
-    if (g_perf_state.last_sample_time > 0.0) {
-        double dt = current_time - g_perf_state.last_sample_time;
-        if (dt > 0.0) {
-            uint64_t delta_rx = total_bytes_rx - g_perf_state.last_bytes_rx;
-            uint64_t delta_tx = total_bytes_tx - g_perf_state.last_bytes_tx;
-            // Bandwidth in MB/s
-            bandwidth = (double)(delta_rx + delta_tx) / (dt * 1024.0 * 1024.0);
-        }
-    }
-
-    g_perf_state.last_sample_time = current_time;
-    g_perf_state.last_bytes_rx = total_bytes_rx;
-    g_perf_state.last_bytes_tx = total_bytes_tx;
-
-    // Normalize to fraction of assumed 1 Gbps capacity
-    return bandwidth / 125.0;  // 1 Gbps = 125 MB/s
-#else
-    // Linux: Read /proc/net/dev
-    FILE* fp = fopen("/proc/net/dev", "r");
-    if (!fp) return 0.0;
-
-    char line[512];
-    uint64_t total_bytes_rx = 0, total_bytes_tx = 0;
-
-    // Skip header lines
-    fgets(line, sizeof(line), fp);
-    fgets(line, sizeof(line), fp);
-
-    while (fgets(line, sizeof(line), fp)) {
-        char iface[32];
-        uint64_t rx, tx;
-        // Parse: iface: rx_bytes ... tx_bytes
-        if (sscanf(line, "%31[^:]: %lu %*u %*u %*u %*u %*u %*u %*u %lu",
-                   iface, &rx, &tx) >= 3) {
-            // Skip loopback
-            if (strncmp(iface, "lo", 2) != 0) {
-                total_bytes_rx += rx;
-                total_bytes_tx += tx;
-            }
-        }
-    }
-    fclose(fp);
-
-    // Calculate bandwidth delta
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    double current_time = now.tv_sec + now.tv_nsec / 1e9;
-
-    double bandwidth = 0.0;
-    if (g_perf_state.last_sample_time > 0.0) {
-        double dt = current_time - g_perf_state.last_sample_time;
-        if (dt > 0.0) {
-            uint64_t delta_rx = total_bytes_rx - g_perf_state.last_bytes_rx;
-            uint64_t delta_tx = total_bytes_tx - g_perf_state.last_bytes_tx;
-            bandwidth = (double)(delta_rx + delta_tx) / (dt * 1024.0 * 1024.0);
-        }
-    }
-
-    g_perf_state.last_sample_time = current_time;
-    g_perf_state.last_bytes_rx = total_bytes_rx;
-    g_perf_state.last_bytes_tx = total_bytes_tx;
-
-    return bandwidth / 125.0;
-#endif
-}
-
-// Get disk I/O usage
-static double get_disk_io(void) {
-#ifdef __APPLE__
-    // macOS: Use iostat-like metrics via sysctl
-    io_iterator_t iterator;
-    io_object_t disk;
-    uint64_t total_reads = 0, total_writes = 0;
-
-    CFMutableDictionaryRef match = IOServiceMatching("IOBlockStorageDriver");
-    if (IOServiceGetMatchingServices(kIOMainPortDefault, match, &iterator) == KERN_SUCCESS) {
-        while ((disk = IOIteratorNext(iterator))) {
-            CFMutableDictionaryRef properties = NULL;
-            if (IORegistryEntryCreateCFProperties(disk, &properties,
-                                                  kCFAllocatorDefault, 0) == KERN_SUCCESS) {
-                CFTypeRef stats = CFDictionaryGetValue(properties, CFSTR("Statistics"));
-                if (stats && CFGetTypeID(stats) == CFDictionaryGetTypeID()) {
-                    CFDictionaryRef statsDict = (CFDictionaryRef)stats;
-
-                    CFTypeRef reads = CFDictionaryGetValue(statsDict,
-                        CFSTR("Bytes (Read)"));
-                    CFTypeRef writes = CFDictionaryGetValue(statsDict,
-                        CFSTR("Bytes (Write)"));
-
-                    if (reads && CFGetTypeID(reads) == CFNumberGetTypeID()) {
-                        int64_t value;
-                        CFNumberGetValue((CFNumberRef)reads, kCFNumberSInt64Type, &value);
-                        total_reads += value;
-                    }
-                    if (writes && CFGetTypeID(writes) == CFNumberGetTypeID()) {
-                        int64_t value;
-                        CFNumberGetValue((CFNumberRef)writes, kCFNumberSInt64Type, &value);
-                        total_writes += value;
-                    }
-                }
-                CFRelease(properties);
-            }
-            IOObjectRelease(disk);
-        }
-        IOObjectRelease(iterator);
-    }
-
-    // Calculate I/O rate
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    double current_time = now.tv_sec + now.tv_nsec / 1e9;
-
-    double io_rate = 0.0;
-    if (g_perf_state.last_io_reads > 0 || g_perf_state.last_io_writes > 0) {
-        double dt = current_time - g_perf_state.last_sample_time;
-        if (dt > 0.0) {
-            uint64_t delta_reads = total_reads - g_perf_state.last_io_reads;
-            uint64_t delta_writes = total_writes - g_perf_state.last_io_writes;
-            // I/O in MB/s
-            io_rate = (double)(delta_reads + delta_writes) / (dt * 1024.0 * 1024.0);
-        }
-    }
-
-    g_perf_state.last_io_reads = total_reads;
-    g_perf_state.last_io_writes = total_writes;
-
-    // Normalize to fraction of assumed 500 MB/s capacity (SSD)
-    return io_rate / 500.0;
-#else
-    // Linux: Read /proc/diskstats
-    FILE* fp = fopen("/proc/diskstats", "r");
-    if (!fp) return 0.0;
-
-    char line[256];
-    uint64_t total_reads = 0, total_writes = 0;
-
-    while (fgets(line, sizeof(line), fp)) {
-        unsigned int major, minor;
-        char device[32];
-        uint64_t rd_sectors, wr_sectors;
-
-        // Parse diskstats format
-        if (sscanf(line, "%u %u %31s %*u %*u %lu %*u %*u %*u %lu",
-                   &major, &minor, device, &rd_sectors, &wr_sectors) >= 5) {
-            // Only count main disks (sdX, nvmeXnY, not partitions)
-            if ((strncmp(device, "sd", 2) == 0 && strlen(device) == 3) ||
-                strncmp(device, "nvme", 4) == 0) {
-                total_reads += rd_sectors * 512;   // 512 bytes per sector
-                total_writes += wr_sectors * 512;
-            }
-        }
-    }
-    fclose(fp);
-
-    // Calculate I/O rate
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    double current_time = now.tv_sec + now.tv_nsec / 1e9;
-
-    double io_rate = 0.0;
-    if (g_perf_state.last_io_reads > 0 || g_perf_state.last_io_writes > 0) {
-        double dt = current_time - g_perf_state.last_sample_time;
-        if (dt > 0.0) {
-            uint64_t delta_reads = total_reads - g_perf_state.last_io_reads;
-            uint64_t delta_writes = total_writes - g_perf_state.last_io_writes;
-            io_rate = (double)(delta_reads + delta_writes) / (dt * 1024.0 * 1024.0);
-        }
-    }
-
-    g_perf_state.last_io_reads = total_reads;
-    g_perf_state.last_io_writes = total_writes;
-
-    return io_rate / 500.0;
-#endif
-}
-
-// Get quantum device usage (simulated or from actual hardware interface)
-static double get_quantum_usage(int device_id) {
-    // Check for IBM Quantum or similar backend connection
-    // In production this would query actual quantum hardware/simulator load
-    (void)device_id;
-
-    // Try reading from quantum device status file if available
-    char status_path[256];
-    snprintf(status_path, sizeof(status_path),
-             "/tmp/quantum_device_%d_status", device_id);
-
-    FILE* fp = fopen(status_path, "r");
-    if (fp) {
-        double usage;
-        if (fscanf(fp, "%lf", &usage) == 1) {
-            fclose(fp);
-            return usage;
-        }
-        fclose(fp);
-    }
-
-    // Check environment for quantum simulator load
-    char* sim_load = getenv("QUANTUM_SIMULATOR_LOAD");
-    if (sim_load) {
-        return atof(sim_load);
-    }
-
-    // No quantum device status available via file or environment
-    // Return 0.0 indicating idle/unavailable quantum backend
-    return 0.0;
-}
-
-// Get detailed device metrics implementation
-static void get_device_metrics_impl(int device_id, DeviceMetrics* metrics) {
-    if (!metrics) return;
-
-    metrics->device_id = device_id;
-
-#ifdef __APPLE__
-    // Query GPU via IOKit for temperature, power, memory
-    io_iterator_t iterator;
-    io_object_t device;
-
-    CFMutableDictionaryRef match = IOServiceMatching("IOAccelerator");
-    if (IOServiceGetMatchingServices(kIOMainPortDefault, match, &iterator) == KERN_SUCCESS) {
-        int current_device = 0;
-        while ((device = IOIteratorNext(iterator))) {
-            if (current_device == device_id) {
-                CFMutableDictionaryRef properties = NULL;
-                if (IORegistryEntryCreateCFProperties(device, &properties,
-                                                      kCFAllocatorDefault, 0) == KERN_SUCCESS) {
-                    CFTypeRef perf_stats = CFDictionaryGetValue(properties,
-                        CFSTR("PerformanceStatistics"));
-                    if (perf_stats && CFGetTypeID(perf_stats) == CFDictionaryGetTypeID()) {
-                        CFDictionaryRef stats = (CFDictionaryRef)perf_stats;
-
-                        // Utilization
-                        CFTypeRef util = CFDictionaryGetValue(stats,
-                            CFSTR("Device Utilization %"));
-                        if (util && CFGetTypeID(util) == CFNumberGetTypeID()) {
-                            int64_t value;
-                            if (CFNumberGetValue((CFNumberRef)util, kCFNumberSInt64Type, &value)) {
-                                metrics->utilization = (double)value / 100.0;
-                            }
-                        }
-
-                        // VRAM used
-                        CFTypeRef vram = CFDictionaryGetValue(stats,
-                            CFSTR("VRAM Used Bytes"));
-                        if (vram && CFGetTypeID(vram) == CFNumberGetTypeID()) {
-                            int64_t value;
-                            if (CFNumberGetValue((CFNumberRef)vram, kCFNumberSInt64Type, &value)) {
-                                metrics->memory_used = (double)value / (1024.0 * 1024.0);  // MB
-                            }
-                        }
-                    }
-                    CFRelease(properties);
-                }
-                IOObjectRelease(device);
-                break;
-            }
-            IOObjectRelease(device);
-            current_device++;
-        }
-        IOObjectRelease(iterator);
-    }
-
-    // Temperature estimation based on GPU utilization
-    // Formula: T = T_idle + (T_max - T_idle) * utilization
-    // Typical GPU: ~45°C idle, ~75°C at full load
-    metrics->temperature = 45.0 + metrics->utilization * 30.0;
-    // Power estimation: P ≈ P_max * utilization (assuming ~100W TDP)
-    metrics->power_usage = metrics->utilization * 100.0;
-#else
-    // Linux: Query nvidia-smi
-    char cmd[256];
-    snprintf(cmd, sizeof(cmd),
-             "nvidia-smi -i %d --query-gpu=utilization.gpu,temperature.gpu,power.draw,memory.used "
-             "--format=csv,noheader,nounits 2>/dev/null", device_id);
-
-    FILE* fp = popen(cmd, "r");
-    if (fp) {
-        float util, temp, power, mem;
-        if (fscanf(fp, "%f, %f, %f, %f", &util, &temp, &power, &mem) == 4) {
-            metrics->utilization = util / 100.0;
-            metrics->temperature = temp;
-            metrics->power_usage = power;
-            metrics->memory_used = mem;
-        }
-        pclose(fp);
-    }
-#endif
-
-    // Query quantum error rate if this is a quantum device
-    metrics->error_rate = get_quantum_usage(device_id) > 0 ? 0.001 : 0.0;
-}
-
 // Analyze device state based on metrics
 static DeviceState analyze_device_state(const DeviceMetrics* metrics) {
     if (!metrics) return DEVICE_STATE_UNKNOWN;
@@ -660,23 +224,17 @@ static void collect_system_metrics(PerformanceMonitor* monitor) {
     // Memory usage
     metrics.memory_usage = get_memory_usage();
 
-    // GPU usage
-    metrics.gpu_usage = get_gpu_usage();
+    // GPU usage (stub - would need GPU-specific code)
+    metrics.gpu_usage = 0.0;
 
-    // Quantum usage (aggregate across devices)
+    // Quantum usage (stub)
     metrics.quantum_usage = 0.0;
-    for (int i = 0; i < monitor->num_devices; i++) {
-        metrics.quantum_usage += get_quantum_usage(i);
-    }
-    if (monitor->num_devices > 0) {
-        metrics.quantum_usage /= monitor->num_devices;
-    }
 
-    // Network bandwidth
-    metrics.network_bandwidth = get_network_bandwidth();
+    // Network bandwidth (stub)
+    metrics.network_bandwidth = 0.0;
 
-    // Disk I/O
-    metrics.disk_io = get_disk_io();
+    // Disk I/O (stub)
+    metrics.disk_io = 0.0;
 
     // Update current metrics
     pthread_mutex_lock(&monitor->metrics_mutex);
@@ -691,10 +249,14 @@ static void collect_device_metrics(PerformanceMonitor* monitor) {
     for (int i = 0; i < monitor->num_devices; i++) {
         DeviceMetrics* metrics = &monitor->device_metrics[i];
 
-        // Get real device metrics
-        get_device_metrics_impl(i, metrics);
+        // Simulated metrics (would need actual device queries)
+        metrics->utilization = 0.0;
+        metrics->temperature = 40.0;
+        metrics->power_usage = 0.0;
+        metrics->memory_used = 0.0;
+        metrics->error_rate = 0.0;
 
-        // Update device state based on collected metrics
+        // Update device state
         metrics->state = analyze_device_state(metrics);
     }
 }
@@ -946,8 +508,8 @@ void perf_monitor_reset(PerformanceMonitor* monitor) {
     pthread_mutex_unlock(&monitor->metrics_mutex);
 }
 
-// Clean up performance monitor
-void cleanup_performance_monitor(PerformanceMonitor* monitor) {
+// Clean up distributed performance monitor
+void cleanup_distributed_performance_monitor(PerformanceMonitor* monitor) {
     if (!monitor) return;
 
     // Stop monitoring if running

@@ -9,12 +9,25 @@
 #include "quantum_geometric/core/quantum_geometric_types.h"
 
 // Cache optimization flags
+#ifndef QUANTUM_OPTIMIZE_AGGRESSIVE
 #define QUANTUM_OPTIMIZE_AGGRESSIVE  (1 << 0)
+#endif
+#ifndef QUANTUM_USE_CACHE
 #define QUANTUM_USE_CACHE           (1 << 1)
+#endif
+#ifndef QUANTUM_USE_MEMORY
 #define QUANTUM_USE_MEMORY          (1 << 2)
-#define QUANTUM_ERROR_ADAPTIVE      (1 << 3)
+#endif
+// Note: QUANTUM_ERROR_ADAPTIVE for error correction is defined in quantum_system.h
+#ifndef QUANTUM_CACHE_ERROR_ADAPTIVE
+#define QUANTUM_CACHE_ERROR_ADAPTIVE (1 << 3)
+#endif
+#ifndef QUANTUM_OPT_AGGRESSIVE
 #define QUANTUM_OPT_AGGRESSIVE      (1 << 4)
+#endif
+#ifndef QUANTUM_MEMORY_OPTIMAL
 #define QUANTUM_MEMORY_OPTIMAL      (1 << 5)
+#endif
 
 // Forward declarations
 typedef struct quantum_circuit_t quantum_circuit_t;
@@ -75,9 +88,8 @@ int qg_cache_optimize(void);
 void qg_cache_cleanup(void);
 float qg_cache_get_efficiency(void);
 
-// Quantum system functions
-quantum_system_t* quantum_system_create(size_t dimension, uint32_t flags);
-void quantum_system_destroy(quantum_system_t* system);
+// Include quantum system header for quantum system functions
+#include "quantum_geometric/core/quantum_system.h"
 
 // Quantum circuit functions
 void quantum_circuit_destroy(quantum_circuit_t* circuit);

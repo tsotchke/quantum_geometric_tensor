@@ -7,7 +7,7 @@
 
 // Helper functions
 static inline bool is_valid_stabilizer_type(stabilizer_type_t type) {
-    return type >= STABILIZER_X && type <= STABILIZER_CUSTOM;
+    return type >= STAB_TYPE_X && type <= STAB_TYPE_CUSTOM;
 }
 
 static inline bool is_valid_qubit_index(size_t index, size_t dimension) {
@@ -57,16 +57,16 @@ qgt_error_t stabilizer_create(quantum_stabilizer_t** stabilizer,
     // Initialize coefficients based on stabilizer type
     for (size_t i = 0; i < (*stabilizer)->dimension; i++) {
         switch (type) {
-            case STABILIZER_X:
+            case STAB_TYPE_X:
                 (*stabilizer)->coefficients[i] = complex_float_create(1.0f, 0.0f);
                 break;
-            case STABILIZER_Y:
+            case STAB_TYPE_Y:
                 (*stabilizer)->coefficients[i] = complex_float_create(0.0f, 1.0f);
                 break;
-            case STABILIZER_Z:
+            case STAB_TYPE_Z:
                 (*stabilizer)->coefficients[i] = complex_float_create(1.0f, 0.0f);
                 break;
-            case STABILIZER_CUSTOM:
+            case STAB_TYPE_CUSTOM:
                 (*stabilizer)->coefficients[i] = COMPLEX_FLOAT_ZERO;
                 break;
         }
@@ -128,7 +128,7 @@ qgt_error_t stabilizer_apply(const quantum_stabilizer_t* stabilizer,
     
     // Apply stabilizer operation based on type
     switch (stabilizer->type) {
-        case STABILIZER_X:
+        case STAB_TYPE_X:
             // Bit flip
             for (size_t i = 0; i < stabilizer->num_qubits; i++) {
                 size_t idx = stabilizer->qubit_indices[i];
@@ -143,7 +143,7 @@ qgt_error_t stabilizer_apply(const quantum_stabilizer_t* stabilizer,
             }
             break;
             
-        case STABILIZER_Y:
+        case STAB_TYPE_Y:
             // Phase and bit flip
             for (size_t i = 0; i < stabilizer->num_qubits; i++) {
                 size_t idx = stabilizer->qubit_indices[i];
@@ -158,7 +158,7 @@ qgt_error_t stabilizer_apply(const quantum_stabilizer_t* stabilizer,
             }
             break;
             
-        case STABILIZER_Z:
+        case STAB_TYPE_Z:
             // Phase flip
             for (size_t i = 0; i < stabilizer->num_qubits; i++) {
                 size_t idx = stabilizer->qubit_indices[i];
@@ -173,7 +173,7 @@ qgt_error_t stabilizer_apply(const quantum_stabilizer_t* stabilizer,
             }
             break;
             
-        case STABILIZER_CUSTOM:
+        case STAB_TYPE_CUSTOM:
             // Apply custom stabilizer operation
             for (size_t i = 0; i < state->dimension; i++) {
                 state->coordinates[i] = complex_float_multiply(
@@ -202,7 +202,8 @@ qgt_error_t stabilizer_measure(double* expectation,
     quantum_geometric_state_t* temp_state;
     qgt_error_t err = geometric_create_state(&temp_state,
                                            state->type,
-                                           state->dimension);
+                                           state->dimension,
+                                           HARDWARE_TYPE_CPU);
     if (err != QGT_SUCCESS) {
         return err;
     }
@@ -312,7 +313,7 @@ qgt_error_t stabilizer_multiply(quantum_stabilizer_t** result,
     }
     
     // Create result stabilizer
-    qgt_error_t err = stabilizer_create(result, STABILIZER_CUSTOM,
+    qgt_error_t err = stabilizer_create(result, STAB_TYPE_CUSTOM,
                                        stabilizer1->qubit_indices,
                                        stabilizer1->num_qubits);
     if (err != QGT_SUCCESS) {

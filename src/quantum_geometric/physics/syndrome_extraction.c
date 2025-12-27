@@ -25,6 +25,27 @@ static qgt_error_t update_error_model(SyndromeState* state,
 static qgt_error_t detect_error_patterns(SyndromeState* state,
                                        const HardwareProfile* hw_profile);
 
+// Helper function to calculate measurement confidence from hardware profile
+static double calculate_measurement_confidence(const HardwareProfile* hw_profile, size_t qubit_index) {
+    if (!hw_profile) return 1.0;
+    double base_confidence = hw_profile->measurement_fidelity;
+    if (hw_profile->measurement_fidelities && qubit_index < hw_profile->num_qubits) {
+        base_confidence = hw_profile->measurement_fidelities[qubit_index];
+    }
+    return base_confidence * hw_profile->confidence_scale_factor;
+}
+
+// Helper function to get hardware reliability factor for a qubit
+static double get_hw_reliability_factor(const HardwareProfile* hw_profile, size_t qubit_index) {
+    if (!hw_profile) return 1.0;
+    double reliability = hw_profile->gate_fidelity * hw_profile->measurement_fidelity;
+    if (hw_profile->gate_fidelities && qubit_index < hw_profile->num_qubits) {
+        reliability = hw_profile->gate_fidelities[qubit_index];
+    }
+    reliability *= (1.0 - hw_profile->noise_scale);
+    return reliability > 0.0 ? reliability : 0.0;
+}
+
 qgt_error_t init_syndrome_extraction(SyndromeState* state,
                                    const SyndromeConfig* config) {
     if (!state || !config) {
@@ -183,7 +204,7 @@ qgt_error_t extract_error_syndrome(SyndromeState* state,
         .use_phase_tracking = true,
         .track_correlations = true,
         .history_capacity = 1000,
-        .fast_feedback = true
+        .num_threads = state->config.num_threads
     };
 
     ZHardwareConfig z_hardware = {
@@ -203,12 +224,12 @@ qgt_error_t extract_error_syndrome(SyndromeState* state,
         return QGT_ERROR_INITIALIZATION_FAILED;
     }
 
-    // Perform optimized parallel measurements with hardware profile
-    qgt_error_t err = measure_z_stabilizers_parallel(z_state,
-                                                   state->cache->plaquette_indices,
-                                                   num_stabilizers,
-                                                   plaquette_results,
-                                                   hw_profile);
+    // Perform optimized parallel measurements
+    bool ok = measure_z_stabilizers_parallel(z_state,
+                                            state->cache->plaquette_indices,
+                                            num_stabilizers,
+                                            plaquette_results);
+    qgt_error_t err = ok ? QGT_SUCCESS : QGT_ERROR_SIMULATOR_MEASUREMENT;
     if (err != QGT_SUCCESS) {
         cleanup_z_stabilizer_measurement(z_state);
         free(plaquette_results);
@@ -274,19 +295,19 @@ qgt_error_t extract_error_syndrome(SyndromeState* state,
         results[i].had_error = fabs(plaquette_results[i] + 1.0) < 1e-6;
         results[i].error_prob = state->cache->error_rates[i];
         results[i].confidence = calculate_measurement_confidence(hw_profile, i);
-        results[i].hardware_factor = get_hardware_reliability_factor(hw_profile, i);
+        results[i].hardware_factor = get_hw_reliability_factor(hw_profile, i);
 
         // Vertex results with hardware factors
         results[i + num_stabilizers].qubit_index = i + num_stabilizers;
         results[i + num_stabilizers].measured_value = vertex_results[i];
-        results[i + num_stabilizers].had_error = 
+        results[i + num_stabilizers].had_error =
             fabs(vertex_results[i] + 1.0) < 1e-6;
-        results[i + num_stabilizers].error_prob = 
+        results[i + num_stabilizers].error_prob =
             state->cache->error_rates[i + num_stabilizers];
         results[i + num_stabilizers].confidence =
             calculate_measurement_confidence(hw_profile, i + num_stabilizers);
         results[i + num_stabilizers].hardware_factor =
-            get_hardware_reliability_factor(hw_profile, i + num_stabilizers);
+            get_hw_reliability_factor(hw_profile, i + num_stabilizers);
     }
 
     // Update error model and detect patterns with hardware profile

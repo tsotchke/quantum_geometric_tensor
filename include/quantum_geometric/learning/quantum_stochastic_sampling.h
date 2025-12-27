@@ -62,8 +62,22 @@ typedef struct {
     double sampling_efficiency; // Effective sample size per second
 } SamplingMetrics;
 
-// Opaque sampler handle
-typedef struct StochasticSampler StochasticSampler;
+// Stochastic sampler structure
+typedef struct StochasticSampler {
+    size_t size;
+    size_t dim;
+    double complex* weights;
+    double complex* points;
+    bool optimized;
+    DiffusionConfig diffusion_config;
+    PINNConfig pinn_config;
+    LMCConfig lmc_config;
+    double (*log_prob)(const double*, size_t);
+    void (*log_prob_grad)(const double*, size_t, double*);
+    SamplingMetrics metrics;
+    QuantumState* state;
+    PerformanceMetrics perf_metrics;
+} StochasticSampler;
 
 // Creation and destruction
 StochasticSampler* stochastic_sampler_create(const DiffusionConfig* diffusion_config,

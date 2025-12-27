@@ -6,6 +6,12 @@
 #include "quantum_geometric/core/quantum_state.h"
 #include "quantum_geometric/physics/error_types.h"
 #include <stdbool.h>
+#include <stdint.h>
+
+// Constants for syndrome extraction
+#ifndef HISTORY_SIZE
+#define HISTORY_SIZE 64
+#endif
 
 // Error syndrome structure
 typedef struct {
@@ -14,6 +20,7 @@ typedef struct {
     double* error_weights;    // Array of error weights
     size_t num_errors;       // Number of detected errors
     size_t max_errors;       // Maximum number of errors
+    double total_weight;     // Total weight of all errors
 } ErrorSyndrome;
 
 // Initialize error syndrome
@@ -41,9 +48,11 @@ typedef struct {
     bool is_boundary;         // Whether vertex is on boundary
     size_t timestamp;         // Time of detection
     double* error_history;    // History of error measurements
+    double* confidence_history; // History of confidence values
     size_t history_size;      // Size of error history
     double correlation_weight; // Weight from correlations
     bool part_of_chain;       // Whether part of error chain
+    error_type_t error_type;  // Type of error at this vertex
 } SyndromeVertex;
 
 // Edge between syndrome vertices
@@ -58,7 +67,9 @@ typedef struct {
 } SyndromeEdge;
 
 // Graph for syndrome matching
-typedef struct {
+#ifndef MATCHING_GRAPH_DEFINED
+#define MATCHING_GRAPH_DEFINED
+typedef struct MatchingGraph {
     SyndromeVertex* vertices;  // Array of vertices
     size_t num_vertices;      // Number of vertices
     size_t max_vertices;      // Maximum vertices
@@ -69,19 +80,30 @@ typedef struct {
     bool* parallel_groups;    // Parallel measurement groups
     size_t num_parallel_groups; // Number of parallel groups
     double* pattern_weights;  // Error pattern weights
+    double* confidence_weights; // Confidence weights for vertices
+    double* hardware_factors;  // Hardware-specific adjustment factors
 } MatchingGraph;
+#endif // MATCHING_GRAPH_DEFINED
 
 // Configuration for syndrome extraction
-typedef struct {
+#define SYNDROME_CONFIG_DEFINED
+typedef struct SyndromeConfig {
     bool enable_parallel;      // Enable parallel measurements
     size_t parallel_group_size; // Size of parallel groups
+    size_t max_parallel_ops;   // Maximum parallel operations
     double detection_threshold; // Threshold for detection
     double confidence_threshold; // Threshold for confidence
+    double error_threshold;    // Error rate threshold
     double weight_scale_factor; // Scale factor for weights
     bool use_boundary_matching; // Enable boundary matching
     size_t max_matching_iterations; // Max matching iterations
     double pattern_threshold;  // Threshold for patterns
     size_t min_pattern_occurrences; // Min pattern occurrences
+    size_t lattice_width;      // Width of lattice
+    size_t lattice_height;     // Height of lattice
+    size_t history_window;     // Size of history window for error tracking
+    uint64_t calibration_interval; // Calibration interval in nanoseconds
+    size_t num_threads;        // Number of threads for parallel operations
 } SyndromeConfig;
 
 // Initialize matching graph

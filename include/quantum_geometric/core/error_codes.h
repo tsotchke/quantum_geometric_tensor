@@ -7,6 +7,7 @@ typedef enum {
     QGT_ERROR_INVALID_PARAMETER = -1,
     QGT_ERROR_INVALID_ARGUMENT = QGT_ERROR_INVALID_PARAMETER,  // Alias for backward compatibility
     QGT_ERROR_MEMORY_ALLOCATION = -2,
+    QGT_ERROR_OUT_OF_MEMORY = QGT_ERROR_MEMORY_ALLOCATION,  // Alias
     QGT_ERROR_DIMENSION_MISMATCH = -3,
     QGT_ERROR_INVALID_STATE = -4,
     QGT_ERROR_VALIDATION_FAILED = -5,
@@ -82,6 +83,14 @@ typedef enum {
     QGT_ERROR_DEVICE = -116,              // Generic device error
     QGT_ERROR_NO_DEVICE = -117,           // No device available
 
+    // GPU-specific errors
+    QGT_ERROR_GPU_INVALID_VALUE = -118,   // Invalid value passed to GPU operation
+    QGT_ERROR_GPU_OUT_OF_MEMORY = -119,   // GPU out of memory
+    QGT_ERROR_GPU_INTERNAL = -120,        // Internal GPU error
+    QGT_ERROR_GPU_LAUNCH_FAILED = -121,   // GPU kernel launch failed
+    QGT_ERROR_GPU_SYNC_FAILED = -122,     // GPU synchronization failed
+    QGT_ERROR_GPU_TRANSFER_FAILED = -123, // GPU memory transfer failed
+
     // Simulator errors
     QGT_ERROR_SIMULATOR_MEMORY = -200,
     QGT_ERROR_SIMULATOR_PRECISION = -201,
@@ -147,7 +156,16 @@ typedef enum {
     QGT_ERROR_NOT_OPTIMIZED = -702,
     QGT_ERROR_PREFETCH_FAILED = -703,
     QGT_ERROR_DEFRAGMENT_FAILED = -704,
-    QGT_ERROR_MEMORY_CORRUPTION = -705
+    QGT_ERROR_MEMORY_CORRUPTION = -705,
+
+    // Threading errors
+    QGT_ERROR_THREAD_ERROR = -800,
+    QGT_ERROR_THREAD_CREATE = -801,
+    QGT_ERROR_THREAD_JOIN = -802,
+    QGT_ERROR_MUTEX_LOCK = -803,
+    QGT_ERROR_MUTEX_UNLOCK = -804,
+    QGT_ERROR_DEADLOCK = -805,
+    QGT_ERROR_THREAD_POOL = -806
 } qgt_error_t;
 
 #endif // QUANTUM_ERROR_CODES_H

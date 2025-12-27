@@ -1,6 +1,49 @@
 #include "quantum_geometric/distributed/distributed_training.h"
+
+#ifndef HAS_MPI
+#ifndef NO_MPI
+#define NO_MPI
+#endif
+#endif
+
+#ifndef NO_MPI
 #include <mpi.h>
+#else
+// MPI type stubs for non-MPI builds
+typedef int MPI_Comm;
+typedef int MPI_Win;
+typedef int MPI_Status;
+typedef int MPI_Request;
+typedef int MPI_Datatype;
+typedef int MPI_Op;
+#define MPI_COMM_WORLD 0
+#define MPI_COMM_NULL 0
+#define MPI_WIN_NULL 0
+#define MPI_BYTE 0
+#define MPI_FLOAT 0
+#define MPI_DOUBLE 0
+#define MPI_SUM 0
+#define MPI_SUCCESS 0
+
+// Stub MPI functions
+static inline int MPI_Comm_rank(MPI_Comm comm, int* rank) { (void)comm; *rank = 0; return 0; }
+static inline int MPI_Comm_size(MPI_Comm comm, int* size) { (void)comm; *size = 1; return 0; }
+static inline int MPI_Allreduce(const void* sb, void* rb, int c, MPI_Datatype dt, MPI_Op op, MPI_Comm comm) {
+    (void)sb; (void)rb; (void)c; (void)dt; (void)op; (void)comm; return 0;
+}
+static inline int MPI_Barrier(MPI_Comm comm) { (void)comm; return 0; }
+static inline int MPI_Win_create(void* b, size_t s, int d, int info, MPI_Comm c, MPI_Win* w) {
+    (void)b; (void)s; (void)d; (void)info; (void)c; *w = 0; return 0;
+}
+static inline int MPI_Win_free(MPI_Win* w) { *w = 0; return 0; }
+static inline int MPI_Bcast(void* b, int c, MPI_Datatype dt, int root, MPI_Comm comm) {
+    (void)b; (void)c; (void)dt; (void)root; (void)comm; return 0;
+}
+#endif
+
+#ifdef _OPENMP
 #include <omp.h>
+#endif
 
 // Distributed training parameters
 #define MAX_NODES 64

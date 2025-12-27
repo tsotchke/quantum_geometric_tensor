@@ -108,26 +108,7 @@ typedef struct HardwareOptimizations {
 HardwareOptimizations* init_hardware_optimizations(const char* backend_type);
 void cleanup_hardware_optimizations(HardwareOptimizations* opts);
 
-// Hardware capabilities
-typedef struct {
-    uint32_t max_qubits;
-    uint32_t max_shots;
-    bool supports_gates;           // Gate-based quantum computing
-    bool supports_annealing;       // Quantum annealing
-    bool supports_measurement;     // Mid-circuit measurement
-    bool supports_reset;          // Qubit reset
-    bool supports_conditional;    // Conditional operations
-    bool supports_parallel;       // Parallel execution
-    bool supports_error_correction; // Quantum error correction
-    double coherence_time;        // Coherence time in microseconds
-    double gate_time;            // Gate operation time
-    double readout_time;         // Measurement readout time
-    double* connectivity;        // Qubit connectivity matrix
-    size_t connectivity_size;    // Size of connectivity matrix
-    char** available_gates;      // List of available quantum gates
-    size_t num_gates;           // Number of available gates
-    void* backend_specific;     // Backend-specific capabilities
-} HardwareCapabilities;
+// HardwareCapabilities is defined in quantum_hardware_types.h as alias for QuantumHardwareCapabilities
 
 // Hardware state structure
 typedef struct {
@@ -203,7 +184,7 @@ typedef struct {
 } QuantumOperation;
 
 // Quantum program
-typedef struct {
+typedef struct QuantumProgram {
     QuantumOperation* operations;
     size_t num_operations;
     size_t capacity;
@@ -275,26 +256,27 @@ bool set_error_budget(void* hardware, double budget);
 bool enable_hardware_acceleration(void* hardware, bool enable);
 
 // ============================================================================
-// Backend-Specific Initialization Functions
+// Backend-Specific Initialization Functions (HAL layer)
+// These use hal_ prefix to avoid conflicts with backend-specific headers
 // ============================================================================
 
-// IBM Backend
-bool init_ibm_capabilities(HardwareCapabilities* caps, const struct IBMConfig* config);
-struct IBMConfig* init_ibm_backend(const struct IBMConfig* config);
-void cleanup_ibm_backend(struct IBMConfig* backend);
+// IBM Backend (HAL layer)
+bool hal_init_ibm_capabilities(HardwareCapabilities* caps, const struct IBMConfig* config);
+struct IBMConfig* hal_init_ibm_backend(const struct IBMConfig* config);
+void hal_cleanup_ibm_backend(struct IBMConfig* backend);
 
-// Rigetti Backend
-bool init_rigetti_capabilities(HardwareCapabilities* caps, const struct RigettiConfig* config);
-void cleanup_rigetti_backend(struct RigettiConfig* backend);
+// Rigetti Backend (HAL layer)
+bool hal_init_rigetti_capabilities(HardwareCapabilities* caps, const struct RigettiConfig* config);
+void hal_cleanup_rigetti_backend(struct RigettiConfig* backend);
 
-// D-Wave Backend
-bool init_dwave_capabilities(HardwareCapabilities* caps, const struct DWaveConfig* config);
-struct DWaveConfig* init_dwave_backend(const struct DWaveConfig* config);
-void cleanup_dwave_backend(struct DWaveConfig* backend);
+// D-Wave Backend (HAL layer)
+bool hal_init_dwave_capabilities(HardwareCapabilities* caps, const struct DWaveConfig* config);
+struct DWaveConfig* hal_init_dwave_backend(const struct DWaveConfig* config);
+void hal_cleanup_dwave_backend(struct DWaveConfig* backend);
 
-// Simulator Backend
-bool init_simulator_capabilities(HardwareCapabilities* caps, const struct SimulatorConfig* config);
-struct SimulatorConfig* init_simulator(const struct SimulatorConfig* config);
-void cleanup_simulator(struct SimulatorConfig* backend);
+// Simulator Backend (HAL layer)
+bool hal_init_simulator_capabilities(HardwareCapabilities* caps, const struct SimulatorConfig* config);
+struct SimulatorConfig* hal_init_simulator(const struct SimulatorConfig* config);
+void hal_cleanup_simulator(struct SimulatorConfig* backend);
 
 #endif // QUANTUM_HARDWARE_ABSTRACTION_H

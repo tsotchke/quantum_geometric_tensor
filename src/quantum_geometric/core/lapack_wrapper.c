@@ -6,6 +6,21 @@
 #include <math.h>
 #include <stdio.h>
 
+// Platform-specific LAPACK complex type casting
+// Apple's LAPACK uses complex types with same memory layout as ComplexFloat
+#ifdef __APPLE__
+#include <Accelerate/Accelerate.h>
+#ifdef ACCELERATE_NEW_LAPACK
+// New Accelerate API uses __LAPACK_float_complex (C99 _Complex float)
+#define LAPACK_COMPLEX(x) ((__LAPACK_float_complex*)(x))
+#else
+// Old CLAPACK API uses __CLPK_complex
+#define LAPACK_COMPLEX(x) ((__CLPK_complex*)(x))
+#endif
+#else
+#define LAPACK_COMPLEX(x) (x)
+#endif
+
 // Global state
 static struct {
     lapack_status_t last_status;
@@ -178,9 +193,9 @@ bool lapack_svd(const ComplexFloat* a, size_t m, size_t n,
         return false;
     }
     
-    cgesvd_(&jobu, &jobvt, &im, &in, a_col, &lda, s,
-            u, &ldu, vt, &ldvt, &work_query, &lwork,
-            rwork, &info);
+    cgesvd_(&jobu, &jobvt, &im, &in, LAPACK_COMPLEX(a_col), &lda, s,
+            LAPACK_COMPLEX(u), &ldu, LAPACK_COMPLEX(vt), &ldvt,
+            LAPACK_COMPLEX(&work_query), &lwork, rwork, &info);
     
     // Allocate workspace
     lwork = (int)work_query.real;
@@ -193,9 +208,9 @@ bool lapack_svd(const ComplexFloat* a, size_t m, size_t n,
     }
     
     // Compute SVD
-    cgesvd_(&jobu, &jobvt, &im, &in, a_col, &lda, s,
-            u, &ldu, vt, &ldvt, work, &lwork,
-            rwork, &info);
+    cgesvd_(&jobu, &jobvt, &im, &in, LAPACK_COMPLEX(a_col), &lda, s,
+            LAPACK_COMPLEX(u), &ldu, LAPACK_COMPLEX(vt), &ldvt,
+            LAPACK_COMPLEX(work), &lwork, rwork, &info);
     
     free(work);
     free(rwork);
@@ -243,7 +258,8 @@ bool lapack_qr(const ComplexFloat* a, size_t m, size_t n,
     ComplexFloat work_query;
     int lwork = -1;
     
-    cgeqrf_(&im, &in, a_col, &lda, tau, &work_query, &lwork, &info);
+    cgeqrf_(&im, &in, LAPACK_COMPLEX(a_col), &lda, LAPACK_COMPLEX(tau),
+            LAPACK_COMPLEX(&work_query), &lwork, &info);
     
     // Allocate workspace
     lwork = (int)work_query.real;
@@ -256,7 +272,8 @@ bool lapack_qr(const ComplexFloat* a, size_t m, size_t n,
     }
     
     // Compute QR factorization
-    cgeqrf_(&im, &in, a_col, &lda, tau, work, &lwork, &info);
+    cgeqrf_(&im, &in, LAPACK_COMPLEX(a_col), &lda, LAPACK_COMPLEX(tau),
+            LAPACK_COMPLEX(work), &lwork, &info);
     
     if (info != 0) {
         free(work);
@@ -276,7 +293,8 @@ bool lapack_qr(const ComplexFloat* a, size_t m, size_t n,
     
     // Generate Q
     memcpy(q, a_col, m * n * sizeof(ComplexFloat));
-    cungqr_(&im, &in, &in, q, &lda, tau, work, &lwork, &info);
+    cungqr_(&im, &in, &in, LAPACK_COMPLEX(q), &lda, LAPACK_COMPLEX(tau),
+            LAPACK_COMPLEX(work), &lwork, &info);
     
     free(work);
     free(tau);
@@ -335,8 +353,8 @@ bool lapack_eigendecomposition(const ComplexFloat* a, size_t n,
     ComplexFloat work_query;
     int lwork = -1;
     
-    cheev_(&jobz, &uplo, &in, a_col, &lda, w,
-           &work_query, &lwork, rwork, &info);
+    cheev_(&jobz, &uplo, &in, LAPACK_COMPLEX(a_col), &lda, w,
+           LAPACK_COMPLEX(&work_query), &lwork, rwork, &info);
     
     // Allocate workspace
     lwork = (int)work_query.real;
@@ -350,8 +368,8 @@ bool lapack_eigendecomposition(const ComplexFloat* a, size_t n,
     }
     
     // Compute eigendecomposition
-    cheev_(&jobz, &uplo, &in, a_col, &lda, w,
-           work, &lwork, rwork, &info);
+    cheev_(&jobz, &uplo, &in, LAPACK_COMPLEX(a_col), &lda, w,
+           LAPACK_COMPLEX(work), &lwork, rwork, &info);
     
     // Copy results
     memcpy(eigenvectors, a_col, n * n * sizeof(ComplexFloat));
@@ -403,7 +421,7 @@ bool lapack_cholesky(const ComplexFloat* a, size_t n,
     int info;
     
     // Compute Cholesky decomposition
-    cpotrf_(&uplo, &in, a_col, &lda, &info);
+    cpotrf_(&uplo, &in, LAPACK_COMPLEX(a_col), &lda, &info);
     
     // Copy result
     memcpy(l, a_col, n * n * sizeof(ComplexFloat));
@@ -441,7 +459,7 @@ bool lapack_lu(const ComplexFloat* a, size_t m, size_t n,
     int info;
     
     // Compute LU decomposition
-    cgetrf_(&im, &in, a_col, &lda, ipiv, &info);
+    cgetrf_(&im, &in, LAPACK_COMPLEX(a_col), &lda, ipiv, &info);
     
     // Extract L and U
     memset(l, 0, m * n * sizeof(ComplexFloat));
@@ -508,7 +526,7 @@ bool lapack_solve_triangular(const ComplexFloat* a,
     
     // Solve system
     ctrtrs_(&uplo, &trans, &diag, &in, &inrhs,
-            a_col, &lda, b_col, &ldb, &info);
+            LAPACK_COMPLEX(a_col), &lda, LAPACK_COMPLEX(b_col), &ldb, &info);
     
     // Copy solution
     convert_layout(x, b_col, n, nrhs, LAPACK_COL_MAJOR, layout);
@@ -570,8 +588,8 @@ bool lapack_solve_symmetric(const ComplexFloat* a,
     
     // Solve system
     if (positive_definite) {
-        cposv_(&uplo, &in, &inrhs, a_col, &lda,
-               b_col, &ldb, &info);
+        cposv_(&uplo, &in, &inrhs, LAPACK_COMPLEX(a_col), &lda,
+               LAPACK_COMPLEX(b_col), &ldb, &info);
     } else {
         int* ipiv = malloc(n * sizeof(int));
         if (!ipiv) {
@@ -580,8 +598,8 @@ bool lapack_solve_symmetric(const ComplexFloat* a,
             lapack_state.last_status = LAPACK_MEMORY_ERROR;
             return false;
         }
-        cgesv_(&in, &inrhs, a_col, &lda, ipiv,
-               b_col, &ldb, &info);
+        cgesv_(&in, &inrhs, LAPACK_COMPLEX(a_col), &lda, ipiv,
+               LAPACK_COMPLEX(b_col), &ldb, &info);
         free(ipiv);
     }
     
@@ -639,8 +657,8 @@ bool lapack_solve_general(const ComplexFloat* a,
     }
     
     // Solve system
-    cgesv_(&in, &inrhs, a_col, &lda, ipiv,
-           b_col, &ldb, &info);
+    cgesv_(&in, &inrhs, LAPACK_COMPLEX(a_col), &lda, ipiv,
+           LAPACK_COMPLEX(b_col), &ldb, &info);
     
     // Copy solution
     convert_layout(x, b_col, n, nrhs, LAPACK_COL_MAJOR, layout);
@@ -685,8 +703,8 @@ size_t lapack_get_optimal_workspace(const ComplexFloat* a,
             return 0;
         }
         
-        cgesvd_(&jobu, &jobvt, &im, &in, (ComplexFloat*)a, &lda, s,
-                NULL, &ldu, NULL, &ldvt, &work_query, &lwork,
+        cgesvd_(&jobu, &jobvt, &im, &in, LAPACK_COMPLEX((ComplexFloat*)a), &lda, s,
+                NULL, &ldu, NULL, &ldvt, LAPACK_COMPLEX(&work_query), &lwork,
                 rwork, &info);
         
         free(rwork);

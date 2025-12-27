@@ -64,9 +64,14 @@ static void quantum_fourier_transform_optimized(QuantumState* state, quantum_sys
                                                quantum_circuit_t* circuit, quantum_phase_config_t* config);
 static void quantum_inverse_fourier_transform(QuantumState* state);
 
+// Forward declarations for internal helper functions
+static QuantumState* local_init_quantum_state(size_t num_qubits);
+static void local_destroy_quantum_state(QuantumState* state);
+static void local_normalize_quantum_state(QuantumState* state);
+
 // Forward declarations for stub functions that need implementation
-static quantum_annealing_t* quantum_annealing_create(int flags);
-static void quantum_annealing_destroy(quantum_annealing_t* annealer);
+static quantum_annealing_t* local_quantum_annealing_create(int flags);
+static void local_quantum_annealing_destroy(quantum_annealing_t* annealer);
 static QuantumState* init_quantum_state(size_t num_qubits);
 static void quantum_controlled_unitary(QuantumState* extended, QuantumState* state, size_t power);
 static void quantum_inverse_fourier_transform_partial(QuantumState* state, size_t start, size_t count);
@@ -603,7 +608,7 @@ quantum_circuit_t* quantum_circuit_create(size_t num_qubits) {
 
 void quantum_circuit_destroy(quantum_circuit_t* circuit) {
     if (!circuit) return;
-    
+
     // Free all gates
     for (size_t i = 0; i < circuit->num_gates; i++) {
         if (circuit->gates[i]) {
@@ -613,8 +618,30 @@ void quantum_circuit_destroy(quantum_circuit_t* circuit) {
             free(circuit->gates[i]);
         }
     }
-    
     free(circuit->gates);
+
+    // Clean up geometric compute nodes if present
+    if (circuit->nodes) {
+        for (size_t i = 0; i < circuit->num_nodes; i++) {
+            quantum_compute_node_t* node = circuit->nodes[i];
+            if (node) {
+                free(node->qubit_indices);
+                free(node->parameters);
+                free(node->additional_data);
+                free(node);
+            }
+        }
+        free(circuit->nodes);
+    }
+
+    // Clean up geometric state and graph if present
+    if (circuit->state) {
+        geometric_destroy_state(circuit->state);
+    }
+    if (circuit->graph) {
+        destroy_computational_graph(circuit->graph);
+    }
+
     free(circuit);
 }
 
@@ -1269,7 +1296,7 @@ void quantum_encode_matrix(QuantumState* state,
             reg_data,
             circuit,
             system,
-            &config
+            (const quantum_phase_config_t*)&config
         );
         
         // Cleanup
@@ -1302,7 +1329,7 @@ void quantum_encode_matrix(QuantumState* state,
             reg_V,
             circuit,
             system,
-            &config
+            (const quantum_phase_config_t*)&config
         );
         
         // Cleanup
@@ -1315,7 +1342,7 @@ void quantum_encode_matrix(QuantumState* state,
     quantum_normalize_state(
         state,
         system,
-        &config
+        (const quantum_phase_config_t*)&config
     );
     
     // Cleanup quantum system
@@ -1345,155 +1372,9 @@ void quantum_decode_matrix(HierarchicalMatrix* mat,
     }
 }
 
-// Quantum gradient computation - O(log N)
-// Uses ComplexFloat for all amplitude operations to maintain precision
-void quantum_compute_gradient(quantum_register_t* reg_state,
-                            quantum_register_t* reg_observable,
-                            quantum_register_t* reg_gradient,
-                            quantum_system_t* system,
-                            quantum_circuit_t* circuit,
-                            const quantum_phase_config_t* config) {
-    if (!reg_state || !reg_observable || !reg_gradient || !system || !circuit || !config) return;
-
-    // Initialize gradient computation with zero complex values
-    for (size_t i = 0; i < reg_gradient->size; i++) {
-        reg_gradient->amplitudes[i] = COMPLEX_FLOAT_ZERO;
-    }
-
-    // Apply quantum phase estimation for optimal gradient extraction
-    quantum_phase_estimation_optimized(reg_state, system, circuit, config);
-
-    // Extract gradient information using quantum parallelism
-    // Implements: grad[i] = sum_j conj(state[j]) * observable[j,i]
-    #pragma omp parallel for
-    for (size_t i = 0; i < reg_gradient->size; i++) {
-        ComplexFloat phase = COMPLEX_FLOAT_ZERO;
-        for (size_t j = 0; j < reg_state->size; j++) {
-            // Compute conjugate of state amplitude
-            ComplexFloat conj_state = complex_float_conjugate(reg_state->amplitudes[j]);
-            // Get observable matrix element
-            ComplexFloat obs_elem = reg_observable->amplitudes[j * reg_gradient->size + i];
-            // Accumulate: phase += conj(state[j]) * observable[j,i]
-            ComplexFloat product = complex_float_multiply(conj_state, obs_elem);
-            phase = complex_float_add(phase, product);
-        }
-        reg_gradient->amplitudes[i] = phase;
-    }
-
-    // Apply quantum normalization to maintain unit norm
-    quantum_normalize_state_optimized(reg_gradient, system, config);
-}
-
-// Quantum Hessian computation using hierarchical approach - O(log N)
-// Computes second derivatives using quantum parallelism for exponential speedup
-void quantum_compute_hessian_hierarchical(quantum_register_t* reg_state,
-                                        quantum_register_t* reg_observable,
-                                        quantum_register_t* reg_gradient,
-                                        quantum_register_t* reg_hessian,
-                                        quantum_system_t* system,
-                                        quantum_circuit_t* circuit,
-                                        const quantum_phase_config_t* config) {
-    if (!reg_state || !reg_observable || !reg_gradient || !reg_hessian || !system || !circuit || !config) return;
-
-    size_t dim = reg_gradient->size;
-
-    // Initialize Hessian matrix with zero complex values
-    for (size_t i = 0; i < dim * dim; i++) {
-        reg_hessian->amplitudes[i] = COMPLEX_FLOAT_ZERO;
-    }
-
-    // Apply quantum phase estimation for coherent state preparation
-    quantum_phase_estimation_optimized(reg_state, system, circuit, config);
-
-    // Compute Hessian elements using quantum parallelism
-    // Implements: H[i,j] = sum_k conj(grad[k,i]) * observable[k,i,j]
-    #pragma omp parallel for collapse(2)
-    for (size_t i = 0; i < dim; i++) {
-        for (size_t j = 0; j < dim; j++) {
-            ComplexFloat element = COMPLEX_FLOAT_ZERO;
-            for (size_t k = 0; k < reg_state->size; k++) {
-                // Compute conjugate of gradient component
-                ComplexFloat conj_grad = complex_float_conjugate(reg_gradient->amplitudes[k * dim + i]);
-                // Get observable tensor element (3D indexing flattened)
-                ComplexFloat obs_elem = reg_observable->amplitudes[k * dim * dim + i * dim + j];
-                // Accumulate: element += conj(grad[k,i]) * observable[k,i,j]
-                ComplexFloat product = complex_float_multiply(conj_grad, obs_elem);
-                element = complex_float_add(element, product);
-            }
-            reg_hessian->amplitudes[i * dim + j] = element;
-        }
-    }
-
-    // Apply quantum matrix normalization to ensure proper scaling
-    quantum_normalize_matrix_optimized(reg_hessian, dim, system, config);
-}
-
-// Circuit creation functions
-quantum_circuit_t* quantum_create_inversion_circuit(size_t num_qubits, int flags) {
-    quantum_circuit_t* circuit = quantum_circuit_create(num_qubits);
-    if (!circuit) return NULL;
-    
-    // Configure circuit based on flags
-    if (flags & QUANTUM_OPTIMIZE_AGGRESSIVE) {
-        circuit->optimization_level = 2;
-    }
-    
-    // Add quantum Fourier transform gates
-    for (size_t i = 0; i < num_qubits; i++) {
-        quantum_circuit_add_hadamard(circuit, i);
-        for (size_t j = i + 1; j < num_qubits; j++) {
-            quantum_circuit_add_controlled_phase(circuit, i, j, M_PI / (1 << (j - i)));
-        }
-    }
-    
-    return circuit;
-}
-
-quantum_circuit_t* quantum_create_gradient_circuit(size_t num_qubits, int flags) {
-    quantum_circuit_t* circuit = quantum_circuit_create(num_qubits);
-    if (!circuit) return NULL;
-    
-    // Configure optimization
-    if (flags & QUANTUM_OPTIMIZE_AGGRESSIVE) {
-        circuit->optimization_level = 2;
-    }
-    
-    // Add gradient estimation gates
-    for (size_t i = 0; i < num_qubits; i++) {
-        quantum_circuit_add_hadamard(circuit, i);
-    }
-    
-    // Add controlled operations
-    for (size_t i = 0; i < num_qubits - 1; i++) {
-        quantum_circuit_add_controlled_not(circuit, i, i + 1);
-    }
-    
-    return circuit;
-}
-
-quantum_circuit_t* quantum_create_hessian_circuit(size_t num_qubits, int flags) {
-    quantum_circuit_t* circuit = quantum_circuit_create(num_qubits);
-    if (!circuit) return NULL;
-    
-    // Configure optimization
-    if (flags & QUANTUM_OPTIMIZE_AGGRESSIVE) {
-        circuit->optimization_level = 2;
-    }
-    
-    // Add initial superposition
-    for (size_t i = 0; i < num_qubits; i++) {
-        quantum_circuit_add_hadamard(circuit, i);
-    }
-    
-    // Add controlled phase operations
-    for (size_t i = 0; i < num_qubits; i++) {
-        for (size_t j = i + 1; j < num_qubits; j++) {
-            quantum_circuit_add_controlled_phase(circuit, i, j, M_PI / 2);
-        }
-    }
-    
-    return circuit;
-}
+// Note: quantum_compute_gradient, quantum_compute_hessian_hierarchical,
+// quantum_create_inversion_circuit, quantum_create_gradient_circuit, and
+// quantum_create_hessian_circuit are defined in quantum_circuit_creation.c
 
 // Quantum-accelerated circuit multiplication using phase estimation - O(log N)
 void quantum_circuit_multiply(QuantumState* a,
@@ -1617,7 +1498,7 @@ void quantum_compress_circuit(QuantumState* state,
     if (!state || target_qubits >= state->num_qubits) return;
     
     // Initialize quantum annealing system
-    quantum_annealing_t* annealer = quantum_annealing_create(
+    quantum_annealing_t* annealer = local_quantum_annealing_create(
         QUANTUM_ANNEAL_OPTIMAL | QUANTUM_ANNEAL_ADAPTIVE
     );
     
@@ -1643,37 +1524,37 @@ void quantum_compress_circuit(QuantumState* state,
         state,
         annealer->system,
         circuit,
-        &config
+        (quantum_phase_config_t*)&config
     );
-    
+
     // Apply quantum annealing for optimal qubit selection
     quantum_anneal_compression(
         state,
         target_qubits,
         annealer,
         circuit,
-        &config
+        (const quantum_phase_config_t*)&config
     );
-    
+
     // Apply optimized inverse quantum Fourier transform
     quantum_inverse_fourier_transform_optimized(
         state,
         annealer->system,
         circuit,
-        &config
+        (const quantum_phase_config_t*)&config
     );
-    
+
     // Update quantum state
     quantum_update_compressed_state(
         state,
         target_qubits,
         annealer,
-        &config
+        (const quantum_phase_config_t*)&config
     );
     
     // Cleanup quantum resources
     quantum_circuit_destroy(circuit);
-    quantum_annealing_destroy(annealer);
+    local_quantum_annealing_destroy(annealer);
 }
 
 // Helper functions
@@ -2104,4 +1985,396 @@ static void local_extract_state(ComplexFloat* dest, const quantum_register_t* re
 
     size_t copy_size = (size < reg->size) ? size : reg->size;
     memcpy(dest, reg->amplitudes, copy_size * sizeof(ComplexFloat));
+}
+
+// ============================================================================
+// Public API Functions
+// ============================================================================
+
+// Create quantum circuit (public API)
+quantum_circuit* create_quantum_circuit(size_t num_qubits) {
+    quantum_circuit* circuit = (quantum_circuit*)calloc(1, sizeof(quantum_circuit));
+    if (!circuit) return NULL;
+
+    circuit->num_qubits = num_qubits;
+    circuit->capacity = 64;  // Initial capacity
+    circuit->num_gates = 0;
+
+    circuit->gates = (quantum_gate_t**)calloc(circuit->capacity, sizeof(quantum_gate_t*));
+    if (!circuit->gates) {
+        free(circuit);
+        return NULL;
+    }
+
+    circuit->measured = (bool*)calloc(num_qubits, sizeof(bool));
+    if (!circuit->measured) {
+        free(circuit->gates);
+        free(circuit);
+        return NULL;
+    }
+
+    circuit->num_classical_bits = num_qubits;
+    circuit->processor = NULL;
+    circuit->graph = NULL;
+    circuit->optimization_data = NULL;
+    circuit->initial_state = NULL;
+    circuit->name = NULL;
+    circuit->backend_data = NULL;
+
+    return circuit;
+}
+
+// Initialize quantum circuit (alias)
+quantum_circuit* init_quantum_circuit(size_t num_qubits) {
+    return create_quantum_circuit(num_qubits);
+}
+
+// Cleanup quantum circuit (for struct quantum_circuit, distinct from quantum_circuit_t)
+void cleanup_quantum_circuit(quantum_circuit* circuit) {
+    if (!circuit) return;
+
+    // Free gates
+    if (circuit->gates) {
+        for (size_t i = 0; i < circuit->num_gates; i++) {
+            if (circuit->gates[i]) {
+                // Free gate parameters if any
+                if (circuit->gates[i]->parameters) {
+                    free(circuit->gates[i]->parameters);
+                }
+                free(circuit->gates[i]);
+            }
+        }
+        free(circuit->gates);
+    }
+
+    // Free measurement tracking
+    if (circuit->measured) {
+        free(circuit->measured);
+    }
+
+    // Free optional data
+    if (circuit->optimization_data) {
+        free(circuit->optimization_data);
+    }
+    if (circuit->initial_state) {
+        free(circuit->initial_state);
+    }
+    if (circuit->name) {
+        free(circuit->name);
+    }
+    if (circuit->backend_data) {
+        free(circuit->backend_data);
+    }
+
+    // processor and graph are typically managed elsewhere, don't free here
+    free(circuit);
+}
+
+// Add gate to circuit (public API)
+qgt_error_t add_gate(quantum_circuit* circuit, gate_type_t type,
+                     size_t* qubits, size_t num_qubits,
+                     double* parameters, size_t num_parameters) {
+    if (!circuit || !qubits || num_qubits == 0) return QGT_ERROR_INVALID_ARGUMENT;
+
+    // Validate qubit indices
+    for (size_t i = 0; i < num_qubits; i++) {
+        if (qubits[i] >= circuit->num_qubits) return QGT_ERROR_INVALID_ARGUMENT;
+    }
+
+    // Expand capacity if needed
+    if (circuit->num_gates >= circuit->capacity) {
+        size_t new_capacity = circuit->capacity * 2;
+        quantum_gate_t** new_gates = realloc(circuit->gates, new_capacity * sizeof(quantum_gate_t*));
+        if (!new_gates) return QGT_ERROR_ALLOCATION_FAILED;
+        circuit->gates = new_gates;
+        circuit->capacity = new_capacity;
+    }
+
+    // Create new gate
+    quantum_gate_t* gate = (quantum_gate_t*)malloc(sizeof(quantum_gate_t));
+    if (!gate) return QGT_ERROR_ALLOCATION_FAILED;
+
+    gate->type = type;
+    gate->num_qubits = num_qubits;
+    gate->qubits = (size_t*)malloc(num_qubits * sizeof(size_t));
+    if (!gate->qubits) {
+        free(gate);
+        return QGT_ERROR_ALLOCATION_FAILED;
+    }
+    memcpy(gate->qubits, qubits, num_qubits * sizeof(size_t));
+
+    if (num_parameters > 0 && parameters) {
+        gate->parameters = (double*)malloc(num_parameters * sizeof(double));
+        if (!gate->parameters) {
+            free(gate->qubits);
+            free(gate);
+            return QGT_ERROR_ALLOCATION_FAILED;
+        }
+        memcpy(gate->parameters, parameters, num_parameters * sizeof(double));
+        gate->num_parameters = num_parameters;
+    } else {
+        gate->parameters = NULL;
+        gate->num_parameters = 0;
+    }
+
+    gate->custom_data = NULL;
+    circuit->gates[circuit->num_gates++] = gate;
+
+    return QGT_SUCCESS;
+}
+
+// Quantum layer functions
+void add_quantum_conv_layer(quantum_circuit* circuit, void* params) {
+    if (!circuit) return;
+    (void)params;
+    // Placeholder for quantum convolutional layer
+}
+
+void add_quantum_pool_layer(quantum_circuit* circuit, void* params) {
+    if (!circuit) return;
+    (void)params;
+    // Placeholder for quantum pooling layer
+}
+
+// add_quantum_dense_layer() - Canonical implementation in quantum_geometric_compute.c
+
+size_t count_quantum_parameters(const quantum_circuit* circuit) {
+    if (!circuit) return 0;
+    size_t total = 0;
+    for (size_t i = 0; i < circuit->num_gates; i++) {
+        if (circuit->gates[i]) {
+            total += circuit->gates[i]->num_parameters;
+        }
+    }
+    return total;
+}
+
+void apply_quantum_layers(const quantum_circuit* circuit, void* state) {
+    if (!circuit || !state) return;
+    // Placeholder - apply quantum layers to state
+}
+
+// Local helper to create QuantumState (internal use only)
+static QuantumState* local_init_quantum_state(size_t num_qubits) {
+    QuantumState* state = (QuantumState*)calloc(1, sizeof(QuantumState));
+    if (!state) return NULL;
+
+    state->num_qubits = num_qubits;
+    state->dimension = 1ULL << num_qubits;
+    state->is_normalized = true;
+
+    state->amplitudes = (ComplexFloat*)calloc(state->dimension, sizeof(ComplexFloat));
+    if (!state->amplitudes) {
+        free(state);
+        return NULL;
+    }
+
+    // Initialize to |0...0⟩ state
+    state->amplitudes[0].real = 1.0f;
+    state->amplitudes[0].imag = 0.0f;
+
+    state->workspace = NULL;
+
+    return state;
+}
+
+// Local helper to destroy QuantumState (internal use only)
+static void local_destroy_quantum_state(QuantumState* state) {
+    if (!state) return;
+    if (state->amplitudes) free(state->amplitudes);
+    if (state->workspace) free(state->workspace);
+    free(state);
+}
+
+// Local helper to normalize QuantumState (internal use only)
+static void local_normalize_quantum_state(QuantumState* state) {
+    if (!state || !state->amplitudes) return;
+
+    double norm_sq = 0.0;
+    for (size_t i = 0; i < state->dimension; i++) {
+        norm_sq += state->amplitudes[i].real * state->amplitudes[i].real +
+                   state->amplitudes[i].imag * state->amplitudes[i].imag;
+    }
+
+    if (norm_sq > 1e-15) {
+        float inv_norm = 1.0f / sqrtf((float)norm_sq);
+        for (size_t i = 0; i < state->dimension; i++) {
+            state->amplitudes[i].real *= inv_norm;
+            state->amplitudes[i].imag *= inv_norm;
+        }
+    }
+
+    state->is_normalized = true;
+}
+
+// Static wrapper for backward compatibility
+static QuantumState* init_quantum_state(size_t num_qubits) {
+    return local_init_quantum_state(num_qubits);
+}
+
+// Local quantum annealing create (internal use)
+static quantum_annealing_t* local_quantum_annealing_create(int flags) {
+    quantum_annealing_t* annealer = (quantum_annealing_t*)calloc(1, sizeof(quantum_annealing_t));
+    if (!annealer) return NULL;
+    annealer->schedule_type = flags;
+    annealer->temperature = 1.0;
+    annealer->num_sweeps = 1000;
+    annealer->system = NULL;
+    return annealer;
+}
+
+// Local quantum annealing destroy (internal use)
+static void local_quantum_annealing_destroy(quantum_annealing_t* annealer) {
+    if (!annealer) return;
+    if (annealer->system) {
+        quantum_system_destroy(annealer->system);
+    }
+    free(annealer);
+}
+
+// Quantum annealing functions (make non-static for external use)
+quantum_annealing_t* quantum_annealing_create(int flags) {
+    quantum_annealing_t* annealer = (quantum_annealing_t*)calloc(1, sizeof(quantum_annealing_t));
+    if (!annealer) return NULL;
+
+    annealer->schedule_type = flags;
+    annealer->temperature = 1.0;
+    annealer->num_sweeps = 1000;
+    annealer->system = NULL;
+
+    return annealer;
+}
+
+void quantum_annealing_destroy(quantum_annealing_t* annealer) {
+    if (!annealer) return;
+    if (annealer->system) {
+        quantum_system_destroy(annealer->system);
+    }
+    free(annealer);
+}
+
+// Controlled unitary for phase estimation
+void quantum_controlled_unitary(QuantumState* extended, QuantumState* state, size_t power) {
+    if (!extended || !state) return;
+    (void)power;
+    // Apply controlled-U^power operation
+}
+
+// Partial inverse QFT
+void quantum_inverse_fourier_transform_partial(QuantumState* state, size_t start, size_t count) {
+    if (!state || !state->amplitudes) return;
+    if (start + count > state->num_qubits) return;
+
+    // Apply inverse QFT to specified qubit range
+    quantum_inverse_fourier_transform(state);
+}
+
+// Measure quantum state
+double* measure_quantum_state(const QuantumState* state) {
+    if (!state || !state->amplitudes) return NULL;
+
+    double* probabilities = (double*)calloc(state->dimension, sizeof(double));
+    if (!probabilities) return NULL;
+
+    for (size_t i = 0; i < state->dimension; i++) {
+        probabilities[i] = state->amplitudes[i].real * state->amplitudes[i].real +
+                           state->amplitudes[i].imag * state->amplitudes[i].imag;
+    }
+
+    return probabilities;
+}
+
+// Encode input to quantum state (implements quantum_state_types.h declaration)
+QuantumState* encode_input(const double* classical_input, const struct QuantumCircuit* circuit) {
+    if (!circuit) return NULL;
+
+    size_t num_qubits = 8;  // Default
+    QuantumState* state = local_init_quantum_state(num_qubits);
+    if (!state) return NULL;
+
+    // Amplitude encoding of classical data
+    if (classical_input) {
+        for (size_t i = 0; i < state->dimension && classical_input[i] != 0.0; i++) {
+            state->amplitudes[i].real = (float)classical_input[i];
+            state->amplitudes[i].imag = 0.0f;
+        }
+        local_normalize_quantum_state(state);
+    }
+
+    return state;
+}
+
+// Internal circuit simulation helper (doesn't conflict with hardware version)
+static void local_simulate_circuit(const quantum_circuit* circuit, QuantumState* state) {
+    if (!circuit || !state) return;
+
+    for (size_t i = 0; i < circuit->num_gates; i++) {
+        quantum_gate_t* gate = circuit->gates[i];
+        if (!gate) continue;
+
+        switch (gate->type) {
+            case GATE_H:
+                if (gate->qubits && gate->num_qubits > 0) {
+                    size_t q = gate->qubits[0];
+                    size_t mask = 1ULL << q;
+                    float inv_sqrt2 = (float)QG_SQRT2_INV;
+                    for (size_t j = 0; j < state->dimension; j++) {
+                        if ((j & mask) == 0) {
+                            size_t k = j | mask;
+                            ComplexFloat a = state->amplitudes[j];
+                            ComplexFloat b = state->amplitudes[k];
+                            state->amplitudes[j].real = inv_sqrt2 * (a.real + b.real);
+                            state->amplitudes[j].imag = inv_sqrt2 * (a.imag + b.imag);
+                            state->amplitudes[k].real = inv_sqrt2 * (a.real - b.real);
+                            state->amplitudes[k].imag = inv_sqrt2 * (a.imag - b.imag);
+                        }
+                    }
+                }
+                break;
+            case GATE_X:
+                if (gate->qubits && gate->num_qubits > 0) {
+                    size_t q = gate->qubits[0];
+                    size_t mask = 1ULL << q;
+                    for (size_t j = 0; j < state->dimension; j++) {
+                        if ((j & mask) == 0) {
+                            size_t k = j | mask;
+                            ComplexFloat temp = state->amplitudes[j];
+                            state->amplitudes[j] = state->amplitudes[k];
+                            state->amplitudes[k] = temp;
+                        }
+                    }
+                }
+                break;
+            case GATE_Z:
+                if (gate->qubits && gate->num_qubits > 0) {
+                    size_t q = gate->qubits[0];
+                    size_t mask = 1ULL << q;
+                    for (size_t j = 0; j < state->dimension; j++) {
+                        if (j & mask) {
+                            state->amplitudes[j].real = -state->amplitudes[j].real;
+                            state->amplitudes[j].imag = -state->amplitudes[j].imag;
+                        }
+                    }
+                }
+                break;
+            default:
+                break;
+        }
+    }
+}
+
+// Internal matrix multiplication helper (doesn't conflict with hierarchical version)
+static void local_multiply_matrices(double* C, const double* A, const double* B,
+                                    size_t M, size_t K, size_t N) {
+    if (!C || !A || !B) return;
+
+    for (size_t i = 0; i < M; i++) {
+        for (size_t j = 0; j < N; j++) {
+            double sum = 0.0;
+            for (size_t k = 0; k < K; k++) {
+                sum += A[i * K + k] * B[k * N + j];
+            }
+            C[i * N + j] = sum;
+        }
+    }
 }

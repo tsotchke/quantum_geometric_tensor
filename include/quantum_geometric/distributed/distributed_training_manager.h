@@ -126,19 +126,19 @@ void gradient_optimizer_destroy(gradient_optimizer_t* optimizer);
 communication_optimizer_t* communication_optimizer_create(void);
 void communication_optimizer_destroy(communication_optimizer_t* optimizer);
 
-// Pipeline functions (forward declarations for dependencies)
-size_t quantum_pipeline_get_parameter_count(quantum_pipeline_t* pipeline);
-int quantum_pipeline_forward(quantum_pipeline_t* pipeline, const void* data, size_t batch_size);
-int quantum_pipeline_backward(quantum_pipeline_t* pipeline);
-int quantum_pipeline_update_parameters(quantum_pipeline_t* pipeline);
-int quantum_pipeline_get_gradients(quantum_pipeline_t* pipeline, void* buffer, size_t size);
-int quantum_pipeline_set_gradients(quantum_pipeline_t* pipeline, void* buffer, size_t size);
-void quantum_pipeline_get_metrics(quantum_pipeline_t* pipeline, training_metrics_t* metrics);
-void quantum_pipeline_set_learning_rate(quantum_pipeline_t* pipeline, float lr);
-int quantum_pipeline_save_state(quantum_pipeline_t* pipeline, const char* path);
-int quantum_pipeline_load_state(quantum_pipeline_t* pipeline, const char* path);
-int quantum_pipeline_serialize(quantum_pipeline_t* pipeline, void** buffer, size_t* size);
-int quantum_pipeline_deserialize(quantum_pipeline_t* pipeline, void* buffer, size_t size);
+// Distributed pipeline functions (separate from public quantum_pipeline.h API)
+size_t dist_pipeline_get_parameter_count(quantum_pipeline_t* pipeline);
+int dist_pipeline_forward(quantum_pipeline_t* pipeline, const void* data, size_t batch_size);
+int dist_pipeline_backward(quantum_pipeline_t* pipeline);
+int dist_pipeline_update_parameters(quantum_pipeline_t* pipeline);
+int dist_pipeline_get_gradients(quantum_pipeline_t* pipeline, void* buffer, size_t size);
+int dist_pipeline_set_gradients(quantum_pipeline_t* pipeline, void* buffer, size_t size);
+void dist_pipeline_get_metrics(quantum_pipeline_t* pipeline, training_metrics_t* metrics);
+void dist_pipeline_set_learning_rate(quantum_pipeline_t* pipeline, float lr);
+int dist_pipeline_save_state(quantum_pipeline_t* pipeline, const char* path);
+int dist_pipeline_load_state(quantum_pipeline_t* pipeline, const char* path);
+int dist_pipeline_serialize(quantum_pipeline_t* pipeline, void** buffer, size_t* size);
+int dist_pipeline_deserialize(quantum_pipeline_t* pipeline, void* buffer, size_t size);
 
 #ifdef __cplusplus
 }

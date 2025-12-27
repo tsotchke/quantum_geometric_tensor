@@ -5,9 +5,106 @@
 
 #include "quantum_geometric/physics/error_syndrome.h"
 #include "quantum_geometric/core/quantum_geometric_core.h"
+#include "quantum_geometric/core/quantum_types.h"
 #include <stdlib.h>
 #include <string.h>
 #include <float.h>
+#include <math.h>
+
+// ============================================================================
+// Helper Functions for Matching
+// ============================================================================
+
+/**
+ * Check if a vertex is matched in the current matching
+ */
+static bool is_vertex_matched(const MatchingGraph* graph, const SyndromeVertex* vertex) {
+    if (!graph || !vertex) return false;
+
+    // Check if any matched edge contains this vertex
+    for (size_t i = 0; i < graph->num_edges; i++) {
+        const SyndromeEdge* edge = &graph->edges[i];
+        if (edge->is_matched) {
+            if (edge->vertex1 == vertex || edge->vertex2 == vertex) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Calculate total weight of matched edges
+ */
+static double calculate_matching_weight(const MatchingGraph* graph) {
+    if (!graph) return -1.0;
+
+    double total_weight = 0.0;
+
+    for (size_t i = 0; i < graph->num_edges; i++) {
+        const SyndromeEdge* edge = &graph->edges[i];
+        if (edge->is_matched) {
+            total_weight += edge->weight;
+        }
+    }
+
+    return total_weight;
+}
+
+/**
+ * Check if an edge is part of the matching
+ */
+static bool is_edge_in_matching(const MatchingGraph* graph, const SyndromeEdge* edge) {
+    (void)graph;  // Unused but kept for API consistency
+    if (!edge) return false;
+    return edge->is_matched;
+}
+
+/**
+ * Apply correction chain between two vertices
+ * This applies Pauli corrections along the path connecting the vertices
+ */
+static bool apply_correction_chain(quantum_state_t* state,
+                                   const SyndromeVertex* v1,
+                                   const SyndromeVertex* v2) {
+    if (!state || !v1 || !v2) return false;
+
+    // Calculate Manhattan distance path
+    size_t dx = (v1->x > v2->x) ? (v1->x - v2->x) : (v2->x - v1->x);
+    size_t dy = (v1->y > v2->y) ? (v1->y - v2->y) : (v2->y - v1->y);
+    size_t dz = (v1->z > v2->z) ? (v1->z - v2->z) : (v2->z - v1->z);
+
+    size_t path_length = dx + dy + dz;
+    if (path_length == 0) return true;  // Same vertex, no correction needed
+
+    // Allocate path arrays
+    size_t* path_x = malloc(path_length * sizeof(size_t));
+    size_t* path_y = malloc(path_length * sizeof(size_t));
+    size_t* path_z = malloc(path_length * sizeof(size_t));
+
+    if (!path_x || !path_y || !path_z) {
+        free(path_x);
+        free(path_y);
+        free(path_z);
+        return false;
+    }
+
+    // Generate the correction path
+    generate_correction_path(v1, v2, path_x, path_y, path_z, path_length);
+
+    // Apply corrections along the path
+    bool success = true;
+    for (size_t i = 0; i < path_length && success; i++) {
+        success = apply_correction_operator(state, path_x[i], path_y[i], path_z[i]);
+    }
+
+    free(path_x);
+    free(path_y);
+    free(path_z);
+
+    return success;
+}
 
 // Internal matching state
 typedef struct {
@@ -185,99 +282,12 @@ static void update_dual_variables(const MatchingGraph* graph,
     }
 }
 
-bool find_minimum_weight_matching(MatchingGraph* graph,
-                                const SyndromeConfig* config) {
-    if (!graph || !config || graph->num_vertices == 0) {
-        return false;
-    }
+// NOTE: find_minimum_weight_matching is implemented in error_syndrome.c
+// with the full Blossom algorithm for minimum weight perfect matching.
+// This avoids code duplication and uses the superior implementation.
 
-    // Initialize matching state
-    MatchingState* state = init_matching_state(graph);
-    if (!state) {
-        return false;
-    }
+// verify_syndrome_matching() - Canonical implementation in error_syndrome.c
+// (removed: canonical version has chain validation and better verification)
 
-    // Main matching loop
-    for (size_t iter = 0; iter < config->max_matching_iterations; iter++) {
-        bool all_matched = true;
-
-        // Find unmatched vertex
-        for (size_t i = 0; i < graph->num_vertices; i++) {
-            if (!state->matched[i]) {
-                all_matched = false;
-
-                // Try to find augmenting path
-                if (find_augmenting_path(graph, state, i)) {
-                    // Update matching
-                    size_t end_vertex = 0;
-                    for (size_t j = 0; j < graph->num_vertices; j++) {
-                        if (!state->matched[j] && state->in_queue[j]) {
-                            end_vertex = j;
-                            break;
-                        }
-                    }
-                    augment_matching(graph, state, end_vertex);
-                }
-                else {
-                    // Update dual variables
-                    update_dual_variables(graph, state);
-                }
-
-                break;
-            }
-        }
-
-        if (all_matched) {
-            cleanup_matching_state(state);
-            return true;
-        }
-    }
-
-    cleanup_matching_state(state);
-    return false;
-}
-
-bool verify_syndrome_matching(const MatchingGraph* graph,
-                            const quantum_state* state) {
-    if (!graph || !state) {
-        return false;
-    }
-
-    // Verify all syndromes are matched
-    for (size_t i = 0; i < graph->num_vertices; i++) {
-        const SyndromeVertex* vertex = &graph->vertices[i];
-        if (!vertex->is_boundary && !is_vertex_matched(graph, vertex)) {
-            return false;
-        }
-    }
-
-    // Verify matching weight is minimal
-    double total_weight = calculate_matching_weight(graph);
-    if (total_weight < 0.0) {
-        return false;
-    }
-
-    return true;
-}
-
-bool apply_matching_correction(const MatchingGraph* graph,
-                             quantum_state* state) {
-    if (!graph || !state) {
-        return false;
-    }
-
-    // Apply correction operations along matched edges
-    for (size_t i = 0; i < graph->num_edges; i++) {
-        const SyndromeEdge* edge = &graph->edges[i];
-        if (is_edge_in_matching(graph, edge)) {
-            // Calculate and apply correction chain
-            if (!apply_correction_chain(state,
-                                     edge->vertex1,
-                                     edge->vertex2)) {
-                return false;
-            }
-        }
-    }
-
-    return true;
-}
+// apply_matching_correction() - Canonical implementation in error_syndrome.c
+// (removed: duplicate with less complete chain validation)

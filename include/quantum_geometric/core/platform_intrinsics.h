@@ -133,6 +133,30 @@
     #define QGT_SIMD_ALIGNED
 #endif
 
+// Visibility and optimization attributes
+#if defined(__GNUC__) || defined(__clang__)
+    #define QGT_PUBLIC __attribute__((visibility("default")))
+    #define QGT_HIDDEN __attribute__((visibility("hidden")))
+    #define QGT_HOT __attribute__((hot))
+    #define QGT_COLD __attribute__((cold))
+    #define QGT_VECTORIZE __attribute__((optimize("tree-vectorize")))
+    #define QGT_NOINLINE __attribute__((noinline))
+#elif defined(_MSC_VER)
+    #define QGT_PUBLIC __declspec(dllexport)
+    #define QGT_HIDDEN
+    #define QGT_HOT
+    #define QGT_COLD
+    #define QGT_VECTORIZE
+    #define QGT_NOINLINE __declspec(noinline)
+#else
+    #define QGT_PUBLIC
+    #define QGT_HIDDEN
+    #define QGT_HOT
+    #define QGT_COLD
+    #define QGT_VECTORIZE
+    #define QGT_NOINLINE
+#endif
+
 // Prefetch hints
 #if defined(__GNUC__) || defined(__clang__)
     #define QGT_PREFETCH_READ(addr) __builtin_prefetch((addr), 0, 3)

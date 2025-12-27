@@ -17,11 +17,15 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <pthread.h>
+
 #include <math.h>
 
 #include "quantum_geometric/core/quantum_types.h"
 #include "quantum_geometric/core/quantum_circuit_types.h"
 #include "quantum_geometric/hardware/quantum_hardware_types.h"
+
+// Note: We do NOT include quantum_hardware_abstraction.h here to avoid
+// type conflicts with HardwareOptimizations defined there
 
 #ifdef __cplusplus
 extern "C" {
@@ -44,14 +48,7 @@ extern "C" {
 #define RIGETTI_CZ_ERROR 0.01
 
 // ============================================================================
-// Note on Types:
-// - quantum_circuit: defined in quantum_circuit_types.h
-// - quantum_gate_t: defined in quantum_types.h (detailed gate structure)
-// - QuantumGate: defined in quantum_hardware_types.h (simplified gate structure)
-// ============================================================================
-
-// ============================================================================
-// Error Mitigation Types
+// Type Definitions
 // ============================================================================
 
 /**
@@ -105,15 +102,17 @@ typedef struct ExtrapolationData {
 } ExtrapolationData;
 
 /**
- * @brief Hardware optimizations context
+ * @brief Hardware context for error mitigation
+ * Note: Named MitigationHardwareContext to avoid conflict with
+ * HardwareOptimizations in quantum_hardware_abstraction.h
  */
-typedef struct HardwareOptimizations {
+typedef struct MitigationHardwareContext {
     BackendType backend_type;         // Type of quantum backend
     HardwareErrorRates error_rates;   // Hardware error rates
     bool calibration_valid;           // Whether calibration is current
     uint64_t last_calibration;        // Timestamp of last calibration
     void* backend_specific;           // Backend-specific optimization data
-} HardwareOptimizations;
+} MitigationHardwareContext;
 
 /**
  * @brief Distributed error tracking configuration
@@ -142,6 +141,8 @@ typedef struct ErrorStatsMessage {
 
 /**
  * @brief Rigetti backend configuration for error mitigation
+ * Note: Named RigettiMitigationConfig to avoid conflict with
+ * RigettiConfig in quantum_backend_types.h (API connection config)
  */
 typedef struct RigettiMitigationConfig {
     double symmetry_threshold;        // Threshold for symmetry verification
@@ -153,7 +154,8 @@ typedef struct RigettiMitigationConfig {
 } RigettiMitigationConfig;
 
 /**
- * @brief Quantum backend abstraction for error mitigation
+ * @brief Backend abstraction for error mitigation
+ * Note: Named MitigationBackend to avoid conflict with other backend types
  */
 typedef struct MitigationBackend {
     BackendType type;                 // Backend type
@@ -163,7 +165,8 @@ typedef struct MitigationBackend {
 } MitigationBackend;
 
 /**
- * @brief Quantum circuit execution result for error mitigation
+ * @brief Circuit execution result for error mitigation
+ * Note: Named MitigationResult to avoid conflict with other result types
  */
 typedef struct MitigationResult {
     double expectation_value;         // Expectation value
@@ -179,6 +182,10 @@ typedef struct MitigationResult {
 
 /**
  * @brief Initialize error mitigation system
+ * @param backend_type Backend type string ("ibm", "rigetti", "ionq", "dwave")
+ * @param num_qubits Number of qubits in the system
+ * @param distributed_mode Enable distributed error tracking
+ * @return Error mitigation configuration or NULL on failure
  */
 ErrorMitigationConfig* init_error_mitigation(
     const char* backend_type,
@@ -187,21 +194,28 @@ ErrorMitigationConfig* init_error_mitigation(
 
 /**
  * @brief Clean up error mitigation resources
+ * @param config Error mitigation configuration to clean up
  */
 void cleanup_error_mitigation(ErrorMitigationConfig* config);
 
 /**
- * @brief Initialize hardware optimizations
+ * @brief Initialize mitigation hardware context
+ * @param backend_type Backend type string
+ * @return Mitigation hardware context or NULL on failure
  */
-HardwareOptimizations* init_hardware_optimizations(const char* backend_type);
+MitigationHardwareContext* init_mitigation_hardware_context(const char* backend_type);
 
 /**
- * @brief Clean up hardware optimizations
+ * @brief Clean up mitigation hardware context
+ * @param ctx Mitigation hardware context to clean up
  */
-void cleanup_hardware_optimizations(HardwareOptimizations* hw_opts);
+void cleanup_mitigation_hardware_context(MitigationHardwareContext* ctx);
 
 /**
  * @brief Initialize distributed error tracking
+ * @param backend_type Backend type string
+ * @param config Distributed configuration
+ * @return 0 on success, non-zero on failure
  */
 int init_distributed_error_tracking(const char* backend_type,
                                     const DistributedConfig* config);
@@ -215,25 +229,58 @@ void cleanup_distributed_error_tracking(void);
 // Extrapolation Data Management
 // ============================================================================
 
+/**
+ * @brief Initialize extrapolation data structure
+ * @return Extrapolation data or NULL on failure
+ */
 ExtrapolationData* init_extrapolation(void);
+
+/**
+ * @brief Clean up extrapolation data
+ * @param data Extrapolation data to clean up
+ */
 void cleanup_extrapolation_data(ExtrapolationData* data);
 
 // ============================================================================
 // Error Mitigation Methods
 // ============================================================================
 
+/**
+ * @brief Zero-noise extrapolation
+ * @param circuit Quantum circuit to execute
+ * @param backend Mitigation backend
+ * @param config Mitigation configuration
+ * @param uncertainty Output uncertainty estimate
+ * @return Extrapolated expectation value
+ */
 double zero_noise_extrapolation(
     const quantum_circuit* circuit,
     const MitigationBackend* backend,
     const RigettiMitigationConfig* config,
     double* uncertainty);
 
+/**
+ * @brief Probabilistic error cancellation
+ * @param circuit Quantum circuit to execute
+ * @param backend Mitigation backend
+ * @param config Mitigation configuration
+ * @param uncertainty Output uncertainty estimate
+ * @return Mitigated expectation value
+ */
 double probabilistic_error_cancellation(
     const quantum_circuit* circuit,
     const MitigationBackend* backend,
     const RigettiMitigationConfig* config,
     double* uncertainty);
 
+/**
+ * @brief Symmetry verification
+ * @param circuit Quantum circuit to execute
+ * @param backend Mitigation backend
+ * @param config Mitigation configuration
+ * @param uncertainty Output uncertainty estimate
+ * @return Verified expectation value
+ */
 double symmetry_verification(
     const quantum_circuit* circuit,
     const MitigationBackend* backend,
@@ -244,30 +291,75 @@ double symmetry_verification(
 // Error Tracking and Adaptation
 // ============================================================================
 
+/**
+ * @brief Adapt error rates based on tracking statistics
+ * @param rates Hardware error rates to update
+ * @param stats Error tracking statistics
+ * @param config Error mitigation configuration
+ */
 void adapt_error_rates(
     HardwareErrorRates* rates,
     const ErrorTrackingStats* stats,
     const ErrorMitigationConfig* config);
 
+/**
+ * @brief Update error tracking with new measurement
+ * @param stats Error tracking statistics to update
+ * @param measured_error Measured error value
+ * @param config Error mitigation configuration
+ */
 void update_error_tracking(
     ErrorTrackingStats* stats,
     double measured_error,
     const ErrorMitigationConfig* config);
 
+/**
+ * @brief Get current error statistics
+ * @param backend Mitigation backend
+ * @param config Error mitigation configuration
+ * @return Copy of current error statistics or NULL on failure
+ */
 ErrorTrackingStats* get_error_stats(
     const MitigationBackend* backend,
     const ErrorMitigationConfig* config);
 
+/**
+ * @brief Broadcast error statistics to distributed nodes
+ * @param stats Error statistics to broadcast
+ */
 void broadcast_error_stats(const ErrorTrackingStats* stats);
+
+/**
+ * @brief Broadcast message to all nodes
+ * @param msg Message to broadcast
+ * @param size Message size
+ */
 void broadcast_to_nodes(const void* msg, size_t size);
 
 // ============================================================================
 // Circuit Operations for Error Mitigation
 // ============================================================================
 
+/**
+ * @brief Copy a circuit for error mitigation
+ * @param circuit Circuit to copy
+ * @return Copy of the circuit or NULL on failure
+ */
 quantum_circuit* copy_circuit_for_mitigation(const quantum_circuit* circuit);
+
+/**
+ * @brief Clean up a mitigation circuit
+ * @param circuit Circuit to clean up
+ */
 void cleanup_mitigation_circuit(quantum_circuit* circuit);
 
+/**
+ * @brief Submit a circuit for mitigated execution
+ * @param backend Mitigation backend
+ * @param circuit Circuit to execute
+ * @param result Output result
+ * @return 0 on success, non-zero on failure
+ */
 int submit_mitigated_circuit(
     const MitigationBackend* backend,
     const quantum_circuit* circuit,

@@ -1,19 +1,15 @@
 #ifndef QUANTUM_STABILIZER_H
 #define QUANTUM_STABILIZER_H
 
+#include "quantum_geometric/core/quantum_types.h"
 #include "quantum_geometric/core/quantum_geometric_types.h"
 #include "quantum_geometric/core/quantum_complex.h"
 #include "quantum_geometric/core/error_codes.h"
 #include <stdbool.h>
 #include <stddef.h>
 
-// Pauli operator types
-typedef enum {
-    PAULI_I,      // Identity operator
-    PAULI_X,      // Pauli X operator
-    PAULI_Y,      // Pauli Y operator
-    PAULI_Z       // Pauli Z operator
-} pauli_type_t;
+// Pauli types (pauli_type_t, PauliOperator, PAULI_I/X/Y/Z) are defined
+// in quantum_types.h which is included above
 
 // Pauli operator structure
 typedef struct {
@@ -22,12 +18,12 @@ typedef struct {
     ComplexFloat coefficient;  // Operator coefficient
 } quantum_pauli_t;
 
-// Stabilizer types
+// Stabilizer types for quantum_stabilizer_t
 typedef enum {
-    STABILIZER_X,      // Pauli X stabilizer
-    STABILIZER_Y,      // Pauli Y stabilizer
-    STABILIZER_Z,      // Pauli Z stabilizer
-    STABILIZER_CUSTOM  // Custom stabilizer operator
+    STAB_TYPE_X,       // Pauli X stabilizer
+    STAB_TYPE_Y,       // Pauli Y stabilizer
+    STAB_TYPE_Z,       // Pauli Z stabilizer
+    STAB_TYPE_CUSTOM   // Custom stabilizer operator
 } stabilizer_type_t;
 
 // Stabilizer structure

@@ -76,6 +76,11 @@ bool cpu_has_feature(unsigned int feature);
 // Get CPU cache information
 void get_cpu_cache_info(unsigned int level, unsigned int* size, unsigned int* line_size, unsigned int* associativity);
 
+// Get all CPU features at once (for capability detection)
+void get_cpu_features(unsigned int* feature_flags, bool* has_fma, bool* has_avx,
+                     bool* has_avx2, bool* has_avx512, bool* has_neon,
+                     bool* has_sve, bool* has_amx);
+
 #ifdef __cplusplus
 }
 #endif

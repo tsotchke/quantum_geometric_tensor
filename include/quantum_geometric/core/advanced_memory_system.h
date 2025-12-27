@@ -131,17 +131,24 @@ void* memory_reallocate(advanced_memory_system_t* system,
                        void* ptr,
                        size_t new_size);
 
-// Memory pool functions
-void* create_memory_pool(advanced_memory_system_t* system,
-                        const pool_config_t* config);
-void destroy_memory_pool(advanced_memory_system_t* system,
-                        void* pool);
-void* pool_allocate(advanced_memory_system_t* system,
-                   void* pool,
-                   size_t size);
-void pool_free(advanced_memory_system_t* system,
-               void* pool,
-               void* ptr);
+// Memory pool functions (advanced version - takes system parameter)
+// For simple pool operations, use memory_pool.h instead
+void* advanced_create_memory_pool(advanced_memory_system_t* system,
+                                  const pool_config_t* config);
+void advanced_destroy_memory_pool(advanced_memory_system_t* system,
+                                  void* pool);
+void* advanced_pool_allocate(advanced_memory_system_t* system,
+                             void* pool,
+                             size_t size);
+void advanced_pool_free(advanced_memory_system_t* system,
+                        void* pool,
+                        void* ptr);
+
+// Convenience wrappers (used by tree_tensor_network, unified_memory)
+void* ams_create_memory_pool(advanced_memory_system_t* system, const pool_config_t* config);
+void ams_destroy_memory_pool(advanced_memory_system_t* system, void* pool);
+void* ams_pool_allocate(advanced_memory_system_t* system, void* pool, size_t size);
+void ams_pool_free(advanced_memory_system_t* system, void* pool, void* ptr);
 
 // Memory layout functions
 MemoryLayout* create_memory_layout(MemoryPool* pool,

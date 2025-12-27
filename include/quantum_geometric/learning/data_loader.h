@@ -6,12 +6,12 @@
 #include "quantum_geometric/hardware/quantum_hardware_types.h"
 #include "quantum_geometric/core/quantum_complex.h"
 
-// Performance metrics structure
+// Data loader specific performance metrics
 typedef struct {
     double load_time;        // Time taken to load data
     size_t memory_usage;     // Memory usage in bytes
     double throughput;       // Data throughput in samples/second
-} performance_metrics_t;
+} data_loader_metrics_t;
 
 // Dataset format types
 typedef enum {
@@ -80,6 +80,7 @@ typedef struct {
 } dataset_split_t;
 
 // Function declarations
+dataset_t* allocate_dataset(size_t num_samples, size_t feature_dim, size_t num_classes, memory_config_t* memory_config);
 dataset_t* quantum_load_dataset(const char* path, dataset_config_t config);
 dataset_t* quantum_create_synthetic_data(size_t num_samples, size_t feature_dim, size_t num_classes, int type);
 dataset_split_t quantum_split_dataset(dataset_t* dataset, float train_ratio, float val_ratio, bool shuffle, bool stratify);
@@ -88,7 +89,7 @@ void quantum_dataset_destroy(dataset_t* dataset);
 void quantum_dataset_split_destroy(dataset_split_t* split);
 bool quantum_configure_performance(data_performance_config_t config);
 bool quantum_configure_memory(memory_config_t config);
-bool quantum_get_performance_metrics(performance_metrics_t* metrics);
+bool quantum_get_data_loader_metrics(data_loader_metrics_t* metrics);
 bool quantum_reset_performance_metrics(void);
 
 // Additional quantum matrix operations

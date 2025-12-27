@@ -87,11 +87,14 @@ OptimizationContext* init_classical_optimizer(optimizer_type_t type,
 void cleanup_classical_optimizer(OptimizationContext* optimizer);
 
 double compute_cross_entropy_loss(const double* outputs,
-                                const double* targets);
+                                const double* targets,
+                                size_t size);
 double compute_mse_loss(const double* outputs,
-                       const double* targets);
+                       const double* targets,
+                       size_t size);
 double compute_reconstruction_loss(const double* outputs,
-                                 const double* targets);
+                                 const double* targets,
+                                 size_t size);
 
 bool check_early_stopping(double validation_loss,
                          const TrainingConfig* config);

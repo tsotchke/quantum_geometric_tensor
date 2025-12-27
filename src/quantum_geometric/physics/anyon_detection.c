@@ -4,10 +4,10 @@
  */
 
 #include "quantum_geometric/physics/anyon_detection.h"
+#include "quantum_geometric/core/quantum_complex.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <complex.h>
 
 // Helper functions
 static bool allocate_grid(AnyonGrid* grid, size_t width, size_t height, size_t depth) {
@@ -54,45 +54,47 @@ static bool is_valid_config(const AnyonConfig* config) {
             config->charge_threshold >= 0.0);
 }
 
-static anyon_type_t detect_anyon_type(const QuantumState* qstate, size_t x, size_t y, size_t z,
-                                    double threshold) {
-    if (!qstate) return ANYON_NONE;
+static anyon_type_t detect_anyon_type(const quantum_state_t* qstate, size_t x, size_t y, size_t z,
+                                    size_t grid_width, size_t grid_height, double threshold) {
+    if (!qstate || !qstate->coordinates) return ANYON_NONE;
 
-    size_t idx = (z * qstate->width * qstate->width + y * qstate->width + x) * 2;
-    if (idx >= qstate->dimension * 2) return ANYON_NONE;
+    // Calculate linear index using grid dimensions
+    size_t idx = (z * grid_height * grid_width + y * grid_width + x) * 2;
+    if (idx + 1 >= qstate->dimension) return ANYON_NONE;
 
-    // Get amplitudes
-    double complex zero_amp = qstate->amplitudes[idx];     // |0⟩ amplitude
-    double complex one_amp = qstate->amplitudes[idx + 1];  // |1⟩ amplitude
+    // Get amplitudes as ComplexFloat
+    ComplexFloat zero_amp = qstate->coordinates[idx];     // |0⟩ amplitude
+    ComplexFloat one_amp = qstate->coordinates[idx + 1];  // |1⟩ amplitude
 
-    // Calculate probabilities
-    double p0 = cabs(zero_amp) * cabs(zero_amp);
-    double p1 = cabs(one_amp) * cabs(one_amp);
-    double phase = carg(one_amp) - carg(zero_amp);
+    // Calculate probabilities using ComplexFloat accessors
+    float p0 = complex_float_abs_squared(zero_amp);
+    float p1 = complex_float_abs_squared(one_amp);
+    float phase = complex_float_arg(one_amp) - complex_float_arg(zero_amp);
 
     // Detect anyon type based on state characteristics
-    if (p1 > threshold && fabs(phase) < 0.1) {
+    if (p1 > threshold && fabsf(phase) < 0.1f) {
         return ANYON_X;
     } else if (p0 > threshold && p1 > threshold) {
         return ANYON_Z;
-    } else if (p1 > threshold && fabs(phase - M_PI/2) < 0.1) {
+    } else if (p1 > threshold && fabsf(phase - (float)M_PI/2.0f) < 0.1f) {
         return ANYON_Y;
     }
 
     return ANYON_NONE;
 }
 
-static double calculate_charge(const QuantumState* qstate, size_t x, size_t y, size_t z) {
-    if (!qstate) return 0.0;
+static double calculate_charge(const quantum_state_t* qstate, size_t x, size_t y, size_t z,
+                              size_t grid_width, size_t grid_height) {
+    if (!qstate || !qstate->coordinates) return 0.0;
 
-    size_t idx = (z * qstate->width * qstate->width + y * qstate->width + x) * 2;
-    if (idx >= qstate->dimension * 2) return 0.0;
+    // Calculate linear index using grid dimensions
+    size_t idx = (z * grid_height * grid_width + y * grid_width + x) * 2;
+    if (idx + 1 >= qstate->dimension) return 0.0;
 
-    // Calculate charge based on state amplitudes
-    double complex zero_amp = qstate->amplitudes[idx];
-    double complex one_amp = qstate->amplitudes[idx + 1];
-    
-    return cabs(one_amp) * cabs(one_amp);  // Use excitation probability as charge
+    // Calculate charge based on state amplitudes using ComplexFloat
+    ComplexFloat one_amp = qstate->coordinates[idx + 1];
+
+    return (double)complex_float_abs_squared(one_amp);  // Use excitation probability as charge
 }
 
 static void update_velocities(AnyonState* state) {
@@ -180,57 +182,19 @@ static void apply_fusion_rules(AnyonGrid* grid) {
     }
 }
 
-// Public functions
-bool init_anyon_detection(AnyonState* state, const AnyonConfig* config) {
-    if (!state || !config || !is_valid_config(config)) {
-        return false;
-    }
+// init_anyon_detection() - Canonical implementation in anyon_operations.c
+// (removed: this version incorrectly set confidence=1.0, canonical uses confidence=0.0)
 
-    // Allocate grid
-    state->grid = malloc(sizeof(AnyonGrid));
-    if (!state->grid) {
-        return false;
-    }
+// cleanup_anyon_detection() - Canonical implementation in anyon_operations.c
+// (removed due to potential double-free bug with free_grid followed by free)
 
-    if (!allocate_grid(state->grid, config->grid_width,
-                      config->grid_height, config->grid_depth)) {
-        free(state->grid);
-        return false;
-    }
-
-    // Allocate position tracking array (maximum possible anyons)
-    size_t max_anyons = config->grid_width * config->grid_height * config->grid_depth;
-    state->last_positions = malloc(max_anyons * sizeof(AnyonPosition));
-    if (!state->last_positions) {
-        free_grid(state->grid);
-        free(state->grid);
-        return false;
-    }
-
-    // Initialize state
-    state->measurement_count = 0;
-    state->total_anyons = 0;
-
-    return true;
-}
-
-void cleanup_anyon_detection(AnyonState* state) {
-    if (!state) {
-        return;
-    }
-
-    if (state->grid) {
-        free_grid(state->grid);
-        free(state->grid);
-    }
-
-    free(state->last_positions);
-}
-
-bool detect_and_track_anyons(AnyonState* state, const QuantumState* qstate) {
+bool detect_and_track_anyons(AnyonState* state, const quantum_state* qstate) {
     if (!state || !state->grid || !qstate) {
         return false;
     }
+
+    // Cast to quantum_state_t* for internal use
+    const quantum_state_t* qs = (const quantum_state_t*)qstate;
 
     // Store previous positions for tracking
     AnyonPosition* prev_positions = NULL;
@@ -245,25 +209,29 @@ bool detect_and_track_anyons(AnyonState* state, const QuantumState* qstate) {
     // Reset anyon count
     state->total_anyons = 0;
 
+    // Get grid dimensions
+    size_t grid_width = state->grid->width;
+    size_t grid_height = state->grid->height;
+
     // Detect anyons in each cell
     for (size_t z = 0; z < state->grid->depth; z++) {
-        for (size_t y = 0; y < state->grid->height; y++) {
-            for (size_t x = 0; x < state->grid->width; x++) {
-                size_t idx = z * state->grid->height * state->grid->width +
-                            y * state->grid->width + x;
-                
-                // Detect anyon type
-                anyon_type_t type = detect_anyon_type(qstate, x, y, z, 0.1);
+        for (size_t y = 0; y < grid_height; y++) {
+            for (size_t x = 0; x < grid_width; x++) {
+                size_t idx = z * grid_height * grid_width +
+                            y * grid_width + x;
+
+                // Detect anyon type with grid dimensions
+                anyon_type_t type = detect_anyon_type(qs, x, y, z,
+                                                      grid_width, grid_height, 0.1);
                 state->grid->cells[idx].type = type;
 
                 if (type != ANYON_NONE) {
-                    // Calculate charge
-                    state->grid->cells[idx].charge = calculate_charge(qstate, x, y, z);
+                    // Calculate charge with grid dimensions
+                    state->grid->cells[idx].charge = calculate_charge(qs, x, y, z,
+                                                                      grid_width, grid_height);
 
                     // Store position
-                    if (state->total_anyons < state->grid->width *
-                                            state->grid->height *
-                                            state->grid->depth) {
+                    if (state->total_anyons < grid_width * grid_height * state->grid->depth) {
                         state->last_positions[state->total_anyons].x = x;
                         state->last_positions[state->total_anyons].y = y;
                         state->last_positions[state->total_anyons].z = z;

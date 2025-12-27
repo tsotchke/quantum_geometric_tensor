@@ -5,6 +5,16 @@
 #include <complex.h>
 #include <math.h>
 #include <string.h>
+#include <stdlib.h>
+
+// Stub for gpu_launch_kernel when not available
+static inline int gpu_launch_kernel_stub(GPUContext* ctx, const char* name, void* a, void* b, void* c, size_t n) {
+    (void)ctx; (void)name; (void)a; (void)b; (void)c; (void)n;
+    return -1;  // Not available, trigger CPU fallback
+}
+#define gpu_launch_kernel(ctx, name, a, b, c, n) gpu_launch_kernel_stub(ctx, name, a, b, c, n)
+
+// Use production distributed workload functions from workload_distribution.h
 
 // Forward declarations
 static void forward_leaf(double complex* output,
@@ -22,8 +32,6 @@ void convert_from_hierarchical(double complex* data, const HierarchicalMatrix* m
 
 #define MIN_MATRIX_SIZE 64
 #define SVD_TOLERANCE 1e-12
-
-static void synchronize_results(double complex* data, size_t n);
 
 // GPU context for memory management
 static GPUContext* gpu_ctx = NULL;
@@ -308,34 +316,53 @@ void generate_collocation_points(double complex* points, size_t n) {
         points[i + offset] = x + 0.0 * I; // Real points for now
     }
     
-    // Synchronize results across nodes
-    synchronize_results(points, n);
+    // Synchronize results across nodes using production distributed computing
+    synchronize_complex_results(points, n);
 }
 
-// Initialize stochastic sampler - O(1)
-void stochastic_sampler_init(StochasticSampler* sampler, size_t n) {
-    if (!sampler) return;
-    
-    sampler->size = n;
-    sampler->weights = malloc(n * sizeof(double complex));
-    sampler->points = malloc(n * sizeof(double complex));
+// Initialize hierarchical stochastic sampler (distinct from general stochastic_sampler_init)
+// This version uses hierarchical matrix representations for quantum operations
+int hierarchical_sampler_init(StochasticSampler* sampler,
+                             double (*log_prob)(const double*, size_t),
+                             void (*log_prob_grad)(const double*, size_t, double*),
+                             size_t dim) {
+    if (!sampler) return -1;
+
+    sampler->dim = dim;
+    sampler->size = dim;
+    sampler->log_prob = log_prob;
+    sampler->log_prob_grad = log_prob_grad;
+    sampler->weights = malloc(dim * sizeof(double complex));
+    sampler->points = malloc(dim * sizeof(double complex));
     sampler->optimized = false;
-    
-    if (sampler->weights && sampler->points) {
-        memset(sampler->weights, 0, n * sizeof(double complex));
-        memset(sampler->points, 0, n * sizeof(double complex));
+    sampler->state = NULL;
+
+    if (!sampler->weights || !sampler->points) {
+        free(sampler->weights);
+        free(sampler->points);
+        sampler->weights = NULL;
+        sampler->points = NULL;
+        return -1;
     }
+
+    memset(sampler->weights, 0, dim * sizeof(double complex));
+    memset(sampler->points, 0, dim * sizeof(double complex));
+    memset(&sampler->metrics, 0, sizeof(SamplingMetrics));
+    memset(&sampler->perf_metrics, 0, sizeof(PerformanceMetrics));
+
+    return 0;
 }
 
-// Cleanup stochastic sampler
-void stochastic_sampler_free(StochasticSampler* sampler) {
+// Cleanup hierarchical stochastic sampler (distinct from general stochastic_sampler_free)
+// This version also handles GPU resource cleanup
+void hierarchical_sampler_free(StochasticSampler* sampler) {
     if (sampler) {
         free(sampler->weights);
         free(sampler->points);
         sampler->weights = NULL;
         sampler->points = NULL;
     }
-    
+
     // Cleanup GPU resources
     if (gpu_ctx) {
         gpu_destroy_context(gpu_ctx);
@@ -344,8 +371,3 @@ void stochastic_sampler_free(StochasticSampler* sampler) {
     }
 }
 
-static void synchronize_results(double complex* data, size_t n) {
-    // MPI synchronization would go here
-    // For now, just ensure memory consistency
-    #pragma omp flush(data)
-}

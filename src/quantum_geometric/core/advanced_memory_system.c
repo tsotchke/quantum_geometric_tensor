@@ -562,19 +562,19 @@ void advanced_pool_free(advanced_memory_system_t* system, void* pool_ptr, void* 
 // API wrapper functions (match header declarations)
 // ============================================================================
 
-void* create_memory_pool(advanced_memory_system_t* system, const pool_config_t* config) {
+void* ams_create_memory_pool(advanced_memory_system_t* system, const pool_config_t* config) {
     return advanced_create_memory_pool(system, config);
 }
 
-void destroy_memory_pool(advanced_memory_system_t* system, void* pool) {
+void ams_destroy_memory_pool(advanced_memory_system_t* system, void* pool) {
     advanced_destroy_memory_pool(system, pool);
 }
 
-void* pool_allocate(advanced_memory_system_t* system, void* pool, size_t size) {
+void* ams_pool_allocate(advanced_memory_system_t* system, void* pool, size_t size) {
     return advanced_pool_allocate(system, pool, size);
 }
 
-void pool_free(advanced_memory_system_t* system, void* pool, void* ptr) {
+void ams_pool_free(advanced_memory_system_t* system, void* pool, void* ptr) {
     advanced_pool_free(system, pool, ptr);
 }
 

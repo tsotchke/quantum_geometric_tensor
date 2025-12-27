@@ -2,6 +2,7 @@
 #define TENSOR_NETWORK_OPERATIONS_H
 
 #include "quantum_geometric/core/quantum_geometric_types.h"
+#include "quantum_geometric/core/tensor_types.h"
 #include <stddef.h>
 #include <stdbool.h>
 
@@ -9,58 +10,16 @@
 extern "C" {
 #endif
 
-// Forward declarations
-struct tensor_node;
-struct tensor_network;
-typedef struct tensor_node tensor_node_t;
-typedef struct tensor_network tensor_network_t;
+// All core types (tensor_t, tensor_node_t, tensor_network_t, tensor_network_error_t,
+// tensor_network_metrics_t) are defined in tensor_types.h
 
-// Error handling
+// Contraction optimization strategies
 typedef enum {
-    TENSOR_NETWORK_SUCCESS = 0,
-    TENSOR_NETWORK_ERROR_INVALID_ARGUMENT = -1,
-    TENSOR_NETWORK_ERROR_MEMORY = -2,
-    TENSOR_NETWORK_ERROR_INVALID_STATE = -3,
-    TENSOR_NETWORK_ERROR_DIMENSION_MISMATCH = -4,
-    TENSOR_NETWORK_ERROR_NODE_NOT_FOUND = -5,
-    TENSOR_NETWORK_ERROR_CONNECTION_EXISTS = -6,
-    TENSOR_NETWORK_ERROR_NO_CONNECTION = -7,
-    TENSOR_NETWORK_ERROR_OPTIMIZATION_FAILED = -8,
-    TENSOR_NETWORK_ERROR_COMPUTATION = -9,
-    TENSOR_NETWORK_ERROR_NOT_IMPLEMENTED = -10
-} tensor_network_error_t;
-
-// Performance monitoring
-typedef struct tensor_network_metrics {
-    size_t num_contractions;
-    size_t peak_memory_usage;
-    double total_time;
-    double optimization_time;
-    double contraction_time;
-} tensor_network_metrics_t;
-
-// Internal node structure
-struct tensor_node {
-    ComplexFloat* data;
-    size_t* dimensions;
-    size_t num_dimensions;
-    size_t* connected_nodes;
-    size_t* connected_dims;
-    size_t num_connections;
-    size_t id;
-    bool is_valid;
-};
-
-// Internal network structure
-struct tensor_network {
-    tensor_node_t** nodes;
-    size_t num_nodes;
-    size_t capacity;
-    size_t next_id;
-    tensor_network_metrics_t metrics;
-    tensor_network_error_t last_error;
-    bool optimized;
-};
+    CONTRACTION_OPTIMIZE_NONE = 0,
+    CONTRACTION_OPTIMIZE_GREEDY = 1,
+    CONTRACTION_OPTIMIZE_DYNAMIC = 2,
+    CONTRACTION_OPTIMIZE_EXHAUSTIVE = 3
+} contraction_optimization_t;
 
 // Network creation and destruction
 tensor_network_t* create_tensor_network(void);
@@ -104,13 +63,6 @@ bool contract_full_network(tensor_network_t* network,
                          size_t* num_dims);
 
 // Optimization operations
-typedef enum {
-    CONTRACTION_OPTIMIZE_NONE = 0,
-    CONTRACTION_OPTIMIZE_GREEDY = 1,
-    CONTRACTION_OPTIMIZE_DYNAMIC = 2,
-    CONTRACTION_OPTIMIZE_EXHAUSTIVE = 3
-} contraction_optimization_t;
-
 bool optimize_contraction_order(tensor_network_t* network,
                               contraction_optimization_t method);
 

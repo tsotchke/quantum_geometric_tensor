@@ -1,6 +1,7 @@
 #include <quantum_geometric/learning/data_loader.h>
 #include <quantum_geometric/core/memory_pool.h>
 #include <quantum_geometric/core/quantum_geometric_core.h>
+#include <quantum_geometric/core/quantum_complex.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -152,7 +153,7 @@ dataset_t* quantum_load_mnist(dataset_config_t config) {
                ((num_cols & 0x000000FF) << 24);
 
     // Create dataset
-    dataset_t* dataset = allocate_dataset(num_images, num_rows * num_cols, 10);
+    dataset_t* dataset = allocate_dataset(num_images, num_rows * num_cols, 10, NULL);
     if (!dataset) {
         free(decompressed->data);
         free(decompressed);
@@ -163,7 +164,7 @@ dataset_t* quantum_load_mnist(dataset_config_t config) {
     unsigned char* image_data = (unsigned char*)(decompressed->data + 16);
     for (size_t i = 0; i < num_images; i++) {
         for (size_t j = 0; j < num_rows * num_cols; j++) {
-            dataset->features[i][j] = image_data[i * num_rows * num_cols + j] / 255.0f;
+            dataset->features[i][j] = complex_float_create(image_data[i * num_rows * num_cols + j] / 255.0f, 0.0f);
         }
     }
 
@@ -188,7 +189,7 @@ dataset_t* quantum_load_mnist(dataset_config_t config) {
     // Copy label data
     unsigned char* label_data = (unsigned char*)(decompressed->data + 8);
     for (size_t i = 0; i < num_images; i++) {
-        dataset->labels[i] = (float)label_data[i];
+        dataset->labels[i] = complex_float_create((float)label_data[i], 0.0f);
     }
 
     free(decompressed->data);
@@ -210,7 +211,7 @@ dataset_t* quantum_load_cifar10(dataset_config_t config) {
     // Create dataset structure
     const size_t num_images = 50000;  // Training set size
     const size_t image_size = 32 * 32 * 3;  // 32x32 RGB images
-    dataset_t* dataset = allocate_dataset(num_images, image_size, 10);
+    dataset_t* dataset = allocate_dataset(num_images, image_size, 10, NULL);
     if (!dataset) {
         free(compressed->data);
         free(compressed);
@@ -220,19 +221,19 @@ dataset_t* quantum_load_cifar10(dataset_config_t config) {
     // Extract and process data
     // Note: This is a simplified version. In practice, you'd need to properly
     // extract the tar.gz file and process the binary data format.
-    
+
     // Process each batch file
     unsigned char* data_ptr = (unsigned char*)compressed->data;
     size_t image_offset = 0;
-    
+
     for (size_t batch = 0; batch < 5; batch++) {
         for (size_t i = 0; i < 10000; i++) {
             // First byte is the label
-            dataset->labels[image_offset + i] = (float)*data_ptr++;
-            
+            dataset->labels[image_offset + i] = complex_float_create((float)*data_ptr++, 0.0f);
+
             // Next 3072 bytes are the image data (32x32x3)
             for (size_t j = 0; j < image_size; j++) {
-                dataset->features[image_offset + i][j] = *data_ptr++ / 255.0f;
+                dataset->features[image_offset + i][j] = complex_float_create(*data_ptr++ / 255.0f, 0.0f);
             }
         }
         image_offset += 10000;
@@ -282,7 +283,7 @@ dataset_t* quantum_load_uci(const char* name, dataset_config_t config) {
     }
 
     // Create dataset
-    dataset_t* dataset = allocate_dataset(num_rows, num_cols - 1, 0);
+    dataset_t* dataset = allocate_dataset(num_rows, num_cols - 1, 0, NULL);
     if (!dataset) {
         free(buffer->data);
         free(buffer);
@@ -299,13 +300,13 @@ dataset_t* quantum_load_uci(const char* name, dataset_config_t config) {
         char* token = strtok(line, ",");
         for (size_t j = 0; j < num_cols - 1; j++) {
             if (!token) break;
-            dataset->features[i][j] = atof(token);
+            dataset->features[i][j] = complex_float_create((float)atof(token), 0.0f);
             token = strtok(NULL, ",");
         }
 
         // Parse label
         if (token) {
-            dataset->labels[i] = atof(token);
+            dataset->labels[i] = complex_float_create((float)atof(token), 0.0f);
         }
 
         data = NULL; // For subsequent strtok calls

@@ -14,7 +14,7 @@
 #include <string.h>
 #include <math.h>
 
-#ifdef QGTL_HAS_MPI
+#ifdef QGT_HAS_MPI
 #include <mpi.h>
 #endif
 
@@ -79,7 +79,8 @@ static void qec_convert_from_hierarchical(double complex* data, const Hierarchic
 // Initialization and Cleanup
 // ============================================================================
 
-ErrorCorrectionConfig* init_error_correction(bool use_gpu, bool use_distributed) {
+// Renamed to avoid conflict with anyon_correction.c
+ErrorCorrectionConfig* init_hardware_error_correction(bool use_gpu, bool use_distributed) {
     if (qec_state.initialized) {
         return qec_state.config;
     }
@@ -109,7 +110,7 @@ ErrorCorrectionConfig* init_error_correction(bool use_gpu, bool use_distributed)
 
     // Initialize MPI if requested
     if (use_distributed) {
-#ifdef QGTL_HAS_MPI
+#ifdef QGT_HAS_MPI
         MPI_Comm_rank(MPI_COMM_WORLD, &qec_state.mpi_rank);
         MPI_Comm_size(MPI_COMM_WORLD, &qec_state.mpi_size);
 #else
@@ -663,7 +664,7 @@ bool validate_quantum_state(const double complex* state, size_t n) {
         bool local_valid = validate_local_state(state + offset, local_n);
 
         // Combine results
-#ifdef QGTL_HAS_MPI
+#ifdef QGT_HAS_MPI
         bool global_valid;
         MPI_Allreduce(&local_valid, &global_valid, 1, MPI_C_BOOL, MPI_LAND, MPI_COMM_WORLD);
         return global_valid;
@@ -693,26 +694,11 @@ static bool validate_local_state(const double complex* state, size_t n) {
 // Distributed Computing Support
 // ============================================================================
 
-size_t distribute_workload(size_t n) {
-    if (!qec_state.config || !qec_state.config->use_distributed || qec_state.mpi_size <= 1) {
-        return n;
-    }
-
-    // Simple equal distribution
-    return n / qec_state.mpi_size;
-}
-
-size_t get_local_offset(void) {
-    if (!qec_state.config || !qec_state.config->use_distributed || qec_state.mpi_size <= 1) {
-        return 0;
-    }
-
-    // Each rank processes a portion
-    return qec_state.mpi_rank * distribute_workload(1024);  // Placeholder
-}
+// distribute_workload() - Canonical implementation in distributed/workload_distribution.c
+// get_local_offset() - Canonical implementation in distributed/workload_distribution.c
 
 static void synchronize_results(double complex* data, size_t n) {
-#ifdef QGTL_HAS_MPI
+#ifdef QGT_HAS_MPI
     if (!qec_state.config || !qec_state.config->use_distributed) {
         return;
     }

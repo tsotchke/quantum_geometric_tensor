@@ -87,46 +87,8 @@ qgt_error_t geometric_validate_connection(const quantum_geometric_connection_t* 
     return QGT_SUCCESS;
 }
 
-// Validate geometric curvature
-qgt_error_t geometric_validate_curvature(const quantum_geometric_curvature_t* curvature,
-                                       geometric_validation_flags_t flags,
-                                       validation_result_t* result) {
-    QGT_CHECK_NULL(curvature);
-    QGT_CHECK_NULL(result);
-    
-    result->is_valid = true;
-    result->error_code = QGT_SUCCESS;
-    memset(result->error_message, 0, QGT_MAX_ERROR_MESSAGE_LENGTH);
-    
-    // Check first Bianchi identity if requested
-    if (flags & GEOMETRIC_VALIDATION_CHECK_BIANCHI) {
-        for (size_t i = 0; i < curvature->dimension; i++) {
-            for (size_t j = 0; j < curvature->dimension; j++) {
-                for (size_t k = 0; k < curvature->dimension; k++) {
-                    for (size_t l = 0; l < curvature->dimension; l++) {
-                        // R^i_jkl + R^i_klj + R^i_ljk = 0
-                        ComplexFloat sum = complex_float_add(
-                            curvature->components[(((i * curvature->dimension + j) * curvature->dimension + k) * curvature->dimension) + l],
-                            complex_float_add(
-                                curvature->components[(((i * curvature->dimension + k) * curvature->dimension + l) * curvature->dimension) + j],
-                                curvature->components[(((i * curvature->dimension + l) * curvature->dimension + j) * curvature->dimension) + k]
-                            )
-                        );
-                        if (complex_float_abs(sum) > QGT_VALIDATION_TOLERANCE) {
-                            result->is_valid = false;
-                            result->error_code = QGT_ERROR_VALIDATION_FAILED;
-                            snprintf(result->error_message, QGT_MAX_ERROR_MESSAGE_LENGTH,
-                                    "Curvature violates first Bianchi identity at indices (%zu,%zu,%zu,%zu)", i, j, k, l);
-                            return QGT_SUCCESS;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    return QGT_SUCCESS;
-}
+// geometric_validate_curvature() - Canonical implementation in quantum_geometric_operations.c
+// (removed: canonical has additional dimension and NULL pointer checks)
 
 // Validate geometric optimization
 qgt_error_t geometric_validate_optimization(const quantum_geometric_optimization_t* optimization,

@@ -13,6 +13,7 @@
 #include "quantum_geometric/core/tree_tensor_network.h"
 #include "quantum_geometric/core/error_codes.h"
 #include "quantum_geometric/core/quantum_complex.h"
+#include "quantum_geometric/physics/advanced_geometry_types.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -24,7 +25,7 @@
 #endif
 
 // Performance metrics tracking
-static performance_metrics_t g_performance_metrics = {0};
+static qgt_ai_performance_metrics_t g_performance_metrics = {0};
 static bool g_metrics_enabled = true;
 static double g_start_time = 0.0;
 
@@ -43,87 +44,156 @@ static double get_time_seconds(void) {
 // Core Tensor Operations
 // =============================================================================
 
-quantum_geometric_tensor* create_quantum_tensor(size_t dimension, size_t num_spins,
-                                                qgt_memory_type_t mem_type) {
+qgt_advanced_geometry_t* qgt_ai_create_tensor(size_t dimension, size_t num_spins,
+                                               qgt_memory_type_t mem_type) {
+    (void)mem_type; // Reserved for future memory type handling
+
     if (dimension == 0 || num_spins == 0) {
         return NULL;
     }
 
     double start = g_metrics_enabled ? get_time_seconds() : 0;
 
-    quantum_geometric_tensor* tensor = calloc(1, sizeof(quantum_geometric_tensor));
+    qgt_advanced_geometry_t* tensor = calloc(1, sizeof(qgt_advanced_geometry_t));
     if (!tensor) {
         return NULL;
     }
 
     tensor->dimension = dimension;
-    tensor->num_spins = num_spins;
+    tensor->spin_system.spin_dim = num_spins;
+    tensor->spin_system.num_states = dimension;
 
-    // Allocate spin states (complex amplitudes)
+    // Allocate spin states (complex amplitudes) - use ComplexDouble from advanced_geometry_types
     size_t state_size = dimension * num_spins;
-    tensor->spin_system.spin_states = calloc(state_size, sizeof(complex double));
+    tensor->spin_system.spin_states = calloc(state_size, sizeof(ComplexDouble));
     if (!tensor->spin_system.spin_states) {
         free(tensor);
         return NULL;
     }
 
-    // Allocate spin system metric tensor (num_spins x num_spins)
-    size_t metric_size = num_spins * num_spins;
-    tensor->spin_system.metric_tensor = calloc(metric_size, sizeof(double));
-    if (!tensor->spin_system.metric_tensor) {
+    // Allocate spin operators (num_spins x num_spins matrices)
+    size_t operator_size = num_spins * num_spins;
+    tensor->spin_system.spin_operators = calloc(operator_size, sizeof(ComplexDouble));
+    if (!tensor->spin_system.spin_operators) {
         free(tensor->spin_system.spin_states);
         free(tensor);
         return NULL;
     }
 
-    // Initialize spin metric as identity
+    // Initialize spin operators as identity
     for (size_t i = 0; i < num_spins; i++) {
-        tensor->spin_system.metric_tensor[i * num_spins + i] = 1.0;
+        tensor->spin_system.spin_operators[i * num_spins + i].real = 1.0;
+        tensor->spin_system.spin_operators[i * num_spins + i].imag = 0.0;
+    }
+
+    // Allocate spin-foam metric tensor for correlation decay
+    tensor->spin_system.spin_foam_metric = calloc(operator_size, sizeof(double));
+    if (!tensor->spin_system.spin_foam_metric) {
+        free(tensor->spin_system.spin_operators);
+        free(tensor->spin_system.spin_states);
+        free(tensor);
+        return NULL;
+    }
+
+    // Initialize spin-foam metric as identity (uncorrelated)
+    for (size_t i = 0; i < num_spins; i++) {
+        tensor->spin_system.spin_foam_metric[i * num_spins + i] = 1.0;
     }
 
     // Allocate geometric metric tensor (dimension x dimension)
     size_t geo_metric_size = dimension * dimension;
     tensor->geometry.metric_tensor = calloc(geo_metric_size, sizeof(double));
     if (!tensor->geometry.metric_tensor) {
-        free(tensor->spin_system.metric_tensor);
+        free(tensor->spin_system.spin_foam_metric);
+        free(tensor->spin_system.spin_operators);
         free(tensor->spin_system.spin_states);
         free(tensor);
         return NULL;
     }
+    tensor->geometry.metric_size = geo_metric_size;
 
     // Initialize geometric metric as identity (Euclidean by default)
     for (size_t i = 0; i < dimension; i++) {
         tensor->geometry.metric_tensor[i * dimension + i] = 1.0;
     }
 
+    // Allocate Kähler metric
+    tensor->geometry.kahler_metric = calloc(geo_metric_size, sizeof(ComplexDouble));
+    if (!tensor->geometry.kahler_metric) {
+        free(tensor->geometry.metric_tensor);
+        free(tensor->spin_system.spin_foam_metric);
+        free(tensor->spin_system.spin_operators);
+        free(tensor->spin_system.spin_states);
+        free(tensor);
+        return NULL;
+    }
+
+    // Initialize mutex for thread safety
+    tensor->mutex = calloc(1, sizeof(qgt_mutex_t));
+    if (tensor->mutex) {
+        qgt_mutex_init(tensor->mutex);
+    }
+
+    tensor->is_initialized = true;
+    tensor->flags = 0;
+
     if (g_metrics_enabled) {
         g_performance_metrics.conversion_time += get_time_seconds() - start;
-        g_performance_metrics.memory_usage += sizeof(quantum_geometric_tensor) +
-                                             state_size * sizeof(complex double) +
-                                             metric_size * sizeof(double) +
-                                             geo_metric_size * sizeof(double);
+        g_performance_metrics.memory_usage += sizeof(qgt_advanced_geometry_t) +
+                                             state_size * sizeof(ComplexDouble) +
+                                             operator_size * sizeof(ComplexDouble) +
+                                             geo_metric_size * sizeof(double) +
+                                             geo_metric_size * sizeof(ComplexDouble);
         g_performance_metrics.num_operations++;
     }
 
     return tensor;
 }
 
-void free_quantum_tensor(quantum_geometric_tensor* tensor) {
+void qgt_ai_free_tensor(qgt_advanced_geometry_t* tensor) {
     if (!tensor) return;
 
     if (tensor->spin_system.spin_states) {
         free(tensor->spin_system.spin_states);
     }
-    if (tensor->spin_system.metric_tensor) {
-        free(tensor->spin_system.metric_tensor);
+    if (tensor->spin_system.spin_operators) {
+        free(tensor->spin_system.spin_operators);
+    }
+    if (tensor->spin_system.spin_foam_metric) {
+        free(tensor->spin_system.spin_foam_metric);
     }
     if (tensor->geometry.metric_tensor) {
         free(tensor->geometry.metric_tensor);
     }
+    if (tensor->geometry.kahler_metric) {
+        free(tensor->geometry.kahler_metric);
+    }
+    if (tensor->geometry.ricci_tensor) {
+        free(tensor->geometry.ricci_tensor);
+    }
+    if (tensor->geometry.calabi_yau) {
+        free(tensor->geometry.calabi_yau);
+    }
+    if (tensor->geometry.g2_form) {
+        free(tensor->geometry.g2_form);
+    }
+    if (tensor->geometry.twistor_space) {
+        free(tensor->geometry.twistor_space);
+    }
+    if (tensor->geometry.connection_coeffs) {
+        free(tensor->geometry.connection_coeffs);
+    }
+    if (tensor->geometry.g2_structure) {
+        free(tensor->geometry.g2_structure);
+    }
+    if (tensor->mutex) {
+        qgt_mutex_destroy(tensor->mutex);
+        free(tensor->mutex);
+    }
     free(tensor);
 }
 
-void initialize_geometric_embeddings(quantum_geometric_tensor* tensor, qgt_embedding_type_t type) {
+void qgt_ai_initialize_geometric_embeddings(qgt_advanced_geometry_t* tensor, qgt_embedding_type_t type) {
     if (!tensor || !tensor->geometry.metric_tensor) return;
 
     size_t dim = tensor->dimension;
@@ -148,12 +218,13 @@ void initialize_geometric_embeddings(quantum_geometric_tensor* tensor, qgt_embed
             }
             // Initialize spin states on Poincaré ball (small values near origin)
             if (tensor->spin_system.spin_states) {
-                size_t state_size = tensor->dimension * tensor->num_spins;
+                size_t state_size = tensor->dimension * tensor->spin_system.spin_dim;
                 for (size_t i = 0; i < state_size; i++) {
                     // Small random values to stay in the ball
                     double r = 0.1 * ((double)rand() / RAND_MAX - 0.5);
                     double theta = 2.0 * M_PI * (double)rand() / RAND_MAX;
-                    tensor->spin_system.spin_states[i] = r * cexp(I * theta);
+                    tensor->spin_system.spin_states[i].real = r * cos(theta);
+                    tensor->spin_system.spin_states[i].imag = r * sin(theta);
                 }
             }
             break;
@@ -167,18 +238,19 @@ void initialize_geometric_embeddings(quantum_geometric_tensor* tensor, qgt_embed
             }
             // Initialize spin states on unit sphere
             if (tensor->spin_system.spin_states) {
-                size_t state_size = tensor->dimension * tensor->num_spins;
+                size_t state_size = tensor->dimension * tensor->spin_system.spin_dim;
                 // Normalize to unit sphere
                 double norm = 0.0;
                 for (size_t i = 0; i < state_size; i++) {
-                    tensor->spin_system.spin_states[i] = (double)rand() / RAND_MAX;
-                    norm += cabs(tensor->spin_system.spin_states[i]) *
-                           cabs(tensor->spin_system.spin_states[i]);
+                    tensor->spin_system.spin_states[i].real = (double)rand() / RAND_MAX;
+                    tensor->spin_system.spin_states[i].imag = 0.0;
+                    double mag = tensor->spin_system.spin_states[i].real;
+                    norm += mag * mag;
                 }
                 norm = sqrt(norm);
                 if (norm > 1e-10) {
                     for (size_t i = 0; i < state_size; i++) {
-                        tensor->spin_system.spin_states[i] /= norm;
+                        tensor->spin_system.spin_states[i].real /= norm;
                     }
                 }
             }
@@ -186,18 +258,19 @@ void initialize_geometric_embeddings(quantum_geometric_tensor* tensor, qgt_embed
     }
 }
 
-void initialize_random_state(quantum_geometric_tensor* tensor, unsigned int seed) {
+void qgt_ai_initialize_random_state(qgt_advanced_geometry_t* tensor, unsigned int seed) {
     if (!tensor || !tensor->spin_system.spin_states) return;
 
     srand(seed);
-    size_t state_size = tensor->dimension * tensor->num_spins;
+    size_t state_size = tensor->dimension * tensor->spin_system.spin_dim;
 
     // Generate random complex amplitudes
     double norm = 0.0;
     for (size_t i = 0; i < state_size; i++) {
         double re = (double)rand() / RAND_MAX - 0.5;
         double im = (double)rand() / RAND_MAX - 0.5;
-        tensor->spin_system.spin_states[i] = re + I * im;
+        tensor->spin_system.spin_states[i].real = re;
+        tensor->spin_system.spin_states[i].imag = im;
         norm += re * re + im * im;
     }
 
@@ -205,7 +278,8 @@ void initialize_random_state(quantum_geometric_tensor* tensor, unsigned int seed
     norm = sqrt(norm);
     if (norm > 1e-10) {
         for (size_t i = 0; i < state_size; i++) {
-            tensor->spin_system.spin_states[i] /= norm;
+            tensor->spin_system.spin_states[i].real /= norm;
+            tensor->spin_system.spin_states[i].imag /= norm;
         }
     }
 }
@@ -226,7 +300,7 @@ typedef struct {
     size_t bond_dim;
 } transformer_layer_internal_t;
 
-TreeTensorNetwork* create_transformer_layer(const ModelConfig* config) {
+TreeTensorNetwork* qgt_ai_create_transformer_layer(const ModelConfig* config) {
     if (!config || config->hidden_dim == 0 || config->num_heads == 0) {
         return NULL;
     }
@@ -376,9 +450,9 @@ void physicsml_ttn_destroy(TreeTensorNetwork* network) {
     }
 }
 
-TreeTensorNetwork* forward_geometric_network(TreeTensorNetwork** layers, size_t num_layers,
-                                            quantum_geometric_tensor* input,
-                                            qgt_forward_type_t type) {
+TreeTensorNetwork* qgt_ai_forward_geometric_network(TreeTensorNetwork** layers, size_t num_layers,
+                                                     qgt_advanced_geometry_t* input,
+                                                     qgt_forward_type_t type) {
     if (!layers || num_layers == 0 || !input) {
         return NULL;
     }
@@ -403,8 +477,8 @@ TreeTensorNetwork* forward_geometric_network(TreeTensorNetwork** layers, size_t 
     }
 
     // Convert input tensor to network node
-    size_t input_dims[2] = {input->dimension, input->num_spins};
-    size_t input_size = input->dimension * input->num_spins;
+    size_t input_dims[2] = {input->dimension, input->spin_system.spin_dim};
+    size_t input_size = input->dimension * input->spin_system.spin_dim;
     ComplexFloat* input_data = calloc(input_size, sizeof(ComplexFloat));
 
     if (!input_data) {
@@ -412,10 +486,10 @@ TreeTensorNetwork* forward_geometric_network(TreeTensorNetwork** layers, size_t 
         return NULL;
     }
 
-    // Copy complex double to ComplexFloat
+    // Copy ComplexDouble to ComplexFloat
     for (size_t i = 0; i < input_size; i++) {
-        input_data[i].real = (float)creal(input->spin_system.spin_states[i]);
-        input_data[i].imag = (float)cimag(input->spin_system.spin_states[i]);
+        input_data[i].real = (float)input->spin_system.spin_states[i].real;
+        input_data[i].imag = (float)input->spin_system.spin_states[i].imag;
     }
 
     tree_tensor_node_t* input_node = add_tree_tensor_node(output, input_data, input_dims, 2, false);
@@ -435,7 +509,7 @@ TreeTensorNetwork* forward_geometric_network(TreeTensorNetwork** layers, size_t 
         if (type == QGT_FORWARD_CHECKPOINTED && l > 0) {
             // For checkpointed forward, store intermediate states
             // This enables gradient checkpointing for memory efficiency
-            output->metrics.memory_usage += output->num_nodes * sizeof(tree_tensor_node_t);
+            output->metrics.peak_memory_usage += output->num_nodes * sizeof(tree_tensor_node_t);
         }
 
         // Apply layer transformation
@@ -467,14 +541,14 @@ TreeTensorNetwork* forward_geometric_network(TreeTensorNetwork** layers, size_t 
     return (TreeTensorNetwork*)output;
 }
 
-TreeTensorNetwork* forward_uncompressed_network(TreeTensorNetwork** layers, size_t num_layers,
-                                               quantum_geometric_tensor* input) {
+TreeTensorNetwork* qgt_ai_forward_uncompressed_network(TreeTensorNetwork** layers, size_t num_layers,
+                                                        qgt_advanced_geometry_t* input) {
     // Forward pass without tensor network compression
-    return forward_geometric_network(layers, num_layers, input, QGT_FORWARD_STANDARD);
+    return qgt_ai_forward_geometric_network(layers, num_layers, input, QGT_FORWARD_STANDARD);
 }
 
-void backward_geometric_network(TreeTensorNetwork* network, double loss,
-                               GeometricOptimizer* optimizer, qgt_backward_type_t type) {
+void qgt_ai_backward_geometric_network(TreeTensorNetwork* network, double loss,
+                                       GeometricOptimizer* optimizer, qgt_backward_type_t type) {
     if (!network || !optimizer) return;
 
     tree_tensor_network_t* ttn = (tree_tensor_network_t*)network;
@@ -551,7 +625,7 @@ void backward_geometric_network(TreeTensorNetwork* network, double loss,
 // Geometric Operations
 // =============================================================================
 
-double calculate_geometric_curvature(const TreeTensorNetwork* network) {
+double qgt_ai_calculate_geometric_curvature(const TreeTensorNetwork* network) {
     if (!network) return 0.0;
 
     const tree_tensor_network_t* ttn = (const tree_tensor_network_t*)network;
@@ -603,13 +677,13 @@ double calculate_geometric_curvature(const TreeTensorNetwork* network) {
     return edge_count > 0 ? total_curvature / edge_count : 0.0;
 }
 
-quantum_geometric_tensor* extract_geometric_properties(const TreeTensorNetwork* network) {
+qgt_advanced_geometry_t* qgt_ai_extract_geometric_properties(const TreeTensorNetwork* network) {
     if (!network) return NULL;
 
     const tree_tensor_network_t* ttn = (const tree_tensor_network_t*)network;
 
     // Create tensor to hold geometric properties
-    quantum_geometric_tensor* props = create_quantum_tensor(
+    qgt_advanced_geometry_t* props = qgt_ai_create_tensor(
         ttn->num_qubits > 0 ? ttn->num_qubits : 64,
         ttn->num_nodes > 0 ? ttn->num_nodes : 1,
         QGT_MEM_STANDARD
@@ -639,7 +713,7 @@ quantum_geometric_tensor* extract_geometric_properties(const TreeTensorNetwork* 
 
     // Extract spin states from network nodes
     if (ttn->root && ttn->root->data && props->spin_system.spin_states) {
-        size_t copy_size = props->dimension * props->num_spins;
+        size_t copy_size = props->dimension * props->spin_system.spin_dim;
         size_t node_size = 1;
         for (size_t d = 0; d < ttn->root->num_dimensions; d++) {
             node_size *= ttn->root->dimensions[d];
@@ -647,16 +721,16 @@ quantum_geometric_tensor* extract_geometric_properties(const TreeTensorNetwork* 
 
         size_t actual_copy = copy_size < node_size ? copy_size : node_size;
         for (size_t i = 0; i < actual_copy; i++) {
-            props->spin_system.spin_states[i] =
-                ttn->root->data[i].real + I * ttn->root->data[i].imag;
+            props->spin_system.spin_states[i].real = ttn->root->data[i].real;
+            props->spin_system.spin_states[i].imag = ttn->root->data[i].imag;
         }
     }
 
     return props;
 }
 
-double compare_metric_tensors(const quantum_geometric_tensor* a,
-                             const quantum_geometric_tensor* b) {
+double qgt_ai_compare_metric_tensors(const qgt_advanced_geometry_t* a,
+                                     const qgt_advanced_geometry_t* b) {
     if (!a || !b || !a->geometry.metric_tensor || !b->geometry.metric_tensor) {
         return -1.0;
     }
@@ -677,13 +751,13 @@ double compare_metric_tensors(const quantum_geometric_tensor* a,
     return sqrt(diff_norm);
 }
 
-double calculate_geometric_loss(const TreeTensorNetwork* output,
-                               const quantum_geometric_tensor* target,
-                               qgt_loss_type_t type) {
+double qgt_ai_calculate_geometric_loss(const TreeTensorNetwork* output,
+                                       const qgt_advanced_geometry_t* target,
+                                       qgt_loss_type_t type) {
     if (!output || !target) return -1.0;
 
     // Extract output tensor
-    quantum_geometric_tensor* out_tensor = extract_geometric_properties(output);
+    qgt_advanced_geometry_t* out_tensor = qgt_ai_extract_geometric_properties(output);
     if (!out_tensor) return -1.0;
 
     double loss = 0.0;
@@ -692,14 +766,17 @@ double calculate_geometric_loss(const TreeTensorNetwork* output,
         case QGT_LOSS_EUCLIDEAN: {
             // Standard MSE loss
             if (out_tensor->spin_system.spin_states && target->spin_system.spin_states) {
-                size_t size = out_tensor->dimension * out_tensor->num_spins;
-                size_t target_size = target->dimension * target->num_spins;
+                size_t size = out_tensor->dimension * out_tensor->spin_system.spin_dim;
+                size_t target_size = target->dimension * target->spin_system.spin_dim;
                 size_t min_size = size < target_size ? size : target_size;
 
                 for (size_t i = 0; i < min_size; i++) {
-                    complex double diff = out_tensor->spin_system.spin_states[i] -
-                                         target->spin_system.spin_states[i];
-                    loss += cabs(diff) * cabs(diff);
+                    double diff_real = out_tensor->spin_system.spin_states[i].real -
+                                       target->spin_system.spin_states[i].real;
+                    double diff_imag = out_tensor->spin_system.spin_states[i].imag -
+                                       target->spin_system.spin_states[i].imag;
+                    double diff_abs = sqrt(diff_real * diff_real + diff_imag * diff_imag);
+                    loss += diff_abs * diff_abs;
                 }
                 loss /= min_size;
             }
@@ -709,23 +786,25 @@ double calculate_geometric_loss(const TreeTensorNetwork* output,
         case QGT_LOSS_HYPERBOLIC: {
             // Hyperbolic distance loss (Poincaré ball model)
             if (out_tensor->spin_system.spin_states && target->spin_system.spin_states) {
-                size_t size = out_tensor->dimension * out_tensor->num_spins;
-                size_t target_size = target->dimension * target->num_spins;
+                size_t size = out_tensor->dimension * out_tensor->spin_system.spin_dim;
+                size_t target_size = target->dimension * target->spin_system.spin_dim;
                 size_t min_size = size < target_size ? size : target_size;
 
                 for (size_t i = 0; i < min_size; i++) {
-                    complex double u = out_tensor->spin_system.spin_states[i];
-                    complex double v = target->spin_system.spin_states[i];
+                    ComplexDouble u = out_tensor->spin_system.spin_states[i];
+                    ComplexDouble v = target->spin_system.spin_states[i];
 
-                    double norm_u = cabs(u);
-                    double norm_v = cabs(v);
+                    double norm_u = sqrt(u.real * u.real + u.imag * u.imag);
+                    double norm_v = sqrt(v.real * v.real + v.imag * v.imag);
 
                     // Clamp to ball
                     if (norm_u >= 1.0) norm_u = 0.99;
                     if (norm_v >= 1.0) norm_v = 0.99;
 
                     // Hyperbolic distance
-                    double diff_norm = cabs(u - v);
+                    double diff_real = u.real - v.real;
+                    double diff_imag = u.imag - v.imag;
+                    double diff_norm = sqrt(diff_real * diff_real + diff_imag * diff_imag);
                     double denom = (1 - norm_u * norm_u) * (1 - norm_v * norm_v);
                     if (denom > 1e-10) {
                         double delta = 2 * diff_norm * diff_norm / denom;
@@ -740,25 +819,27 @@ double calculate_geometric_loss(const TreeTensorNetwork* output,
         case QGT_LOSS_SPHERICAL: {
             // Spherical (great circle) distance loss
             if (out_tensor->spin_system.spin_states && target->spin_system.spin_states) {
-                size_t size = out_tensor->dimension * out_tensor->num_spins;
-                size_t target_size = target->dimension * target->num_spins;
+                size_t size = out_tensor->dimension * out_tensor->spin_system.spin_dim;
+                size_t target_size = target->dimension * target->spin_system.spin_dim;
                 size_t min_size = size < target_size ? size : target_size;
 
-                // Compute dot product
-                complex double dot = 0;
+                // Compute dot product (complex inner product)
+                double dot_real = 0, dot_imag = 0;
                 double norm_out = 0, norm_target = 0;
 
                 for (size_t i = 0; i < min_size; i++) {
-                    dot += conj(out_tensor->spin_system.spin_states[i]) *
-                           target->spin_system.spin_states[i];
-                    norm_out += cabs(out_tensor->spin_system.spin_states[i]) *
-                               cabs(out_tensor->spin_system.spin_states[i]);
-                    norm_target += cabs(target->spin_system.spin_states[i]) *
-                                  cabs(target->spin_system.spin_states[i]);
+                    ComplexDouble out_val = out_tensor->spin_system.spin_states[i];
+                    ComplexDouble tgt_val = target->spin_system.spin_states[i];
+                    // conj(out) * target = (out.real - i*out.imag) * (tgt.real + i*tgt.imag)
+                    dot_real += out_val.real * tgt_val.real + out_val.imag * tgt_val.imag;
+                    dot_imag += out_val.real * tgt_val.imag - out_val.imag * tgt_val.real;
+                    norm_out += out_val.real * out_val.real + out_val.imag * out_val.imag;
+                    norm_target += tgt_val.real * tgt_val.real + tgt_val.imag * tgt_val.imag;
                 }
 
                 if (norm_out > 1e-10 && norm_target > 1e-10) {
-                    double cos_angle = cabs(dot) / (sqrt(norm_out) * sqrt(norm_target));
+                    double dot_abs = sqrt(dot_real * dot_real + dot_imag * dot_imag);
+                    double cos_angle = dot_abs / (sqrt(norm_out) * sqrt(norm_target));
                     if (cos_angle > 1.0) cos_angle = 1.0;
                     if (cos_angle < -1.0) cos_angle = -1.0;
                     loss = acos(cos_angle);
@@ -768,7 +849,7 @@ double calculate_geometric_loss(const TreeTensorNetwork* output,
         }
     }
 
-    free_quantum_tensor(out_tensor);
+    qgt_ai_free_tensor(out_tensor);
     return loss;
 }
 
@@ -776,8 +857,8 @@ double calculate_geometric_loss(const TreeTensorNetwork* output,
 // Physical Constraint Operations
 // =============================================================================
 
-qgt_error_t apply_physical_constraints(quantum_geometric_tensor* state,
-                                       const PhysicalConstraints* constraints) {
+qgt_error_t qgt_ai_apply_physical_constraints(qgt_advanced_geometry_t* state,
+                                              const PhysicalConstraints* constraints) {
     if (!state || !constraints) {
         return QGT_ERROR_INVALID_PARAMETER;
     }
@@ -787,17 +868,18 @@ qgt_error_t apply_physical_constraints(quantum_geometric_tensor* state,
     // Apply energy constraint
     double energy = 0.0;
     if (state->spin_system.spin_states) {
-        size_t size = state->dimension * state->num_spins;
+        size_t size = state->dimension * state->spin_system.spin_dim;
         for (size_t i = 0; i < size; i++) {
-            energy += cabs(state->spin_system.spin_states[i]) *
-                     cabs(state->spin_system.spin_states[i]);
+            ComplexDouble s = state->spin_system.spin_states[i];
+            energy += s.real * s.real + s.imag * s.imag;
         }
 
         // Scale to meet energy threshold
         if (energy > constraints->energy_threshold && energy > 1e-10) {
             double scale = sqrt(constraints->energy_threshold / energy);
             for (size_t i = 0; i < size; i++) {
-                state->spin_system.spin_states[i] *= scale;
+                state->spin_system.spin_states[i].real *= scale;
+                state->spin_system.spin_states[i].imag *= scale;
             }
         }
     }
@@ -818,35 +900,45 @@ qgt_error_t apply_physical_constraints(quantum_geometric_tensor* state,
     // Apply gauge constraint - project to gauge-invariant subspace
     // For U(1) gauge, ensure total phase is fixed
     if (state->spin_system.spin_states && constraints->gauge_tolerance > 0) {
-        size_t size = state->dimension * state->num_spins;
-        complex double total_phase = 0;
+        size_t size = state->dimension * state->spin_system.spin_dim;
+        double total_phase_real = 0, total_phase_imag = 0;
 
         for (size_t i = 0; i < size; i++) {
-            if (cabs(state->spin_system.spin_states[i]) > 1e-10) {
-                total_phase += state->spin_system.spin_states[i] /
-                              cabs(state->spin_system.spin_states[i]);
+            ComplexDouble s = state->spin_system.spin_states[i];
+            double abs_s = sqrt(s.real * s.real + s.imag * s.imag);
+            if (abs_s > 1e-10) {
+                total_phase_real += s.real / abs_s;
+                total_phase_imag += s.imag / abs_s;
             }
         }
 
         // Remove global phase
-        if (cabs(total_phase) > 1e-10) {
-            complex double phase_factor = conj(total_phase) / cabs(total_phase);
+        double total_abs = sqrt(total_phase_real * total_phase_real +
+                               total_phase_imag * total_phase_imag);
+        if (total_abs > 1e-10) {
+            // phase_factor = conj(total_phase) / |total_phase|
+            double factor_real = total_phase_real / total_abs;
+            double factor_imag = -total_phase_imag / total_abs;
             for (size_t i = 0; i < size; i++) {
-                state->spin_system.spin_states[i] *= phase_factor;
+                ComplexDouble s = state->spin_system.spin_states[i];
+                // s * factor = (s.real + i*s.imag) * (factor_real + i*factor_imag)
+                state->spin_system.spin_states[i].real = s.real * factor_real - s.imag * factor_imag;
+                state->spin_system.spin_states[i].imag = s.real * factor_imag + s.imag * factor_real;
             }
         }
     }
 
     // Apply locality constraint - enforce exponential decay of correlations
-    if (state->spin_system.metric_tensor && constraints->locality_tolerance > 0) {
-        size_t n = state->num_spins;
+    // Uses the spin-foam metric tensor for correlation decay between spins
+    if (state->spin_system.spin_foam_metric && constraints->locality_tolerance > 0) {
+        size_t n = state->spin_system.spin_dim;
         for (size_t i = 0; i < n; i++) {
             for (size_t j = 0; j < n; j++) {
                 if (i != j) {
-                    // Exponential decay with distance
+                    // Exponential decay with distance for spin-foam correlations
                     double dist = abs((int)i - (int)j);
                     double decay = exp(-dist / (constraints->locality_tolerance * n));
-                    state->spin_system.metric_tensor[i * n + j] *= decay;
+                    state->spin_system.spin_foam_metric[i * n + j] *= decay;
                 }
             }
         }
@@ -860,18 +952,18 @@ qgt_error_t apply_physical_constraints(quantum_geometric_tensor* state,
     return QGT_SUCCESS;
 }
 
-double calculate_total_energy(const quantum_geometric_tensor* state) {
+double qgt_ai_calculate_total_energy(const qgt_advanced_geometry_t* state) {
     if (!state || !state->spin_system.spin_states) {
         return 0.0;
     }
 
     double energy = 0.0;
-    size_t size = state->dimension * state->num_spins;
+    size_t size = state->dimension * state->spin_system.spin_dim;
 
     // Kinetic energy from amplitudes
     for (size_t i = 0; i < size; i++) {
-        energy += cabs(state->spin_system.spin_states[i]) *
-                 cabs(state->spin_system.spin_states[i]);
+        ComplexDouble s = state->spin_system.spin_states[i];
+        energy += s.real * s.real + s.imag * s.imag;
     }
 
     // Add potential energy from metric curvature
@@ -887,7 +979,7 @@ double calculate_total_energy(const quantum_geometric_tensor* state) {
     return energy;
 }
 
-bool verify_symmetry_constraints(const quantum_geometric_tensor* state, double tolerance) {
+bool qgt_ai_verify_symmetry_constraints(const qgt_advanced_geometry_t* state, double tolerance) {
     if (!state || !state->geometry.metric_tensor) {
         return false;
     }
@@ -908,7 +1000,7 @@ bool verify_symmetry_constraints(const quantum_geometric_tensor* state, double t
     return true;
 }
 
-bool verify_causality_constraints(const quantum_geometric_tensor* state, double tolerance) {
+bool qgt_ai_verify_causality_constraints(const qgt_advanced_geometry_t* state, double tolerance) {
     if (!state || !state->geometry.metric_tensor) {
         return false;
     }
@@ -941,7 +1033,7 @@ bool verify_causality_constraints(const quantum_geometric_tensor* state, double 
 // Network Analysis
 // =============================================================================
 
-size_t count_network_parameters(const TreeTensorNetwork* network) {
+size_t qgt_ai_count_network_parameters(const TreeTensorNetwork* network) {
     if (!network) return 0;
 
     const tree_tensor_network_t* ttn = (const tree_tensor_network_t*)network;
@@ -981,32 +1073,35 @@ size_t count_network_parameters(const TreeTensorNetwork* network) {
     return total_params;
 }
 
-double compare_tensor_outputs(const TreeTensorNetwork* a,
-                             const quantum_geometric_tensor* b,
-                             double tolerance) {
+double qgt_ai_compare_tensor_outputs(const TreeTensorNetwork* a,
+                                     const qgt_advanced_geometry_t* b,
+                                     double tolerance) {
     if (!a || !b) return -1.0;
 
-    quantum_geometric_tensor* a_tensor = extract_geometric_properties(a);
+    qgt_advanced_geometry_t* a_tensor = qgt_ai_extract_geometric_properties(a);
     if (!a_tensor) return -1.0;
 
     // Compare spin states
     double max_diff = 0.0;
 
     if (a_tensor->spin_system.spin_states && b->spin_system.spin_states) {
-        size_t size_a = a_tensor->dimension * a_tensor->num_spins;
-        size_t size_b = b->dimension * b->num_spins;
+        size_t size_a = a_tensor->dimension * a_tensor->spin_system.spin_dim;
+        size_t size_b = b->dimension * b->spin_system.spin_dim;
         size_t min_size = size_a < size_b ? size_a : size_b;
 
         for (size_t i = 0; i < min_size; i++) {
-            double diff = cabs(a_tensor->spin_system.spin_states[i] -
-                              b->spin_system.spin_states[i]);
+            double diff_real = a_tensor->spin_system.spin_states[i].real -
+                               b->spin_system.spin_states[i].real;
+            double diff_imag = a_tensor->spin_system.spin_states[i].imag -
+                               b->spin_system.spin_states[i].imag;
+            double diff = sqrt(diff_real * diff_real + diff_imag * diff_imag);
             if (diff > max_diff) {
                 max_diff = diff;
             }
         }
     }
 
-    free_quantum_tensor(a_tensor);
+    qgt_ai_free_tensor(a_tensor);
 
     return max_diff <= tolerance ? max_diff : -1.0;
 }
@@ -1058,7 +1153,7 @@ static int g_mpi_rank = 0;
 static int g_mpi_size = 1;
 static bool g_mpi_initialized_by_us = false;
 
-void initialize_distributed_training(const DistributedConfig* config) {
+void qgt_ai_initialize_distributed_training(const DistributedConfig* config) {
     if (!config) return;
 
     g_distributed_config = *config;
@@ -1117,7 +1212,7 @@ void initialize_distributed_training(const DistributedConfig* config) {
     }
 }
 
-bool verify_distributed_consistency(const TreeTensorNetwork* network, double tolerance) {
+bool qgt_ai_verify_distributed_consistency(const TreeTensorNetwork* network, double tolerance) {
     if (!network || !g_distributed_initialized) {
         return true;  // Single-node is always consistent
     }
@@ -1189,7 +1284,8 @@ bool verify_distributed_consistency(const TreeTensorNetwork* network, double tol
 }
 
 // Helper function to synchronize gradients across ranks
-void synchronize_gradients(TreeTensorNetwork** layers, size_t num_layers) {
+// Renamed to avoid conflict with training_orchestrator.c
+void synchronize_tensor_network_gradients(TreeTensorNetwork** layers, size_t num_layers) {
     if (!g_distributed_initialized || g_mpi_size <= 1) return;
     if (!layers || num_layers == 0) return;
 
@@ -1240,7 +1336,8 @@ void synchronize_gradients(TreeTensorNetwork** layers, size_t num_layers) {
 }
 
 // Broadcast model parameters from rank 0 to all other ranks
-void broadcast_parameters(TreeTensorNetwork** layers, size_t num_layers) {
+// Renamed to avoid conflict with training_orchestrator.c
+void broadcast_tensor_network_parameters(TreeTensorNetwork** layers, size_t num_layers) {
     if (!g_distributed_initialized || g_mpi_size <= 1) return;
     if (!layers || num_layers == 0) return;
 
@@ -1276,15 +1373,8 @@ void broadcast_parameters(TreeTensorNetwork** layers, size_t num_layers) {
     }
 }
 
-// Get current MPI rank
-int get_distributed_rank(void) {
-    return g_mpi_rank;
-}
-
-// Get total number of ranks
-int get_distributed_size(void) {
-    return g_mpi_size;
-}
+// get_distributed_rank() - Canonical implementation in distributed/workload_distribution.c
+// get_distributed_size() - Canonical implementation in distributed/workload_distribution.c
 
 // =============================================================================
 // Optimization
@@ -1303,9 +1393,9 @@ typedef struct {
     size_t param_count;
 } optimizer_internal_t;
 
-GeometricOptimizer* create_geometric_optimizer(optimizer_type_t type,
-                                               const TrainingConfig* config,
-                                               qgt_update_type_t update_type) {
+GeometricOptimizer* qgt_ai_create_geometric_optimizer(optimizer_type_t type,
+                                                      const TrainingConfig* config,
+                                                      qgt_update_type_t update_type) {
     if (!config) return NULL;
 
     optimizer_internal_t* opt = calloc(1, sizeof(optimizer_internal_t));
@@ -1319,7 +1409,7 @@ GeometricOptimizer* create_geometric_optimizer(optimizer_type_t type,
     return (GeometricOptimizer*)opt;
 }
 
-void free_geometric_optimizer(GeometricOptimizer* optimizer) {
+void qgt_ai_free_geometric_optimizer(GeometricOptimizer* optimizer) {
     if (!optimizer) return;
 
     optimizer_internal_t* opt = (optimizer_internal_t*)optimizer;
@@ -1331,8 +1421,8 @@ void free_geometric_optimizer(GeometricOptimizer* optimizer) {
     free(opt);
 }
 
-void update_geometric_parameters(TreeTensorNetwork** layers, size_t num_layers,
-                                GeometricOptimizer* optimizer, qgt_update_type_t type) {
+void qgt_ai_update_geometric_parameters(TreeTensorNetwork** layers, size_t num_layers,
+                                        GeometricOptimizer* optimizer, qgt_update_type_t type) {
     if (!layers || num_layers == 0 || !optimizer) return;
 
     optimizer_internal_t* opt = (optimizer_internal_t*)optimizer;
@@ -1449,32 +1539,58 @@ void update_geometric_parameters(TreeTensorNetwork** layers, size_t num_layers,
 // Tensor Conversion Functions (from quantum_geometric_tensor_network.h)
 // =============================================================================
 
-PhysicsMLTensor* qgt_to_physicsml_tensor(const quantum_geometric_tensor* qgt) {
+// Internal definition of PhysicsMLTensor for conversion operations
+// This is the internal representation; external frameworks use opaque handles
+struct PhysicsMLTensor {
+    void* data;                     // Raw tensor data
+    size_t* shape;                  // Tensor shape
+    size_t ndim;                    // Number of dimensions
+    size_t total_size;              // Total number of elements
+    int dtype;                      // Data type identifier
+    void* backend_handle;           // Optional backend-specific handle
+};
+
+PhysicsMLTensor* qgt_to_physicsml_tensor(const qgt_advanced_geometry_t* qgt) {
     if (!qgt) return NULL;
 
-    // PhysicsMLTensor is an opaque type - allocate and populate
-    // This bridges our quantum geometric tensor to external physics ML frameworks
-
+    // PhysicsMLTensor bridges our quantum geometric tensor to external physics ML frameworks
     PhysicsMLTensor* pml = calloc(1, sizeof(PhysicsMLTensor));
     if (!pml) return NULL;
 
-    // The actual structure would depend on the physics ML framework being used
-    // This is a bridge interface
+    // Copy dimension information
+    pml->ndim = 2;  // [dimension, spin_dim]
+    pml->shape = calloc(2, sizeof(size_t));
+    if (pml->shape) {
+        pml->shape[0] = qgt->dimension;
+        pml->shape[1] = qgt->spin_system.spin_dim;
+        pml->total_size = qgt->dimension * qgt->spin_system.spin_dim;
+    }
+    pml->dtype = 2;  // COMPLEX64
+    pml->backend_handle = NULL;
+
+    // Copy spin state data if available
+    if (qgt->spin_system.spin_states && pml->total_size > 0) {
+        pml->data = calloc(pml->total_size, sizeof(ComplexDouble));
+        if (pml->data) {
+            memcpy(pml->data, qgt->spin_system.spin_states,
+                   pml->total_size * sizeof(ComplexDouble));
+        }
+    }
 
     return pml;
 }
 
-quantum_geometric_tensor* physicsml_to_qgt_tensor(const PhysicsMLTensor* pml) {
+qgt_advanced_geometry_t* physicsml_to_qgt_tensor(const PhysicsMLTensor* pml) {
     if (!pml) return NULL;
 
     // Create quantum tensor from physics ML tensor
     // Default reasonable dimensions if not available from pml
-    quantum_geometric_tensor* qgt = create_quantum_tensor(64, 8, QGT_MEM_STANDARD);
+    qgt_advanced_geometry_t* qgt = qgt_ai_create_tensor(64, 8, QGT_MEM_STANDARD);
 
     return qgt;
 }
 
-bool verify_tensor_consistency(const quantum_geometric_tensor* qgt,
+bool verify_tensor_consistency(const qgt_advanced_geometry_t* qgt,
                               const PhysicsMLTensor* pml,
                               double tolerance) {
     if (!qgt || !pml) return false;
@@ -1487,8 +1603,8 @@ bool verify_tensor_consistency(const quantum_geometric_tensor* qgt,
     return true;
 }
 
-TreeTensorNetwork* create_geometric_network(const quantum_geometric_tensor* qgt,
-                                           size_t bond_dimension) {
+TreeTensorNetwork* qgt_ai_create_geometric_network(const qgt_advanced_geometry_t* qgt,
+                                                   size_t bond_dimension) {
     if (!qgt || bond_dimension == 0) return NULL;
 
     tree_tensor_network_t* ttn = create_tree_tensor_network(
@@ -1501,14 +1617,14 @@ TreeTensorNetwork* create_geometric_network(const quantum_geometric_tensor* qgt,
 
     // Initialize network with quantum tensor data
     if (qgt->spin_system.spin_states) {
-        size_t dims[2] = {qgt->dimension, qgt->num_spins};
-        size_t size = qgt->dimension * qgt->num_spins;
+        size_t dims[2] = {qgt->dimension, qgt->spin_system.spin_dim};
+        size_t size = qgt->dimension * qgt->spin_system.spin_dim;
 
         ComplexFloat* data = calloc(size, sizeof(ComplexFloat));
         if (data) {
             for (size_t i = 0; i < size; i++) {
-                data[i].real = (float)creal(qgt->spin_system.spin_states[i]);
-                data[i].imag = (float)cimag(qgt->spin_system.spin_states[i]);
+                data[i].real = (float)qgt->spin_system.spin_states[i].real;
+                data[i].imag = (float)qgt->spin_system.spin_states[i].imag;
             }
             add_tree_tensor_node(ttn, data, dims, 2, false);
             free(data);
@@ -1540,8 +1656,8 @@ PhysicsMLTensor* physicsml_contract_network(const TreeTensorNetwork* network) {
     return pml;
 }
 
-int apply_geometric_constraints(TreeTensorNetwork* network,
-                               const quantum_geometric_tensor* qgt) {
+int qgt_ai_apply_geometric_constraints(TreeTensorNetwork* network,
+                                       const qgt_advanced_geometry_t* qgt) {
     if (!network || !qgt) return QGT_ERROR_INVALID_PARAMETER;
 
     tree_tensor_network_t* ttn = (tree_tensor_network_t*)network;
@@ -1572,15 +1688,15 @@ int apply_geometric_constraints(TreeTensorNetwork* network,
 // Performance Monitoring
 // =============================================================================
 
-bool get_performance_metrics(performance_metrics_t* metrics) {
+bool qgt_ai_get_performance_metrics(qgt_ai_performance_metrics_t* metrics) {
     if (!metrics) return false;
 
     *metrics = g_performance_metrics;
     return true;
 }
 
-bool reset_performance_metrics(void) {
-    memset(&g_performance_metrics, 0, sizeof(performance_metrics_t));
+bool qgt_ai_reset_performance_metrics(void) {
+    memset(&g_performance_metrics, 0, sizeof(qgt_ai_performance_metrics_t));
     return true;
 }
 
@@ -1588,65 +1704,67 @@ bool reset_performance_metrics(void) {
 // Constraint Verification Functions
 // =============================================================================
 
-bool verify_energy_constraint(const quantum_geometric_tensor* qgt,
-                             double threshold,
-                             double* energy) {
-    if (!qgt || !energy) return false;
+bool qgt_ai_verify_energy_constraint(const qgt_advanced_geometry_t* tensor,
+                                     double threshold,
+                                     double* energy) {
+    if (!tensor || !energy) return false;
 
-    *energy = calculate_total_energy(qgt);
+    *energy = qgt_ai_calculate_total_energy(tensor);
     return *energy <= threshold;
 }
 
-bool verify_symmetry_constraint(const quantum_geometric_tensor* qgt,
-                               double tolerance) {
-    return verify_symmetry_constraints(qgt, tolerance);
+bool qgt_ai_verify_symmetry_constraint(const qgt_advanced_geometry_t* tensor,
+                                       double tolerance) {
+    return qgt_ai_verify_symmetry_constraints(tensor, tolerance);
 }
 
-bool verify_conservation_constraint(const quantum_geometric_tensor* qgt,
-                                   double tolerance) {
-    if (!qgt || !qgt->spin_system.spin_states) return false;
+bool qgt_ai_verify_conservation_constraint(const qgt_advanced_geometry_t* tensor,
+                                           double tolerance) {
+    if (!tensor || !tensor->spin_system.spin_states) return false;
 
     // Check probability conservation (normalization)
     double total_prob = 0.0;
-    size_t size = qgt->dimension * qgt->num_spins;
+    size_t size = tensor->dimension * tensor->spin_system.spin_dim;
 
     for (size_t i = 0; i < size; i++) {
-        total_prob += cabs(qgt->spin_system.spin_states[i]) *
-                     cabs(qgt->spin_system.spin_states[i]);
+        ComplexDouble s = tensor->spin_system.spin_states[i];
+        total_prob += s.real * s.real + s.imag * s.imag;
     }
 
     return fabs(total_prob - 1.0) <= tolerance;
 }
 
-bool verify_gauge_constraint(const quantum_geometric_tensor* qgt,
-                            double tolerance) {
-    if (!qgt || !qgt->spin_system.spin_states) return false;
+bool qgt_ai_verify_gauge_constraint(const qgt_advanced_geometry_t* tensor,
+                                    double tolerance) {
+    if (!tensor || !tensor->spin_system.spin_states) return false;
 
     // Check U(1) gauge invariance - total phase should be removable
-    size_t size = qgt->dimension * qgt->num_spins;
+    size_t size = tensor->dimension * tensor->spin_system.spin_dim;
 
-    complex double total = 0;
+    double total_real = 0, total_imag = 0;
     for (size_t i = 0; i < size; i++) {
-        total += qgt->spin_system.spin_states[i];
+        total_real += tensor->spin_system.spin_states[i].real;
+        total_imag += tensor->spin_system.spin_states[i].imag;
     }
 
     // Gauge invariant if total is real (up to tolerance)
-    return fabs(cimag(total)) <= tolerance * cabs(total);
+    double total_abs = sqrt(total_real * total_real + total_imag * total_imag);
+    return fabs(total_imag) <= tolerance * total_abs;
 }
 
-bool verify_locality_constraint(const quantum_geometric_tensor* qgt,
-                               double tolerance) {
-    if (!qgt || !qgt->spin_system.metric_tensor) return false;
+bool qgt_ai_verify_locality_constraint(const qgt_advanced_geometry_t* tensor,
+                                       double tolerance) {
+    if (!tensor || !tensor->spin_system.spin_foam_metric) return false;
 
-    // Check that correlations decay with distance
-    size_t n = qgt->num_spins;
+    // Check that correlations decay with distance using spin-foam metric
+    size_t n = tensor->spin_system.spin_dim;
     double max_long_range = 0.0;
 
     for (size_t i = 0; i < n; i++) {
         for (size_t j = 0; j < n; j++) {
             int dist = abs((int)i - (int)j);
             if (dist > (int)(n / 4)) {  // "Long range"
-                double corr = fabs(qgt->spin_system.metric_tensor[i * n + j]);
+                double corr = fabs(tensor->spin_system.spin_foam_metric[i * n + j]);
                 if (corr > max_long_range) {
                     max_long_range = corr;
                 }
@@ -1657,7 +1775,9 @@ bool verify_locality_constraint(const quantum_geometric_tensor* qgt,
     return max_long_range <= tolerance;
 }
 
-bool verify_causality_constraint(const quantum_geometric_tensor* qgt,
-                                double tolerance) {
-    return verify_causality_constraints(qgt, tolerance);
+bool qgt_ai_verify_causality_constraint(const qgt_advanced_geometry_t* tensor,
+                                        double tolerance) {
+    return qgt_ai_verify_causality_constraints(tensor, tolerance);
 }
+
+

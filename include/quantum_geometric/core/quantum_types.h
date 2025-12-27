@@ -23,6 +23,106 @@ struct quantum_gate_t;
 struct computational_graph_t;
 struct quantum_geometric_state_t;
 struct geometric_processor_t;
+struct TopologicalAnyon;
+
+// ============================================================================
+// Topological Types for Error Correction
+// ============================================================================
+
+// 2D position on lattice
+typedef struct Position {
+    double x;
+    double y;
+} Position;
+
+// Path through lattice for anyon movement
+typedef struct Path {
+    Position* vertices;      // Array of positions along path
+    size_t length;          // Number of vertices in path
+    double total_distance;  // Total path length
+} Path;
+
+// ============================================================================
+// Pauli Operator Types (unified definition)
+// ============================================================================
+
+// Pauli operators - single source of truth for entire codebase
+#ifndef PAULI_OPERATOR_DEFINED
+#define PAULI_OPERATOR_DEFINED
+typedef enum {
+    PAULI_I = 0,    // Identity operator
+    PAULI_X = 1,    // Pauli X (bit flip)
+    PAULI_Y = 2,    // Pauli Y
+    PAULI_Z = 3     // Pauli Z (phase flip)
+} pauli_type_t;
+
+// Aliases for backward compatibility
+typedef pauli_type_t PauliOperator;
+typedef pauli_type_t pauli_type;
+
+// Rotation axis aliases (for quantum_circuit_operations.h compatibility)
+#define ROTATION_AXIS_X PAULI_X
+#define ROTATION_AXIS_Y PAULI_Y
+#define ROTATION_AXIS_Z PAULI_Z
+typedef pauli_type_t rotation_axis_t;
+#endif
+
+// ============================================================================
+// Stabilizer Types for Topological Codes
+// ============================================================================
+
+// Stabilizer types - single source of truth
+#ifndef STABILIZER_TYPE_DEFINED
+#define STABILIZER_TYPE_DEFINED
+typedef enum StabilizerType {
+    // Names used in basic_topological operations
+    PLAQUETTE_STABILIZER = 0,   // Z-type stabilizer (plaquette operator)
+    VERTEX_STABILIZER = 1,      // X-type stabilizer (vertex operator)
+    // Aliases matching stabilizer_types.h naming convention
+    STABILIZER_PLAQUETTE = 0,
+    STABILIZER_VERTEX = 1,
+    // Aliases for Floquet code naming convention
+    STABILIZER_Z = 0,           // Z stabilizer (same as plaquette)
+    STABILIZER_X = 1,           // X stabilizer (same as vertex)
+    // Extended stabilizer types for heavy-hex and advanced codes
+    STABILIZER_WEIGHT_6 = 2,    // Weight-6 stabilizer (e.g., heavy-hex)
+    STABILIZER_BOUNDARY = 3,    // Boundary stabilizer
+    STABILIZER_LOGICAL = 4      // Logical stabilizer
+} StabilizerType;
+#endif
+
+// Error codes for topological operations
+typedef enum TopologicalErrorCode {
+    TOPO_NO_ERROR = 0,
+    TOPO_ERROR_DETECTED,
+    TOPO_ERROR_INVALID_STATE,
+    TOPO_ERROR_CORRECTION_FAILED,
+    TOPO_ERROR_OUT_OF_MEMORY
+} TopologicalErrorCode;
+
+// Anyon structure for topological tracking within quantum state
+typedef struct TopologicalAnyon {
+    Position position;       // Current position on lattice
+    int charge;             // Topological charge (+1 or -1)
+    bool paired;            // Whether paired with another anyon
+    size_t pair_index;      // Index of paired anyon (if paired)
+    double creation_time;   // Time of creation
+} TopologicalAnyon;
+
+// Anyon pair for correction operations
+typedef struct TopologicalAnyonPair {
+    size_t anyon1;          // Index of first anyon
+    size_t anyon2;          // Index of second anyon
+    double distance;        // Distance between anyons
+} TopologicalAnyonPair;
+
+// Stabilizer measurement result
+typedef struct StabilizerMeasurement {
+    size_t index;           // Stabilizer index
+    StabilizerType type;    // Type of stabilizer
+    double value;           // Measurement outcome
+    double confidence;      // Measurement confidence
+} StabilizerMeasurement;
 
 // Node types for quantum operations
 typedef enum {
@@ -93,16 +193,37 @@ struct quantum_gate_t {
 
 // Struct definitions
 struct quantum_state_t {
+    // ========== Core Quantum State Properties ==========
     quantum_state_type_t type;      // Type of quantum state
     size_t num_qubits;              // Number of qubits (convenience field)
     size_t dimension;               // State dimension (2^num_qubits for pure states)
-    size_t manifold_dim;           // Manifold dimension
+    size_t manifold_dim;            // Manifold dimension
     ComplexFloat* coordinates;      // State coordinates / amplitudes
-    ComplexFloat* metric;          // Metric tensor
-    ComplexFloat* connection;      // Connection coefficients
-    void* auxiliary_data;          // Additional state data
-    bool is_normalized;            // Normalization flag
-    HardwareType hardware;   // Hardware location
+    ComplexFloat* metric;           // Metric tensor
+    ComplexFloat* connection;       // Connection coefficients
+    void* auxiliary_data;           // Additional state data
+    bool is_normalized;             // Normalization flag
+    HardwareType hardware;          // Hardware location
+
+    // ========== Topological Error Correction ==========
+    // Lattice structure
+    size_t lattice_width;           // Width of 2D lattice
+    size_t lattice_height;          // Height of 2D lattice
+
+    // Stabilizer measurements
+    size_t num_stabilizers;         // Total number of stabilizers
+    size_t num_plaquettes;          // Number of plaquette (Z) stabilizers
+    size_t num_vertices;            // Number of vertex (X) stabilizers
+    StabilizerMeasurement* stabilizers; // Stabilizer measurement results
+
+    // Anyon tracking
+    size_t num_anyons;              // Current number of detected anyons
+    size_t max_anyons;              // Maximum capacity for anyon array
+    TopologicalAnyon* anyons;       // Array of detected anyons
+
+    // Error syndrome
+    double* syndrome_values;        // Current syndrome measurement values
+    size_t syndrome_size;           // Size of syndrome array
 };
 
 // Circuit layer structure

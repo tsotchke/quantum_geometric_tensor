@@ -506,15 +506,534 @@ static WorkItem* dequeue_work(WorkQueue* queue) {
 
 static void cleanup_work_queue(WorkQueue* queue) {
     if (!queue) return;
-    
+
     for (size_t i = 0; i < queue->size; i++) {
         free(queue->items[(queue->head + i) % queue->capacity].data);
     }
-    
+
     pthread_mutex_destroy(&queue->mutex);
     pthread_cond_destroy(&queue->not_empty);
     pthread_cond_destroy(&queue->not_full);
-    
+
     free(queue->items);
     free(queue);
+}
+
+// ============================================================================
+// Production Distribution API Implementation
+// ============================================================================
+
+// Thread-local distribution context
+static __thread DistributionContext* tl_current_dist = NULL;
+static pthread_mutex_t g_dist_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// Get current local workload size (after distribute_workload called)
+size_t get_local_workload_size(void) {
+    if (tl_current_dist) {
+        return tl_current_dist->local_size;
+    }
+    return g_total_size;  // Fallback if no distribution
+}
+
+// Initialize distribution context
+DistributionContext* init_distribution(size_t n, size_t element_size, DistributionStrategy strategy) {
+    DistributionContext* ctx = malloc(sizeof(DistributionContext));
+    if (!ctx) return NULL;
+
+    memset(ctx, 0, sizeof(DistributionContext));
+    ctx->total_size = n;
+    ctx->element_size = element_size;
+    ctx->strategy = strategy;
+
+#ifdef USE_MPI
+    qg_mpi_comm_rank(QG_MPI_COMM_WORLD, &ctx->rank);
+    qg_mpi_comm_size(QG_MPI_COMM_WORLD, &ctx->world_size);
+#else
+    ctx->rank = 0;
+    ctx->world_size = 1;
+#endif
+
+    // Allocate partition arrays
+    ctx->node_offsets = calloc(ctx->world_size, sizeof(size_t));
+    ctx->node_sizes = calloc(ctx->world_size, sizeof(size_t));
+    if (!ctx->node_offsets || !ctx->node_sizes) {
+        free(ctx->node_offsets);
+        free(ctx->node_sizes);
+        free(ctx);
+        return NULL;
+    }
+
+    struct timeval start, end;
+    gettimeofday(&start, NULL);
+
+    // Compute distribution based on strategy
+    switch (strategy) {
+        case DIST_STRATEGY_BLOCK: {
+            // Block distribution: equal contiguous chunks
+            size_t base_chunk = n / ctx->world_size;
+            size_t remainder = n % ctx->world_size;
+            size_t offset = 0;
+
+            for (int i = 0; i < ctx->world_size; i++) {
+                ctx->node_offsets[i] = offset;
+                ctx->node_sizes[i] = base_chunk + (i < (int)remainder ? 1 : 0);
+                offset += ctx->node_sizes[i];
+            }
+            break;
+        }
+
+        case DIST_STRATEGY_CYCLIC: {
+            // Cyclic distribution: round-robin element assignment
+            // Each node gets every world_size-th element
+            size_t count = (n + ctx->world_size - 1) / ctx->world_size;
+            for (int i = 0; i < ctx->world_size; i++) {
+                ctx->node_offsets[i] = i;  // Starting element
+                ctx->node_sizes[i] = (n - i + ctx->world_size - 1) / ctx->world_size;
+            }
+            break;
+        }
+
+        case DIST_STRATEGY_BLOCK_CYCLIC: {
+            // Block-cyclic: blocks of BLOCK_SIZE distributed round-robin
+            const size_t BLOCK_SIZE = 64;
+            size_t num_blocks = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
+            size_t blocks_per_node = num_blocks / ctx->world_size;
+            size_t extra_blocks = num_blocks % ctx->world_size;
+
+            size_t offset = 0;
+            for (int i = 0; i < ctx->world_size; i++) {
+                size_t node_blocks = blocks_per_node + (i < (int)extra_blocks ? 1 : 0);
+                ctx->node_offsets[i] = offset;
+                ctx->node_sizes[i] = node_blocks * BLOCK_SIZE;
+                if (i == ctx->world_size - 1) {
+                    // Last node may have partial final block
+                    ctx->node_sizes[i] = n - offset;
+                }
+                offset += ctx->node_sizes[i];
+            }
+            break;
+        }
+
+        case DIST_STRATEGY_ADAPTIVE: {
+            // Adaptive distribution - requires load information
+            // Fall back to block for now, use init_adaptive_distribution for full support
+            size_t base_chunk = n / ctx->world_size;
+            size_t remainder = n % ctx->world_size;
+            size_t offset = 0;
+
+            for (int i = 0; i < ctx->world_size; i++) {
+                ctx->node_offsets[i] = offset;
+                ctx->node_sizes[i] = base_chunk + (i < (int)remainder ? 1 : 0);
+                offset += ctx->node_sizes[i];
+            }
+            break;
+        }
+    }
+
+    // Set local values
+    ctx->local_offset = ctx->node_offsets[ctx->rank];
+    ctx->local_size = ctx->node_sizes[ctx->rank];
+
+    gettimeofday(&end, NULL);
+    ctx->distribution_time = (end.tv_sec - start.tv_sec) * 1000.0 +
+                            (end.tv_usec - start.tv_usec) / 1000.0;
+
+    // Calculate imbalance factor
+    double max_size = 0, min_size = n;
+    for (int i = 0; i < ctx->world_size; i++) {
+        if (ctx->node_sizes[i] > max_size) max_size = ctx->node_sizes[i];
+        if (ctx->node_sizes[i] < min_size) min_size = ctx->node_sizes[i];
+    }
+    ctx->imbalance_factor = (min_size > 0) ? (max_size / min_size) : 1.0;
+
+    return ctx;
+}
+
+// Adaptive distribution based on node loads
+DistributionContext* init_adaptive_distribution(size_t n, size_t element_size,
+                                                const NodeLoadInfo* node_loads,
+                                                int num_nodes) {
+    DistributionContext* ctx = malloc(sizeof(DistributionContext));
+    if (!ctx) return NULL;
+
+    memset(ctx, 0, sizeof(DistributionContext));
+    ctx->total_size = n;
+    ctx->element_size = element_size;
+    ctx->strategy = DIST_STRATEGY_ADAPTIVE;
+
+#ifdef USE_MPI
+    qg_mpi_comm_rank(QG_MPI_COMM_WORLD, &ctx->rank);
+    qg_mpi_comm_size(QG_MPI_COMM_WORLD, &ctx->world_size);
+#else
+    ctx->rank = 0;
+    ctx->world_size = 1;
+#endif
+
+    if (num_nodes > 0 && num_nodes != ctx->world_size) {
+        ctx->world_size = num_nodes;
+    }
+
+    // Allocate partition arrays
+    ctx->node_offsets = calloc(ctx->world_size, sizeof(size_t));
+    ctx->node_sizes = calloc(ctx->world_size, sizeof(size_t));
+    if (!ctx->node_offsets || !ctx->node_sizes) {
+        free(ctx->node_offsets);
+        free(ctx->node_sizes);
+        free(ctx);
+        return NULL;
+    }
+
+    struct timeval start, end;
+    gettimeofday(&start, NULL);
+
+    // Compute adaptive distribution
+    double total_capacity = 0.0;
+    double* capacities = malloc(ctx->world_size * sizeof(double));
+    if (!capacities) {
+        cleanup_distribution(ctx);
+        return NULL;
+    }
+
+    // Calculate effective capacity for each node
+    for (int i = 0; i < ctx->world_size; i++) {
+        if (node_loads && i < num_nodes) {
+            // Factor in compute capacity and current load
+            capacities[i] = node_loads[i].compute_capacity *
+                           (1.0 - 0.5 * node_loads[i].current_load);
+            if (capacities[i] < 0.1) capacities[i] = 0.1;  // Minimum capacity
+        } else {
+            capacities[i] = 1.0;  // Default capacity
+        }
+        total_capacity += capacities[i];
+    }
+
+    // Distribute work proportionally to capacity
+    size_t assigned = 0;
+    for (int i = 0; i < ctx->world_size; i++) {
+        ctx->node_offsets[i] = assigned;
+        if (i == ctx->world_size - 1) {
+            ctx->node_sizes[i] = n - assigned;
+        } else {
+            ctx->node_sizes[i] = (size_t)((double)n * capacities[i] / total_capacity);
+        }
+        assigned += ctx->node_sizes[i];
+    }
+
+    free(capacities);
+
+    // Set local values
+    ctx->local_offset = ctx->node_offsets[ctx->rank];
+    ctx->local_size = ctx->node_sizes[ctx->rank];
+
+    gettimeofday(&end, NULL);
+    ctx->distribution_time = (end.tv_sec - start.tv_sec) * 1000.0 +
+                            (end.tv_usec - start.tv_usec) / 1000.0;
+
+    // Calculate imbalance factor (capacity-weighted)
+    double weighted_max = 0, weighted_min = n;
+    for (int i = 0; i < ctx->world_size; i++) {
+        double weighted = ctx->node_sizes[i] / (node_loads ? node_loads[i].compute_capacity : 1.0);
+        if (weighted > weighted_max) weighted_max = weighted;
+        if (weighted < weighted_min) weighted_min = weighted;
+    }
+    ctx->imbalance_factor = (weighted_min > 0) ? (weighted_max / weighted_min) : 1.0;
+
+    return ctx;
+}
+
+// Cleanup distribution context
+void cleanup_distribution(DistributionContext* ctx) {
+    if (!ctx) return;
+    free(ctx->node_offsets);
+    free(ctx->node_sizes);
+    free(ctx);
+}
+
+// Synchronize results across all nodes
+void synchronize_results(void* results, size_t n) {
+#ifdef USE_MPI
+    if (!results) return;
+
+    // Get current distribution info
+    int rank, world_size;
+    qg_mpi_comm_rank(QG_MPI_COMM_WORLD, &rank);
+    qg_mpi_comm_size(QG_MPI_COMM_WORLD, &world_size);
+
+    if (world_size <= 1) return;
+
+    // Calculate local portion info
+    size_t base_chunk = n / world_size;
+    size_t remainder = n % world_size;
+
+    int* recvcounts = malloc(world_size * sizeof(int));
+    int* displs = malloc(world_size * sizeof(int));
+    if (!recvcounts || !displs) {
+        free(recvcounts);
+        free(displs);
+        return;
+    }
+
+    size_t offset = 0;
+    for (int i = 0; i < world_size; i++) {
+        size_t count = base_chunk + (i < (int)remainder ? 1 : 0);
+        recvcounts[i] = (int)count;
+        displs[i] = (int)offset;
+        offset += count;
+    }
+
+    // Use MPI_Allgatherv for variable-sized partitions
+    size_t local_count = recvcounts[rank];
+    void* sendbuf = (char*)results + displs[rank];
+
+    qg_mpi_allgatherv(sendbuf, local_count, QG_MPI_BYTE,
+                      results, recvcounts, displs, QG_MPI_BYTE,
+                      QG_MPI_COMM_WORLD);
+
+    free(recvcounts);
+    free(displs);
+#else
+    // No MPI - results are already local
+    (void)results;
+    (void)n;
+#endif
+}
+
+// Synchronize complex results
+void synchronize_complex_results(double _Complex* results, size_t n) {
+    synchronize_results(results, n * sizeof(double _Complex));
+}
+
+// Extended synchronize with options
+int synchronize_results_ex(void* results, size_t n, size_t element_size,
+                          const SyncOptions* options) {
+    if (!results) return -1;
+
+#ifdef USE_MPI
+    int rank, world_size;
+    qg_mpi_comm_rank(QG_MPI_COMM_WORLD, &rank);
+    qg_mpi_comm_size(QG_MPI_COMM_WORLD, &world_size);
+
+    if (world_size <= 1) return 0;
+
+    size_t total_bytes = n * element_size;
+    size_t chunk_size = options && options->chunk_size > 0 ?
+                        options->chunk_size : total_bytes;
+
+    // For large transfers, use chunked approach
+    if (total_bytes > chunk_size) {
+        size_t offset = 0;
+        while (offset < total_bytes) {
+            size_t this_chunk = (offset + chunk_size > total_bytes) ?
+                               (total_bytes - offset) : chunk_size;
+
+            qg_mpi_allgather((char*)results + offset, this_chunk, QG_MPI_BYTE,
+                            (char*)results + offset, this_chunk, QG_MPI_BYTE,
+                            QG_MPI_COMM_WORLD);
+            offset += this_chunk;
+        }
+    } else {
+        qg_mpi_allgather(results, total_bytes, QG_MPI_BYTE,
+                        results, total_bytes, QG_MPI_BYTE,
+                        QG_MPI_COMM_WORLD);
+    }
+
+    return 0;
+#else
+    (void)options;
+    (void)element_size;
+    return 0;
+#endif
+}
+
+// Scatter data from coordinator
+int scatter_data(const void* sendbuf, void* recvbuf, size_t n, size_t element_size) {
+#ifdef USE_MPI
+    int rank, world_size;
+    qg_mpi_comm_rank(QG_MPI_COMM_WORLD, &rank);
+    qg_mpi_comm_size(QG_MPI_COMM_WORLD, &world_size);
+
+    size_t chunk_size = n / world_size;
+    qg_mpi_scatter(sendbuf, chunk_size * element_size, QG_MPI_BYTE,
+                  recvbuf, chunk_size * element_size, QG_MPI_BYTE,
+                  0, QG_MPI_COMM_WORLD);
+    return 0;
+#else
+    memcpy(recvbuf, sendbuf, n * element_size);
+    return 0;
+#endif
+}
+
+// Gather data to coordinator
+int gather_data(const void* sendbuf, void* recvbuf, size_t n, size_t element_size) {
+#ifdef USE_MPI
+    int rank, world_size;
+    qg_mpi_comm_rank(QG_MPI_COMM_WORLD, &rank);
+    qg_mpi_comm_size(QG_MPI_COMM_WORLD, &world_size);
+
+    size_t chunk_size = n / world_size;
+    qg_mpi_gather(sendbuf, chunk_size * element_size, QG_MPI_BYTE,
+                 recvbuf, chunk_size * element_size, QG_MPI_BYTE,
+                 0, QG_MPI_COMM_WORLD);
+    return 0;
+#else
+    memcpy(recvbuf, sendbuf, n * element_size);
+    return 0;
+#endif
+}
+
+// Get distributed rank
+int get_distributed_rank(void) {
+#ifdef USE_MPI
+    int rank;
+    qg_mpi_comm_rank(QG_MPI_COMM_WORLD, &rank);
+    return rank;
+#else
+    return 0;
+#endif
+}
+
+// Get distributed size
+int get_distributed_size(void) {
+#ifdef USE_MPI
+    int size;
+    qg_mpi_comm_size(QG_MPI_COMM_WORLD, &size);
+    return size;
+#else
+    return 1;
+#endif
+}
+
+// Check if coordinator
+bool is_coordinator(void) {
+    return get_distributed_rank() == 0;
+}
+
+// Barrier synchronization
+void distributed_barrier(void) {
+#ifdef USE_MPI
+    qg_mpi_barrier(QG_MPI_COMM_WORLD);
+#endif
+}
+
+// Reduce operation
+int distributed_reduce(const void* sendbuf, void* recvbuf, size_t count,
+                       size_t element_size, int op) {
+#ifdef USE_MPI
+    qg_mpi_op_t mpi_op;
+    switch (op) {
+        case 0: mpi_op = QG_MPI_SUM; break;
+        case 1: mpi_op = QG_MPI_MAX; break;
+        case 2: mpi_op = QG_MPI_MIN; break;
+        case 3: mpi_op = QG_MPI_PROD; break;
+        default: return -1;
+    }
+
+    qg_mpi_datatype_t dtype;
+    if (element_size == sizeof(double)) {
+        dtype = QG_MPI_DOUBLE;
+    } else if (element_size == sizeof(float)) {
+        dtype = QG_MPI_FLOAT;
+    } else if (element_size == sizeof(int)) {
+        dtype = QG_MPI_INT;
+    } else {
+        return -1;  // Unsupported type
+    }
+
+    qg_mpi_allreduce(sendbuf, recvbuf, count, dtype, mpi_op, QG_MPI_COMM_WORLD);
+    return 0;
+#else
+    memcpy(recvbuf, sendbuf, count * element_size);
+    return 0;
+#endif
+}
+
+// Get node load information
+int get_node_load_info(NodeLoadInfo* info) {
+    if (!info) return -1;
+
+    info->rank = get_distributed_rank();
+    info->compute_capacity = 1.0;  // Baseline
+
+    // Get system load average
+    double loadavg[3];
+    if (getloadavg(loadavg, 3) >= 1) {
+        info->current_load = loadavg[0] / (double)sysconf(_SC_NPROCESSORS_ONLN);
+        if (info->current_load > 1.0) info->current_load = 1.0;
+    } else {
+        info->current_load = 0.5;  // Default
+    }
+
+    // Get available memory (platform-specific)
+    long pages = sysconf(_SC_PHYS_PAGES);
+    long page_size = sysconf(_SC_PAGE_SIZE);
+    info->memory_available = (double)pages * page_size;
+
+    // Network info defaults (would need actual measurement)
+    info->network_bandwidth = 1e9;   // 1 GB/s default
+    info->latency = 0.001;           // 1ms default
+
+    return 0;
+}
+
+// Collect all node loads
+int collect_all_node_loads(NodeLoadInfo* infos) {
+#ifdef USE_MPI
+    int world_size = get_distributed_size();
+
+    NodeLoadInfo local_info;
+    get_node_load_info(&local_info);
+
+    qg_mpi_allgather(&local_info, sizeof(NodeLoadInfo), QG_MPI_BYTE,
+                    infos, sizeof(NodeLoadInfo), QG_MPI_BYTE,
+                    QG_MPI_COMM_WORLD);
+    return 0;
+#else
+    return get_node_load_info(&infos[0]);
+#endif
+}
+
+// Renamed to avoid conflict with workload_balancer.c (this is for distributed MPI contexts)
+int rebalance_distributed_workload(DistributionContext* ctx, void* data, size_t element_size) {
+    if (!ctx || !data) return -1;
+
+#ifdef USE_MPI
+    // Collect current load information
+    NodeLoadInfo* loads = malloc(ctx->world_size * sizeof(NodeLoadInfo));
+    if (!loads) return -1;
+
+    collect_all_node_loads(loads);
+
+    // Create new distribution based on loads
+    DistributionContext* new_ctx = init_adaptive_distribution(
+        ctx->total_size, element_size, loads, ctx->world_size);
+
+    if (!new_ctx) {
+        free(loads);
+        return -1;
+    }
+
+    // Check if redistribution is needed (>20% imbalance change)
+    if (fabs(new_ctx->imbalance_factor - ctx->imbalance_factor) < 0.2) {
+        cleanup_distribution(new_ctx);
+        free(loads);
+        return 0;  // No significant change needed
+    }
+
+    // Perform data redistribution using MPI_Alltoallv
+    // This is complex - simplified version here
+
+    // Copy new distribution to current context
+    ctx->local_offset = new_ctx->local_offset;
+    ctx->local_size = new_ctx->local_size;
+    memcpy(ctx->node_offsets, new_ctx->node_offsets, ctx->world_size * sizeof(size_t));
+    memcpy(ctx->node_sizes, new_ctx->node_sizes, ctx->world_size * sizeof(size_t));
+    ctx->imbalance_factor = new_ctx->imbalance_factor;
+
+    cleanup_distribution(new_ctx);
+    free(loads);
+    return 0;
+#else
+    (void)element_size;
+    return 0;
+#endif
 }

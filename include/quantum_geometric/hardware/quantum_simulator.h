@@ -39,6 +39,9 @@ typedef enum noise_type_t {
     NOISE_CUSTOM
 } NoiseType;
 
+// Forward declaration for hierarchical matrix (from hierarchical_matrix.h)
+struct HierarchicalMatrix;
+
 // Noise model parameters
 typedef struct noise_model_t {
     NoiseType type;
@@ -47,6 +50,9 @@ typedef struct noise_model_t {
     double decoherence_rate;
     double* custom_parameters;
     size_t num_custom_parameters;
+    // Hierarchical noise representation for O(log n) operations
+    size_t size;
+    struct HierarchicalMatrix* h_matrix;
 } NoiseModel;
 
 // Use MitigationType from quantum_hardware_types.h

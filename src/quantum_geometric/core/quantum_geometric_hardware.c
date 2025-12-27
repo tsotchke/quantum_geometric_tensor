@@ -27,7 +27,7 @@ qgt_error_t geometric_create_hardware(quantum_geometric_hardware_t** hardware,
         return QGT_ERROR_ALLOCATION_FAILED;
     }
     
-    (*hardware)->type = type;
+    (*hardware)->type = (HardwareType)type;  // Cast from HardwareBackendType
     (*hardware)->dimension = dimension;
     (*hardware)->is_initialized = false;
     
@@ -160,7 +160,7 @@ qgt_error_t geometric_get_hardware_status(const quantum_geometric_hardware_t* ha
     QGT_CHECK_NULL(status);
     
     status->is_initialized = hardware->is_initialized;
-    status->type = hardware->type;
+    status->type = (HardwareBackendType)hardware->type;  // Cast to HardwareBackendType
     status->dimension = hardware->dimension;
     
     // Get status based on hardware type

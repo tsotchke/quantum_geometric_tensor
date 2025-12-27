@@ -9,18 +9,9 @@
 #include <math.h>
 #include <time.h>
 
-// Forward declarations
+// Forward declarations for functions used internally
 qgt_error_t quantum_state_normalize(quantum_state_t* state);
-qgt_error_t quantum_state_fidelity(double* fidelity, const quantum_state_t* a, const quantum_state_t* b);
-ComplexFloat complex_float_create(double real, double imag);
-
-// XStabilizerState structure definition
-typedef struct {
-    double* correlations;      // Array of correlation values
-    double* confidences;       // Array of confidence values
-    size_t history_size;      // Number of measurements in history
-    size_t max_history;       // Maximum history size
-} XStabilizerState;
+qgt_error_t quantum_state_fidelity(float* fidelity, const quantum_state_t* a, const quantum_state_t* b);
 
 // Internal QuantumStateOps structure
 struct QuantumStateOps {
@@ -47,7 +38,21 @@ QuantumStateOps* init_quantum_state_ops(const StateConfig* config) {
     if (err != QGT_SUCCESS) return NULL;
 
     memcpy(&ops->config, config, sizeof(StateConfig));
-    ops->pool = create_memory_pool(1024, sizeof(ComplexFloat), 32, true);
+
+    // Create pool config
+    PoolConfig pool_config = {
+        .min_block_size = sizeof(ComplexFloat),
+        .alignment = 32,
+        .num_size_classes = 8,
+        .growth_factor = 2.0f,
+        .prefetch_distance = 4,
+        .use_huge_pages = false,
+        .cache_local_free_lists = true,
+        .max_blocks_per_class = 1024,
+        .thread_cache_size = 64,
+        .enable_stats = false
+    };
+    ops->pool = create_memory_pool(&pool_config);
     
     err = geometric_core_allocate((void**)&ops->measurement_buffer, 1024 * sizeof(double));
     if (err != QGT_SUCCESS) {
@@ -107,9 +112,9 @@ void perform_state_operation(QuantumStateOps* ops, quantum_state_t** states, siz
             {
                 ops->measurement_buffer[ops->measurement_count % 1024] = measurement;
                 ops->measurement_count++;
-                double fidelity;
+                float fidelity;
                 quantum_state_fidelity(&fidelity, states[i], states[i]);
-                ops->total_fidelity += fidelity;
+                ops->total_fidelity += (double)fidelity;
             }
         }
     }
@@ -170,7 +175,7 @@ void apply_x_measurement_correction(const quantum_state_t* state, size_t x, size
     corrected *= (1.0f + gate_error);
     
     // Apply threshold
-    if (fabsf(corrected) < QGT_EPSILON) {
+    if (fabs(corrected) < QGT_EPSILON) {
         corrected = 0.0f;
     }
     
@@ -236,13 +241,13 @@ void apply_hadamard_gate(const quantum_state_t* state, size_t x, size_t y) {
             ComplexFloat psi1 = amplitudes[i+1];
             
             amplitudes[i] = complex_float_create(
-                h00 * crealf(psi0) + h01 * crealf(psi1),
-                h00 * cimagf(psi0) + h01 * cimagf(psi1)
+                h00 * psi0.real + h01 * psi1.real,
+                h00 * psi0.imag + h01 * psi1.imag
             );
             
             amplitudes[i+1] = complex_float_create(
-                h10 * crealf(psi0) + h11 * crealf(psi1),
-                h10 * cimagf(psi0) + h11 * cimagf(psi1)
+                h10 * psi0.real + h11 * psi1.real,
+                h10 * psi0.imag + h11 * psi1.imag
             );
         }
     }
@@ -268,13 +273,13 @@ void apply_rotation_x(const quantum_state_t* state, size_t x, size_t y, double a
             ComplexFloat psi1 = amplitudes[i+1];
             
             amplitudes[i] = complex_float_create(
-                cos_half * crealf(psi0) - sin_half * cimagf(psi1),
-                cos_half * cimagf(psi0) + sin_half * crealf(psi1)
+                cos_half * psi0.real - sin_half * psi1.imag,
+                cos_half * psi0.imag + sin_half * psi1.real
             );
             
             amplitudes[i+1] = complex_float_create(
-                -sin_half * cimagf(psi0) + cos_half * crealf(psi1),
-                sin_half * crealf(psi0) + cos_half * cimagf(psi1)
+                -sin_half * psi0.imag + cos_half * psi1.real,
+                sin_half * psi0.real + cos_half * psi1.imag
             );
         }
     }
@@ -301,8 +306,8 @@ void quantum_wait(const quantum_state_t* state, double duration) {
         ComplexFloat amp = amplitudes[i];
         
         amplitudes[i] = complex_float_create(
-            decay * (crealf(amp) + phase_noise),
-            decay * (cimagf(amp) + phase_noise)
+            decay * (amp.real + phase_noise),
+            decay * (amp.imag + phase_noise)
         );
     }
     
@@ -339,10 +344,10 @@ void apply_composite_x_pulse(const quantum_state_t* state, size_t x, size_t y) {
     #endif
     for (size_t i = 0; i < dimension; i++) {
         ComplexFloat amp = amplitudes[i];
-        float phase = atan2f(cimagf(amp), crealf(amp));
+        float phase = atan2f(amp.imag, amp.real);
         
         phase += (phi1 + phi2 + phi3) / 3.0f;
-        float mag = sqrtf(crealf(amp) * crealf(amp) + cimagf(amp) * cimagf(amp));
+        float mag = sqrtf(amp.real * amp.real + amp.imag * amp.imag);
         
         amplitudes[i] = complex_float_create(
             mag * cosf(phase),
@@ -365,9 +370,287 @@ double get_gate_error_rate(size_t x, size_t y) {
 
 // Hierarchical matrix operations
 void update_hmatrix_quantum_state(HierarchicalMatrix* mat) {
-    // Implementation omitted for brevity
+    (void)mat;
 }
 
 void cleanup_hmatrix_quantum_state(HierarchicalMatrix* mat) {
-    // Implementation omitted for brevity
+    (void)mat;
+}
+
+// ============================================================================
+// Core Quantum State API (from quantum_state.h)
+// ============================================================================
+
+qgt_error_t quantum_state_create(quantum_state_t** state,
+                                 quantum_state_type_t type,
+                                 size_t dimension) {
+    if (!state || dimension == 0) return QGT_ERROR_INVALID_ARGUMENT;
+
+    quantum_state_t* new_state = NULL;
+    qgt_error_t err = geometric_core_allocate((void**)&new_state, sizeof(quantum_state_t));
+    if (err != QGT_SUCCESS) return err;
+
+    memset(new_state, 0, sizeof(quantum_state_t));
+    new_state->type = type;
+    new_state->dimension = dimension;
+    new_state->is_normalized = false;
+
+    // Allocate coordinates (amplitudes)
+    err = geometric_core_allocate((void**)&new_state->coordinates, dimension * sizeof(ComplexFloat));
+    if (err != QGT_SUCCESS) {
+        geometric_core_free(new_state);
+        return err;
+    }
+    memset(new_state->coordinates, 0, dimension * sizeof(ComplexFloat));
+
+    // Initialize to |0⟩ state
+    new_state->coordinates[0].real = 1.0f;
+    new_state->coordinates[0].imag = 0.0f;
+    new_state->is_normalized = true;
+
+    *state = new_state;
+    return QGT_SUCCESS;
+}
+
+void quantum_state_destroy(quantum_state_t* state) {
+    if (!state) return;
+    if (state->coordinates) {
+        geometric_core_free(state->coordinates);
+    }
+    if (state->auxiliary_data) {
+        geometric_core_free(state->auxiliary_data);
+    }
+    geometric_core_free(state);
+}
+
+qgt_error_t quantum_state_normalize(quantum_state_t* state) {
+    if (!state || !state->coordinates) return QGT_ERROR_INVALID_ARGUMENT;
+
+    double norm_sq = 0.0;
+    for (size_t i = 0; i < state->dimension; i++) {
+        norm_sq += state->coordinates[i].real * state->coordinates[i].real +
+                   state->coordinates[i].imag * state->coordinates[i].imag;
+    }
+
+    if (norm_sq < 1e-15) return QGT_ERROR_INVALID_STATE;
+
+    float inv_norm = 1.0f / sqrtf((float)norm_sq);
+    for (size_t i = 0; i < state->dimension; i++) {
+        state->coordinates[i].real *= inv_norm;
+        state->coordinates[i].imag *= inv_norm;
+    }
+
+    state->is_normalized = true;
+    return QGT_SUCCESS;
+}
+
+qgt_error_t quantum_state_initialize_basis(quantum_state_t* state, size_t basis_index) {
+    if (!state || !state->coordinates) return QGT_ERROR_INVALID_ARGUMENT;
+    if (basis_index >= state->dimension) return QGT_ERROR_INVALID_ARGUMENT;
+
+    memset(state->coordinates, 0, state->dimension * sizeof(ComplexFloat));
+    state->coordinates[basis_index].real = 1.0f;
+    state->coordinates[basis_index].imag = 0.0f;
+    state->is_normalized = true;
+
+    return QGT_SUCCESS;
+}
+
+qgt_error_t quantum_state_fidelity(float* fidelity, const quantum_state_t* a, const quantum_state_t* b) {
+    if (!fidelity || !a || !b) return QGT_ERROR_INVALID_ARGUMENT;
+    if (!a->coordinates || !b->coordinates) return QGT_ERROR_INVALID_ARGUMENT;
+    if (a->dimension != b->dimension) return QGT_ERROR_INCOMPATIBLE;
+
+    // F = |⟨a|b⟩|²
+    double overlap_real = 0.0, overlap_imag = 0.0;
+    for (size_t i = 0; i < a->dimension; i++) {
+        // ⟨a|b⟩ = sum(conj(a_i) * b_i)
+        overlap_real += a->coordinates[i].real * b->coordinates[i].real +
+                        a->coordinates[i].imag * b->coordinates[i].imag;
+        overlap_imag += a->coordinates[i].real * b->coordinates[i].imag -
+                        a->coordinates[i].imag * b->coordinates[i].real;
+    }
+
+    *fidelity = (float)(overlap_real * overlap_real + overlap_imag * overlap_imag);
+    return QGT_SUCCESS;
+}
+
+// =============================================================================
+// Pauli Measurement Functions with Confidence Tracking
+// =============================================================================
+
+/**
+ * @brief Measure Pauli Z operator at lattice position (x,y) with confidence
+ *
+ * Computes the expectation value <Z> for the qubit at position (x,y) on the
+ * lattice, along with a confidence estimate based on the measurement statistics.
+ *
+ * The Z operator eigenvalues are +1 (|0⟩) and -1 (|1⟩). The expectation value
+ * is computed as: <Z> = Σᵢ |ψᵢ|² × (-1)^{bit(i)}
+ *
+ * Confidence is estimated from the variance of the measurement outcome:
+ * Higher confidence when the state is closer to an eigenstate.
+ */
+bool measure_pauli_z_with_confidence(const quantum_state_t* state,
+                                    size_t x,
+                                    size_t y,
+                                    double* value,
+                                    double* confidence) {
+    if (!state || !value || !confidence) {
+        return false;
+    }
+
+    if (!state->coordinates) {
+        *value = 0.0;
+        *confidence = 0.0;
+        return false;
+    }
+
+    // Calculate qubit index from lattice coordinates
+    // Use lattice_width if available, otherwise infer from num_qubits
+    size_t width = state->lattice_width > 0 ? state->lattice_width :
+                   (size_t)sqrt((double)state->num_qubits);
+    size_t qubit_idx = y * width + x;
+
+    if (qubit_idx >= state->num_qubits) {
+        // Out of bounds - return identity (no error detected)
+        *value = 1.0;
+        *confidence = 1.0;
+        return true;
+    }
+
+    // Compute expectation value <Z_q>
+    // Z|0⟩ = |0⟩, Z|1⟩ = -|1⟩
+    // <Z_q> = Σᵢ |ψᵢ|² × (-1)^{bit_q(i)}
+    size_t dim = state->dimension;
+    size_t mask = (size_t)1 << qubit_idx;
+
+    double prob_0 = 0.0;  // Probability of measuring |0⟩
+    double prob_1 = 0.0;  // Probability of measuring |1⟩
+
+    for (size_t i = 0; i < dim; i++) {
+        double prob = (double)(state->coordinates[i].real * state->coordinates[i].real +
+                               state->coordinates[i].imag * state->coordinates[i].imag);
+        if (i & mask) {
+            prob_1 += prob;  // Qubit is |1⟩ in this basis state
+        } else {
+            prob_0 += prob;  // Qubit is |0⟩ in this basis state
+        }
+    }
+
+    // Expectation value: <Z> = P(0) × (+1) + P(1) × (-1) = P(0) - P(1)
+    *value = prob_0 - prob_1;
+
+    // Confidence is based on how close we are to an eigenstate
+    // Maximum confidence (1.0) when in pure |0⟩ or |1⟩ state
+    // Minimum confidence (0.0) when in equal superposition
+    // Confidence = |<Z>| = |P(0) - P(1)|
+    double abs_value = fabs(*value);
+    *confidence = abs_value;
+
+    // Apply readout error correction if available
+    double readout_error = get_readout_error_rate(x, y);
+    if (readout_error > 0.0 && readout_error < 0.5) {
+        // Correct for depolarizing readout noise: P_meas = (1-2ε)P_true + ε
+        // Invert: P_true = (P_meas - ε) / (1 - 2ε)
+        double correction_factor = 1.0 / (1.0 - 2.0 * readout_error);
+        *value *= correction_factor;
+        // Clamp to valid range
+        if (*value > 1.0) *value = 1.0;
+        if (*value < -1.0) *value = -1.0;
+        // Reduce confidence due to measurement uncertainty
+        *confidence *= (1.0 - readout_error);
+    }
+
+    return true;
+}
+
+/**
+ * @brief Measure Pauli X operator at lattice position (x,y) with confidence
+ *
+ * Computes the expectation value <X> for the qubit at position (x,y) on the
+ * lattice, along with a confidence estimate based on the measurement statistics.
+ *
+ * The X operator flips qubits: X|0⟩ = |1⟩, X|1⟩ = |0⟩
+ * The expectation value is computed as: <X> = 2 × Σᵢ<ⱼ Re(ψᵢ* × ψⱼ)
+ * where j = i ⊕ (1 << qubit)
+ *
+ * Confidence is estimated from the variance of the measurement outcome.
+ */
+bool measure_pauli_x_with_confidence(const quantum_state_t* state,
+                                    size_t x,
+                                    size_t y,
+                                    double* value,
+                                    double* confidence) {
+    if (!state || !value || !confidence) {
+        return false;
+    }
+
+    if (!state->coordinates) {
+        *value = 0.0;
+        *confidence = 0.0;
+        return false;
+    }
+
+    // Calculate qubit index from lattice coordinates
+    size_t width = state->lattice_width > 0 ? state->lattice_width :
+                   (size_t)sqrt((double)state->num_qubits);
+    size_t qubit_idx = y * width + x;
+
+    if (qubit_idx >= state->num_qubits) {
+        // Out of bounds - return identity (no error detected)
+        *value = 1.0;
+        *confidence = 1.0;
+        return true;
+    }
+
+    // Compute expectation value <X_q>
+    // X|0⟩ = |1⟩, X|1⟩ = |0⟩
+    // <X_q> = Σᵢ ψᵢ* × ψ_{i⊕mask} = 2 × Σᵢ<ⱼ Re(ψᵢ* × ψⱼ) where j = i ⊕ mask
+    size_t dim = state->dimension;
+    size_t mask = (size_t)1 << qubit_idx;
+
+    double expectation = 0.0;
+    double norm_sq = 0.0;
+
+    for (size_t i = 0; i < dim; i++) {
+        size_t j = i ^ mask;
+        if (j > i) {
+            // Compute ψᵢ* × ψⱼ contribution
+            ComplexFloat ai = state->coordinates[i];
+            ComplexFloat aj = state->coordinates[j];
+
+            // Re(ψᵢ* × ψⱼ) = Re(ai) × Re(aj) + Im(ai) × Im(aj)
+            expectation += 2.0 * (ai.real * aj.real + ai.imag * aj.imag);
+        }
+        // Also accumulate norm for validation
+        norm_sq += state->coordinates[i].real * state->coordinates[i].real +
+                   state->coordinates[i].imag * state->coordinates[i].imag;
+    }
+
+    *value = expectation;
+
+    // Confidence is based on how close we are to an X eigenstate
+    // |+⟩ = (|0⟩ + |1⟩)/√2 has <X> = +1
+    // |-⟩ = (|0⟩ - |1⟩)/√2 has <X> = -1
+    double abs_value = fabs(*value);
+    *confidence = abs_value;
+
+    // Apply readout error correction if available
+    // For X measurement, we effectively measure in the X basis
+    double readout_error = get_readout_error_rate(x, y);
+    double gate_error = get_gate_error_rate(x, y);  // Hadamard gate error for basis change
+    double total_error = readout_error + gate_error;
+
+    if (total_error > 0.0 && total_error < 0.5) {
+        double correction_factor = 1.0 / (1.0 - 2.0 * total_error);
+        *value *= correction_factor;
+        // Clamp to valid range
+        if (*value > 1.0) *value = 1.0;
+        if (*value < -1.0) *value = -1.0;
+        // Reduce confidence due to measurement uncertainty
+        *confidence *= (1.0 - total_error);
+    }
+
+    return true;
 }

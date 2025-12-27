@@ -43,7 +43,7 @@ typedef struct {
     char* reversion_reason;
 } SuggestionImplStatus;
 
-// Performance metrics snapshot for suggestion tracking
+// Performance metrics snapshot
 typedef struct {
     double throughput;
     double latency;
@@ -52,7 +52,7 @@ typedef struct {
     double gpu_usage;
     double network_bandwidth;
     time_t timestamp;
-} SuggestionPerformanceMetrics;
+} PerformanceMetrics;
 
 // Tracked suggestion entry
 typedef struct {

@@ -3,6 +3,7 @@
 #include "quantum_geometric/learning/data_loader.h"
 #include "quantum_geometric/core/quantum_geometric_memory.h"
 #include "quantum_geometric/core/tensor_types.h"
+#include "quantum_geometric/core/tensor_operations.h"
 
 typedef struct {
     size_t image_width;

@@ -126,7 +126,7 @@ int wait_event(MultiGPUManager* manager, int event_id);
 // Performance monitoring
 int start_profiling(MultiGPUManager* manager);
 int stop_profiling(MultiGPUManager* manager);
-int get_performance_metrics(MultiGPUManager* manager, MultiGPUPerformanceMetrics* metrics);
+int multi_gpu_get_performance_metrics(MultiGPUManager* manager, MultiGPUPerformanceMetrics* metrics);
 int reset_performance_metrics(MultiGPUManager* manager);
 
 // Quantum-specific operations

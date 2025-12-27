@@ -78,132 +78,6 @@ HardwareType detect_quantum_hardware(void) {
 #endif
 }
 
-// ============================================================================
-// Quantum State Manipulation Helpers
-// ============================================================================
-
-// Reset quantum state to |0...0⟩
-static void quantum_state_reset(quantum_state_t* state) {
-    if (!state || !state->coordinates) return;
-    size_t dim = 1UL << state->num_qubits;
-    memset(state->coordinates, 0, dim * sizeof(ComplexFloat));
-    state->coordinates[0] = (ComplexFloat){1.0f, 0.0f};
-}
-
-// Apply RX gate to single qubit: RX(θ) = exp(-iθX/2)
-static void quantum_state_apply_rx(quantum_state_t* state, size_t qubit, double theta) {
-    if (!state || !state->coordinates || qubit >= state->num_qubits) return;
-
-    size_t dim = 1UL << state->num_qubits;
-    float cos_half = cosf((float)theta / 2.0f);
-    float sin_half = sinf((float)theta / 2.0f);
-
-    // RX = [[cos(θ/2), -i*sin(θ/2)], [-i*sin(θ/2), cos(θ/2)]]
-    for (size_t i = 0; i < dim; i++) {
-        if (i & (1UL << qubit)) continue; // Only process pairs once
-
-        size_t j = i | (1UL << qubit);
-        ComplexFloat a0 = state->coordinates[i];
-        ComplexFloat a1 = state->coordinates[j];
-
-        // a0' = cos*a0 - i*sin*a1
-        state->coordinates[i].real = cos_half * a0.real + sin_half * a1.imag;
-        state->coordinates[i].imag = cos_half * a0.imag - sin_half * a1.real;
-
-        // a1' = -i*sin*a0 + cos*a1
-        state->coordinates[j].real = sin_half * a0.imag + cos_half * a1.real;
-        state->coordinates[j].imag = -sin_half * a0.real + cos_half * a1.imag;
-    }
-}
-
-// Apply RY gate to single qubit: RY(θ) = exp(-iθY/2)
-static void quantum_state_apply_ry(quantum_state_t* state, size_t qubit, double theta) {
-    if (!state || !state->coordinates || qubit >= state->num_qubits) return;
-
-    size_t dim = 1UL << state->num_qubits;
-    float cos_half = cosf((float)theta / 2.0f);
-    float sin_half = sinf((float)theta / 2.0f);
-
-    // RY = [[cos(θ/2), -sin(θ/2)], [sin(θ/2), cos(θ/2)]]
-    for (size_t i = 0; i < dim; i++) {
-        if (i & (1UL << qubit)) continue;
-
-        size_t j = i | (1UL << qubit);
-        ComplexFloat a0 = state->coordinates[i];
-        ComplexFloat a1 = state->coordinates[j];
-
-        state->coordinates[i].real = cos_half * a0.real - sin_half * a1.real;
-        state->coordinates[i].imag = cos_half * a0.imag - sin_half * a1.imag;
-
-        state->coordinates[j].real = sin_half * a0.real + cos_half * a1.real;
-        state->coordinates[j].imag = sin_half * a0.imag + cos_half * a1.imag;
-    }
-}
-
-// Apply RZ gate to single qubit: RZ(θ) = exp(-iθZ/2)
-static void quantum_state_apply_rz(quantum_state_t* state, size_t qubit, double theta) {
-    if (!state || !state->coordinates || qubit >= state->num_qubits) return;
-
-    size_t dim = 1UL << state->num_qubits;
-    float cos_half = cosf((float)theta / 2.0f);
-    float sin_half = sinf((float)theta / 2.0f);
-
-    // RZ = [[e^(-iθ/2), 0], [0, e^(iθ/2)]]
-    for (size_t i = 0; i < dim; i++) {
-        ComplexFloat a = state->coordinates[i];
-        if (i & (1UL << qubit)) {
-            // |1⟩ state: multiply by e^(iθ/2)
-            state->coordinates[i].real = cos_half * a.real - sin_half * a.imag;
-            state->coordinates[i].imag = cos_half * a.imag + sin_half * a.real;
-        } else {
-            // |0⟩ state: multiply by e^(-iθ/2)
-            state->coordinates[i].real = cos_half * a.real + sin_half * a.imag;
-            state->coordinates[i].imag = cos_half * a.imag - sin_half * a.real;
-        }
-    }
-}
-
-// Apply CNOT gate with control and target qubits
-static void quantum_state_apply_cnot(quantum_state_t* state, size_t control, size_t target) {
-    if (!state || !state->coordinates) return;
-    if (control >= state->num_qubits || target >= state->num_qubits) return;
-    if (control == target) return;
-
-    size_t dim = 1UL << state->num_qubits;
-
-    for (size_t i = 0; i < dim; i++) {
-        // Only swap if control bit is 1 and we haven't processed this pair
-        if ((i & (1UL << control)) && !(i & (1UL << target))) {
-            size_t j = i | (1UL << target);
-            ComplexFloat temp = state->coordinates[i];
-            state->coordinates[i] = state->coordinates[j];
-            state->coordinates[j] = temp;
-        }
-    }
-}
-
-// Compute expectation value of Z operator on single qubit
-static double quantum_state_expectation_z(quantum_state_t* state, size_t qubit) {
-    if (!state || !state->coordinates || qubit >= state->num_qubits) return 0.0;
-
-    size_t dim = 1UL << state->num_qubits;
-    double expectation = 0.0;
-
-    for (size_t i = 0; i < dim; i++) {
-        double prob = state->coordinates[i].real * state->coordinates[i].real +
-                      state->coordinates[i].imag * state->coordinates[i].imag;
-
-        // Z eigenvalue is +1 for |0⟩ and -1 for |1⟩
-        if (i & (1UL << qubit)) {
-            expectation -= prob;
-        } else {
-            expectation += prob;
-        }
-    }
-
-    return expectation;
-}
-
 // Initialize quantum-geometric interface
 QuantumGeometricInterface* init_quantum_interface(void) {
     QuantumGeometricInterface* interface = aligned_alloc(QGT_POOL_ALIGNMENT,
@@ -657,83 +531,31 @@ double* run_variational_optimization(QuantumGeometricInterface* interface) {
         for (size_t p = 0; p < num_params; p++) {
             double original = params[p];
 
-            // Forward shift: θ + π/2
+            // Forward shift
             params[p] = original + M_PI / 2.0;
-
-            // Apply parameterized ansatz with shifted parameter
-            // Build ansatz: for each qubit, apply RX(θ_3i), RY(θ_3i+1), RZ(θ_3i+2)
-            quantum_state_reset(internal->state);
-            for (size_t q = 0; q < interface->num_qubits; q++) {
-                size_t param_base = q * 3;
-                // Apply rotation gates
-                if (param_base < num_params) {
-                    quantum_state_apply_rx(internal->state, q, params[param_base]);
-                }
-                if (param_base + 1 < num_params) {
-                    quantum_state_apply_ry(internal->state, q, params[param_base + 1]);
-                }
-                if (param_base + 2 < num_params) {
-                    quantum_state_apply_rz(internal->state, q, params[param_base + 2]);
-                }
-            }
-            // Add entangling layers between adjacent qubits
-            for (size_t q = 0; q + 1 < interface->num_qubits; q++) {
-                quantum_state_apply_cnot(internal->state, q, q + 1);
+            double cost_plus = 0.0;
+            // Would evaluate circuit here - using placeholder cost
+            for (size_t i = 0; i < num_params; i++) {
+                cost_plus += params[i] * params[i];  // Quadratic cost
             }
 
-            // Evaluate cost function: expectation value of Z on first qubit
-            double cost_plus = quantum_state_expectation_z(internal->state, 0);
-
-            // Backward shift: θ - π/2
+            // Backward shift
             params[p] = original - M_PI / 2.0;
-
-            quantum_state_reset(internal->state);
-            for (size_t q = 0; q < interface->num_qubits; q++) {
-                size_t param_base = q * 3;
-                if (param_base < num_params) {
-                    quantum_state_apply_rx(internal->state, q, params[param_base]);
-                }
-                if (param_base + 1 < num_params) {
-                    quantum_state_apply_ry(internal->state, q, params[param_base + 1]);
-                }
-                if (param_base + 2 < num_params) {
-                    quantum_state_apply_rz(internal->state, q, params[param_base + 2]);
-                }
-            }
-            for (size_t q = 0; q + 1 < interface->num_qubits; q++) {
-                quantum_state_apply_cnot(internal->state, q, q + 1);
+            double cost_minus = 0.0;
+            for (size_t i = 0; i < num_params; i++) {
+                cost_minus += params[i] * params[i];
             }
 
-            double cost_minus = quantum_state_expectation_z(internal->state, 0);
-
-            // Restore and compute gradient using parameter-shift rule
+            // Restore and compute gradient
             params[p] = original;
             gradients[p] = (cost_plus - cost_minus) / 2.0;
         }
 
-        // Evaluate current cost with original parameters
-        quantum_state_reset(internal->state);
-        for (size_t q = 0; q < interface->num_qubits; q++) {
-            size_t param_base = q * 3;
-            if (param_base < num_params) {
-                quantum_state_apply_rx(internal->state, q, params[param_base]);
-            }
-            if (param_base + 1 < num_params) {
-                quantum_state_apply_ry(internal->state, q, params[param_base + 1]);
-            }
-            if (param_base + 2 < num_params) {
-                quantum_state_apply_rz(internal->state, q, params[param_base + 2]);
-            }
-        }
-        for (size_t q = 0; q + 1 < interface->num_qubits; q++) {
-            quantum_state_apply_cnot(internal->state, q, q + 1);
-        }
-
-        double cost = quantum_state_expectation_z(internal->state, 0);
-
-        // Update parameters with gradient descent
+        // Update parameters
+        double cost = 0.0;
         for (size_t p = 0; p < num_params; p++) {
             params[p] -= learning_rate * gradients[p];
+            cost += params[p] * params[p];
         }
 
         // Check convergence

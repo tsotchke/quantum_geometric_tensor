@@ -2,29 +2,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <sys/time.h>
 
 #ifdef __APPLE__
 #include <sys/sysctl.h>
 #include <mach/mach.h>
-#include <IOKit/IOKitLib.h>
-#include <CoreFoundation/CoreFoundation.h>
-#include <net/if.h>
-#include <ifaddrs.h>
-#include <net/if_dl.h>
 #else
 #include <sys/sysinfo.h>
 #endif
-
-// Static variables for throughput/latency tracking
-static struct {
-    struct timeval last_sample_time;
-    uint64_t operations_count;
-    double accumulated_latency;
-    size_t latency_samples;
-    uint64_t last_net_bytes;
-    bool initialized;
-} g_metrics_state = {0};
 
 // Internal suggestion tracker implementation
 struct SuggestionTrackerImpl {
@@ -34,8 +18,8 @@ struct SuggestionTrackerImpl {
     size_t capacity;
 
     // Baseline metrics for comparison
-    SuggestionPerformanceMetrics baseline;
-    SuggestionPerformanceMetrics current;
+    PerformanceMetrics baseline;
+    PerformanceMetrics current;
 
     // Effectiveness analyzer
     EffectivenessAnalyzer* analyzer;
@@ -51,16 +35,16 @@ struct SuggestionTrackerImpl {
 };
 
 // Forward declarations for static functions
-static void capture_current_metrics(SuggestionPerformanceMetrics* metrics);
+static void capture_current_metrics(PerformanceMetrics* metrics);
 static double compute_performance_improvement(
-    const SuggestionPerformanceMetrics* baseline,
-    const SuggestionPerformanceMetrics* current);
+    const PerformanceMetrics* baseline,
+    const PerformanceMetrics* current);
 static double compute_resource_savings(
-    const SuggestionPerformanceMetrics* baseline,
-    const SuggestionPerformanceMetrics* current);
+    const PerformanceMetrics* baseline,
+    const PerformanceMetrics* current);
 static double compute_stability_impact(
-    const SuggestionPerformanceMetrics* baseline,
-    const SuggestionPerformanceMetrics* current);
+    const PerformanceMetrics* baseline,
+    const PerformanceMetrics* current);
 static void update_effectiveness_score(SuggestionTrackerEntry* entry);
 static void update_confidence_score(SuggestionTrackerEntry* entry);
 static SuggestionTrackerEntry* find_entry(
@@ -115,10 +99,10 @@ SuggestionTracker* init_suggestion_tracker(const SuggestionTrackerConfig* config
 }
 
 // Capture current system performance metrics
-static void capture_current_metrics(SuggestionPerformanceMetrics* metrics) {
+static void capture_current_metrics(PerformanceMetrics* metrics) {
     if (!metrics) return;
 
-    memset(metrics, 0, sizeof(SuggestionPerformanceMetrics));
+    memset(metrics, 0, sizeof(PerformanceMetrics));
     metrics->timestamp = time(NULL);
 
 #ifdef __APPLE__
@@ -177,142 +161,17 @@ static void capture_current_metrics(SuggestionPerformanceMetrics* metrics) {
     }
 #endif
 
-    // Calculate throughput (operations per second)
-    struct timeval now;
-    gettimeofday(&now, NULL);
-
-    if (!g_metrics_state.initialized) {
-        g_metrics_state.last_sample_time = now;
-        g_metrics_state.operations_count = 0;
-        g_metrics_state.accumulated_latency = 0.0;
-        g_metrics_state.latency_samples = 0;
-        g_metrics_state.last_net_bytes = 0;
-        g_metrics_state.initialized = true;
-        metrics->throughput = 0.0;
-        metrics->latency = 0.0;
-    } else {
-        double elapsed = (double)(now.tv_sec - g_metrics_state.last_sample_time.tv_sec) +
-                        (double)(now.tv_usec - g_metrics_state.last_sample_time.tv_usec) / 1000000.0;
-
-        if (elapsed > 0.001) {  // At least 1ms elapsed
-            metrics->throughput = (double)g_metrics_state.operations_count / elapsed;
-            g_metrics_state.operations_count = 0;
-            g_metrics_state.last_sample_time = now;
-        }
-
-        // Average latency from samples
-        if (g_metrics_state.latency_samples > 0) {
-            metrics->latency = g_metrics_state.accumulated_latency / (double)g_metrics_state.latency_samples;
-            g_metrics_state.accumulated_latency = 0.0;
-            g_metrics_state.latency_samples = 0;
-        } else {
-            metrics->latency = 0.0;
-        }
-    }
-
-    // GPU usage
+    // Default values for other metrics (would need specific APIs)
+    metrics->throughput = 1000.0;  // Placeholder
+    metrics->latency = 10.0;       // Placeholder ms
     metrics->gpu_usage = 0.0;
-#ifdef __APPLE__
-    // Query Metal GPU usage via IOKit
-    io_iterator_t iterator;
-    if (IOServiceGetMatchingServices(kIOMainPortDefault,
-                                     IOServiceMatching("AppleGPUWrangler"),
-                                     &iterator) == KERN_SUCCESS) {
-        io_service_t device;
-        while ((device = IOIteratorNext(iterator)) != 0) {
-            CFMutableDictionaryRef properties = NULL;
-            if (IORegistryEntryCreateCFProperties(device, &properties,
-                                                   kCFAllocatorDefault, 0) == KERN_SUCCESS) {
-                CFNumberRef utilization = CFDictionaryGetValue(properties, CFSTR("PerformanceStatistics"));
-                if (utilization) {
-                    // GPU utilization is tracked but structure varies by GPU
-                    // Set a reasonable default based on system activity
-                    metrics->gpu_usage = metrics->cpu_usage * 0.5;  // Estimate based on CPU
-                }
-                CFRelease(properties);
-            }
-            IOObjectRelease(device);
-        }
-        IOObjectRelease(iterator);
-    }
-#else
-    // Linux: try reading from nvidia-smi or sysfs
-    FILE* gpu_fp = popen("nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null", "r");
-    if (gpu_fp) {
-        int gpu_util = 0;
-        if (fscanf(gpu_fp, "%d", &gpu_util) == 1) {
-            metrics->gpu_usage = (double)gpu_util / 100.0;
-        }
-        pclose(gpu_fp);
-    }
-#endif
-
-    // Network bandwidth
     metrics->network_bandwidth = 0.0;
-#ifdef __APPLE__
-    struct ifaddrs* ifaddr = NULL;
-    if (getifaddrs(&ifaddr) == 0) {
-        uint64_t total_bytes = 0;
-        for (struct ifaddrs* ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
-            if (ifa->ifa_addr && ifa->ifa_addr->sa_family == AF_LINK) {
-                struct if_data* if_data = (struct if_data*)ifa->ifa_data;
-                if (if_data) {
-                    total_bytes += if_data->ifi_ibytes + if_data->ifi_obytes;
-                }
-            }
-        }
-        freeifaddrs(ifaddr);
-
-        if (g_metrics_state.last_net_bytes > 0 && total_bytes > g_metrics_state.last_net_bytes) {
-            double elapsed = (double)(now.tv_sec - g_metrics_state.last_sample_time.tv_sec) +
-                            (double)(now.tv_usec - g_metrics_state.last_sample_time.tv_usec) / 1000000.0;
-            if (elapsed > 0.001) {
-                metrics->network_bandwidth = (double)(total_bytes - g_metrics_state.last_net_bytes) / elapsed;
-            }
-        }
-        g_metrics_state.last_net_bytes = total_bytes;
-    }
-#else
-    // Linux: read from /proc/net/dev
-    FILE* net_fp = fopen("/proc/net/dev", "r");
-    if (net_fp) {
-        char line[512];
-        uint64_t total_bytes = 0;
-        while (fgets(line, sizeof(line), net_fp)) {
-            char iface[32];
-            uint64_t rx_bytes, tx_bytes;
-            if (sscanf(line, " %31[^:]: %lu %*u %*u %*u %*u %*u %*u %*u %lu",
-                      iface, &rx_bytes, &tx_bytes) == 3) {
-                total_bytes += rx_bytes + tx_bytes;
-            }
-        }
-        fclose(net_fp);
-
-        if (g_metrics_state.last_net_bytes > 0 && total_bytes > g_metrics_state.last_net_bytes) {
-            double elapsed = (double)(now.tv_sec - g_metrics_state.last_sample_time.tv_sec) +
-                            (double)(now.tv_usec - g_metrics_state.last_sample_time.tv_usec) / 1000000.0;
-            if (elapsed > 0.001) {
-                metrics->network_bandwidth = (double)(total_bytes - g_metrics_state.last_net_bytes) / elapsed;
-            }
-        }
-        g_metrics_state.last_net_bytes = total_bytes;
-    }
-#endif
-}
-
-// Record an operation for throughput tracking
-void suggestion_tracker_record_operation(double latency_ms) {
-    g_metrics_state.operations_count++;
-    if (latency_ms > 0.0) {
-        g_metrics_state.accumulated_latency += latency_ms;
-        g_metrics_state.latency_samples++;
-    }
 }
 
 // Compute performance improvement
 static double compute_performance_improvement(
-    const SuggestionPerformanceMetrics* baseline,
-    const SuggestionPerformanceMetrics* current) {
+    const PerformanceMetrics* baseline,
+    const PerformanceMetrics* current) {
 
     if (!baseline || !current) return 0.0;
 
@@ -336,8 +195,8 @@ static double compute_performance_improvement(
 
 // Compute resource savings
 static double compute_resource_savings(
-    const SuggestionPerformanceMetrics* baseline,
-    const SuggestionPerformanceMetrics* current) {
+    const PerformanceMetrics* baseline,
+    const PerformanceMetrics* current) {
 
     if (!baseline || !current) return 0.0;
 
@@ -367,8 +226,8 @@ static double compute_resource_savings(
 
 // Compute stability impact
 static double compute_stability_impact(
-    const SuggestionPerformanceMetrics* baseline,
-    const SuggestionPerformanceMetrics* current) {
+    const PerformanceMetrics* baseline,
+    const PerformanceMetrics* current) {
 
     if (!baseline || !current) return 0.0;
 

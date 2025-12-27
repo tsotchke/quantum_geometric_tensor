@@ -118,7 +118,7 @@ static unified_memory_impl_t* create_unified_memory_impl(void) {
         .enable_stats = true
     };
     
-    impl->pool = create_memory_pool(impl->advanced, &pool_config);
+    impl->pool = ams_create_memory_pool(impl->advanced, &pool_config);
     if (!impl->pool) {
         geometric_log_error("Failed to create memory pool");
         destroy_memory_system(impl->advanced);
@@ -156,7 +156,7 @@ static void destroy_unified_memory_impl(unified_memory_impl_t* impl) {
     }
     
     if (impl->pool) {
-        destroy_memory_pool(impl->advanced, impl->pool);
+        ams_destroy_memory_pool(impl->advanced, impl->pool);
     }
     
     if (impl->advanced) {
@@ -322,7 +322,7 @@ static void* unified_allocate_impl(memory_allocator_t* allocator, const memory_p
         }
     } else {
         // Use memory pool for standard allocations
-        ptr = pool_allocate(impl->advanced, impl->pool, props->size);
+        ptr = ams_pool_allocate(impl->advanced, impl->pool, props->size);
         if (!ptr) {
             geometric_log_error("Failed to allocate memory from pool of size %zu", props->size);
         }
@@ -349,7 +349,7 @@ static void unified_free_impl(memory_allocator_t* allocator, void* ptr) {
     }
     
     // Try pool free first
-    pool_free(impl->advanced, impl->pool, ptr);
+    ams_pool_free(impl->advanced, impl->pool, ptr);
     
     // If not in pool, try advanced memory system
     memory_free(impl->advanced, ptr);

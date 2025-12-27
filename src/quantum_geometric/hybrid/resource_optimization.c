@@ -1,5 +1,5 @@
 #include "quantum_geometric/hybrid/resource_optimization.h"
-#include "quantum_geometric/hybrid/performance_monitoring.h"
+#include "quantum_geometric/core/numeric_utils.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -10,16 +10,14 @@
 #define OPTIMIZATION_INTERVAL 100
 #define LEARNING_RATE 0.01
 
-// Resource optimizer
-typedef struct {
-    double quantum_ratio;
-    double classical_ratio;
-    double* performance_history;
-    size_t history_size;
-    size_t history_capacity;
-    OptimizationStrategy strategy;
-    bool auto_tuning;
-} ResourceOptimizer;
+// Forward declarations for static helper functions
+static double compute_performance_score(const MonitoringMetrics* metrics);
+static double compute_performance_gradient(const double* history, size_t size);
+static double clamp(double value, double min_val, double max_val);
+static void optimize_for_performance(ResourceOptimizer* optimizer, const MonitoringMetrics* metrics);
+static void optimize_for_energy(ResourceOptimizer* optimizer, const MonitoringMetrics* metrics);
+static void optimize_balanced(ResourceOptimizer* optimizer, const MonitoringMetrics* metrics);
+static void optimize_adaptive(ResourceOptimizer* optimizer, const MonitoringMetrics* metrics);
 
 // Initialize resource optimizer
 ResourceOptimizer* init_resource_optimizer(
@@ -49,7 +47,7 @@ ResourceOptimizer* init_resource_optimizer(
 
 // Update resource allocation
 void update_resource_allocation(ResourceOptimizer* optimizer,
-                              const PerformanceMetrics* metrics) {
+                              const MonitoringMetrics* metrics) {
     if (!optimizer || !metrics || !optimizer->auto_tuning) return;
     
     // Record performance
@@ -87,7 +85,7 @@ void update_resource_allocation(ResourceOptimizer* optimizer,
 
 // Optimize for maximum performance
 static void optimize_for_performance(ResourceOptimizer* optimizer,
-                                  const PerformanceMetrics* metrics) {
+                                  const MonitoringMetrics* metrics) {
     // Calculate performance gradient
     double gradient = compute_performance_gradient(
         optimizer->performance_history,
@@ -105,7 +103,7 @@ static void optimize_for_performance(ResourceOptimizer* optimizer,
 
 // Optimize for minimum energy consumption
 static void optimize_for_energy(ResourceOptimizer* optimizer,
-                              const PerformanceMetrics* metrics) {
+                              const MonitoringMetrics* metrics) {
     double quantum_energy = metrics->quantum_energy_consumption;
     double classical_energy = metrics->classical_energy_consumption;
     
@@ -125,7 +123,7 @@ static void optimize_for_energy(ResourceOptimizer* optimizer,
 
 // Optimize for balanced resource usage
 static void optimize_balanced(ResourceOptimizer* optimizer,
-                            const PerformanceMetrics* metrics) {
+                            const MonitoringMetrics* metrics) {
     double quantum_util = metrics->quantum_resource_usage;
     double classical_util = (metrics->cpu_utilization +
                            metrics->gpu_utilization) / 2.0;
@@ -137,7 +135,7 @@ static void optimize_balanced(ResourceOptimizer* optimizer,
 
 // Adaptive optimization based on multiple factors
 static void optimize_adaptive(ResourceOptimizer* optimizer,
-                            const PerformanceMetrics* metrics) {
+                            const MonitoringMetrics* metrics) {
     // Weight different factors
     double performance_weight = 0.4;
     double energy_weight = 0.3;
@@ -183,7 +181,7 @@ ResourceAllocation get_resource_allocation(
 // Helper functions
 
 static double compute_performance_score(
-    const PerformanceMetrics* metrics) {
+    const MonitoringMetrics* metrics) {
     // Weighted combination of metrics
     double time_score = 1.0 / (metrics->quantum_execution_time +
                               metrics->classical_execution_time +

@@ -60,32 +60,20 @@ typedef struct {
     bool use_metal_acceleration;  // Whether to use Metal acceleration
 } SurfaceConfig;
 
-// Metal acceleration types
-typedef struct {
-    bool enable_optimization;
-    size_t num_measurements;
-    double error_threshold;
-    double confidence_threshold;
-    bool use_phase_tracking;
-    bool track_correlations;
-    size_t history_capacity;
-    bool use_metal_acceleration;
-    size_t num_stabilizers;
-    size_t parallel_group_size;
-    double phase_calibration;
-    double correlation_factor;
-} ZStabilizerConfig;
+// ZStabilizerConfig is defined in z_stabilizer_operations.h with all fields
+// Use that unified definition for Z stabilizer configuration
 
+// Surface code specific Z measurement types
 typedef struct {
     double value;
     double confidence;
     bool needs_correction;
-} ZStabilizerMeasurement;
+} SurfaceZMeasurement;
 
 typedef struct {
-    ZStabilizerMeasurement* measurements;
+    SurfaceZMeasurement* measurements;
     size_t num_measurements;
-} ZStabilizerResults;
+} SurfaceZMeasurementResults;
 
 // Surface code state
 typedef struct {

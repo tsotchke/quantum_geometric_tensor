@@ -124,10 +124,10 @@ EffectivenessAnalyzer* init_effectiveness_analyzer(void) {
     analyzer->num_correlations = 0;
 
     // Initialize ML model
-    analyzer->pattern_model = init_pattern_recognition_model();
+    analyzer->pattern_model = eff_init_pattern_recognition_model();
 
     // Initialize insight generator
-    analyzer->insight_generator = init_insight_generator();
+    analyzer->insight_generator = eff_init_insight_generator();
 
     return analyzer;
 }
@@ -259,7 +259,7 @@ void cleanup_effectiveness_analyzer(EffectivenessAnalyzer* analyzer) {
     cleanup_ml_model(analyzer->pattern_model);
 
     // Clean up insight generator
-    cleanup_insight_generator(analyzer->insight_generator);
+    eff_cleanup_insight_generator(analyzer->insight_generator);
 
     free(analyzer);
 }
@@ -392,8 +392,8 @@ static void prioritize_insights(EffectivenessReport* report) {
 // Public helper function implementations
 // ============================================================================
 
-// Initialize pattern recognition model
-EffMLModel* init_pattern_recognition_model(void) {
+// Initialize pattern recognition model (prefixed to avoid conflict with pattern_recognition_model.c)
+EffMLModel* eff_init_pattern_recognition_model(void) {
     EffMLModel* model = calloc(1, sizeof(struct EffMLModelImpl));
     if (!model) return NULL;
 
@@ -405,13 +405,13 @@ EffMLModel* init_pattern_recognition_model(void) {
     return model;
 }
 
-// Cleanup pattern recognition model
-void cleanup_pattern_recognition_model(EffMLModel* model) {
+// Cleanup pattern recognition model (prefixed to avoid conflict with pattern_recognition_model.c)
+void eff_cleanup_pattern_recognition_model(EffMLModel* model) {
     cleanup_ml_model(model);
 }
 
-// Initialize insight generator
-EffInsightGenerator* init_insight_generator(void) {
+// Initialize insight generator (prefixed to avoid conflict with insight_generator.c)
+EffInsightGenerator* eff_init_insight_generator(void) {
     EffInsightGenerator* gen = calloc(1, sizeof(struct EffInsightGeneratorImpl));
     if (!gen) return NULL;
 
@@ -422,8 +422,8 @@ EffInsightGenerator* init_insight_generator(void) {
     return gen;
 }
 
-// Cleanup insight generator
-void cleanup_insight_generator(EffInsightGenerator* generator) {
+// Cleanup insight generator (prefixed to avoid conflict with insight_generator.c)
+void eff_cleanup_insight_generator(EffInsightGenerator* generator) {
     if (!generator) return;
 
     for (size_t i = 0; i < generator->num_insights; i++) {

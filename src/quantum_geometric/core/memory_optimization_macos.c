@@ -94,23 +94,44 @@ const memory_stats_t* get_memory_stats(const MemoryManager* manager) {
     return &manager->stats;
 }
 
-// Global configuration
+// Global configuration and memory manager
 static memory_optimization_config_t g_memory_config;
+static MemoryManager* g_memory_manager = NULL;
 
-// Legacy memory optimization system implementation
+// Forward declaration
+MemoryManager* init_memory_manager(void);
+void cleanup_memory_manager(MemoryManager* manager);
+
+// Memory optimization system implementation
 qgt_error_t init_memory_optimization(const memory_optimization_config_t* config) {
     if (!config) {
         geometric_log_error("Invalid memory optimization config");
         return QGT_ERROR_INVALID_PARAMETER;
     }
-    
-    // Store configuration for later use
+
+    if (g_memory_manager) {
+        geometric_log_warning("Memory optimization system already initialized");
+        return QGT_ERROR_ALREADY_INITIALIZED;
+    }
+
+    // Store configuration
     g_memory_config = *config;
+
+    // Initialize the memory manager
+    g_memory_manager = init_memory_manager();
+    if (!g_memory_manager) {
+        geometric_log_error("Failed to initialize memory manager");
+        return QGT_ERROR_INITIALIZATION_FAILED;
+    }
+
     return QGT_SUCCESS;
 }
 
 void cleanup_memory_optimization(void) {
-    // Nothing to clean up on macOS
+    if (g_memory_manager) {
+        cleanup_memory_manager(g_memory_manager);
+        g_memory_manager = NULL;
+    }
 }
 
 qgt_error_t register_memory_region(memory_region_t* region, void* base, size_t size) {
@@ -284,21 +305,21 @@ qgt_error_t compact_memory(memory_region_t* region) {
     return QGT_ERROR_NOT_SUPPORTED;
 }
 
-qgt_error_t start_memory_monitoring(memory_region_t* region) {
+qgt_error_t start_region_memory_monitoring(memory_region_t* region) {
     if (!region) {
         return QGT_ERROR_INVALID_PARAMETER;
     }
-    
+
     // Initialize monitoring stats
     memset(&region->stats, 0, sizeof(memory_stats_t));
     return QGT_SUCCESS;
 }
 
-qgt_error_t stop_memory_monitoring(memory_region_t* region) {
+qgt_error_t stop_region_memory_monitoring(memory_region_t* region) {
     if (!region) {
         return QGT_ERROR_INVALID_PARAMETER;
     }
-    
+
     // Final stats update
     update_memory_stats(region);
     return QGT_SUCCESS;

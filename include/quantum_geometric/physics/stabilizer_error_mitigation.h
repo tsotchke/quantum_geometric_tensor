@@ -7,13 +7,13 @@
 #define STABILIZER_ERROR_MITIGATION_H
 
 #include "quantum_geometric/core/quantum_geometric_core.h"
+#include "quantum_geometric/hardware/quantum_hardware_types.h"
 #include "quantum_geometric/physics/quantum_state_operations.h"
 #include <stdint.h>
 #include <stdbool.h>
 
-// Forward declarations
-struct quantum_state;
-struct HardwareProfile;
+// HardwareProfile is defined in quantum_hardware_types.h (included above)
+// This is the unified definition for all hardware profiling needs
 
 /**
  * @brief Configuration for error mitigation
@@ -100,10 +100,10 @@ void cleanup_error_mitigation(MitigationState* state);
  * @return true if mitigation successful
  */
 bool mitigate_measurement_errors(MitigationState* state,
-                               struct quantum_state* qstate,
+                               quantum_state_t* qstate,
                                const measurement_result* results,
                                size_t num_results,
-                               const struct HardwareProfile* hw_profile);
+                               const HardwareProfile* hw_profile);
 
 /**
  * @brief Update mitigation metrics

@@ -504,11 +504,12 @@ static void quantum_compress_internal(HierarchicalMatrix* mat) {
 }
 
 // Public interface
-void hmatrix_multiply(HierarchicalMatrix* dst,
-                     const HierarchicalMatrix* a,
-                     const HierarchicalMatrix* b) {
+// Note: Renamed from hmatrix_multiply to avoid conflict with hierarchical_matrix.c
+void quantum_hmatrix_multiply(HierarchicalMatrix* dst,
+                              const HierarchicalMatrix* a,
+                              const HierarchicalMatrix* b) {
     if (!dst || !a || !b || a->cols != b->rows) return;
-    
+
     // Use quantum multiplication for large matrices
     if (a->rows >= QG_QUANTUM_BLOCK_SIZE && b->cols >= QG_QUANTUM_BLOCK_SIZE) {
         quantum_matrix_multiply(dst, a, b);
@@ -528,7 +529,8 @@ void hmatrix_multiply(HierarchicalMatrix* dst,
     }
 }
 
-void hmatrix_compress(HierarchicalMatrix* mat) {
+// Note: Renamed from hmatrix_compress to avoid conflict with hierarchical_matrix.c
+void quantum_hmatrix_compress(HierarchicalMatrix* mat) {
     if (!mat) return;
 
     if (mat->is_leaf) {
@@ -538,12 +540,13 @@ void hmatrix_compress(HierarchicalMatrix* mat) {
         // Recursively compress children
         #pragma omp parallel for
         for (int i = 0; i < QG_HMATRIX_NUM_CHILDREN; i++) {
-            hmatrix_compress(mat->children[i]);
+            quantum_hmatrix_compress(mat->children[i]);
         }
     }
 }
 
-void hmatrix_svd(HierarchicalMatrix* mat) {
+// Note: Renamed from hmatrix_svd to avoid conflict with hierarchical_matrix.c
+void quantum_hmatrix_svd(HierarchicalMatrix* mat) {
     if (!mat) return;
 
     if (mat->is_leaf) {
@@ -553,7 +556,7 @@ void hmatrix_svd(HierarchicalMatrix* mat) {
         // Recursively apply SVD to children
         #pragma omp parallel for
         for (int i = 0; i < QG_HMATRIX_NUM_CHILDREN; i++) {
-            hmatrix_svd(mat->children[i]);
+            quantum_hmatrix_svd(mat->children[i]);
         }
     }
 }

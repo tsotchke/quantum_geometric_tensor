@@ -2,6 +2,7 @@
 #define MATRIX_OPERATIONS_H
 
 #include "quantum_geometric/core/quantum_geometric_types.h"
+#include "quantum_geometric/core/quantum_complex.h"
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -45,12 +46,103 @@ static inline bool matrix_multiply(
     return matrix_multiply_impl(a, b, result, m, n, p);
 }
 
+// ============================================================================
+// Double Precision Matrix Operations (ComplexDouble)
+// ============================================================================
+
+/**
+ * @brief Multiply two double-precision complex matrices
+ *
+ * Computes C = A * B where:
+ * A is m x n
+ * B is n x p
+ * C is m x p
+ *
+ * @param a First matrix (m x n)
+ * @param b Second matrix (n x p)
+ * @param result Result matrix (m x p)
+ * @param m Number of rows in A
+ * @param n Number of columns in A/rows in B
+ * @param p Number of columns in B
+ * @return true if successful, false otherwise
+ */
+bool matrix_multiply_double_impl(
+    const ComplexDouble* a,
+    const ComplexDouble* b,
+    ComplexDouble* result,
+    size_t m,
+    size_t n,
+    size_t p);
+
+static inline bool matrix_multiply_double(
+    const ComplexDouble* a,
+    const ComplexDouble* b,
+    ComplexDouble* result,
+    size_t m,
+    size_t n,
+    size_t p) {
+    return matrix_multiply_double_impl(a, b, result, m, n, p);
+}
+
+/**
+ * @brief Multiply square double-precision matrices (convenience)
+ *
+ * @param C Result matrix (n x n)
+ * @param A First matrix (n x n)
+ * @param B Second matrix (n x n)
+ * @param n Matrix dimension
+ */
+void matrix_mult_square_double(
+    ComplexDouble* C,
+    const ComplexDouble* A,
+    const ComplexDouble* B,
+    size_t n);
+
+/**
+ * @brief Matrix-vector multiplication for double precision
+ *
+ * Computes y = A * x
+ *
+ * @param result Output vector (m elements)
+ * @param matrix Input matrix (m x n)
+ * @param vector Input vector (n elements)
+ * @param m Number of rows
+ * @param n Number of columns
+ */
+void matrix_vector_mult_double(
+    ComplexDouble* result,
+    const ComplexDouble* matrix,
+    const ComplexDouble* vector,
+    size_t m,
+    size_t n);
+
+/**
+ * @brief Solve linear system Ax = b (double precision)
+ */
+bool solve_linear_system_double(
+    const ComplexDouble* a,
+    const ComplexDouble* b,
+    ComplexDouble* x,
+    size_t n);
+
+/**
+ * @brief Compute matrix inverse (double precision)
+ */
+bool matrix_inverse_double(
+    const ComplexDouble* a,
+    ComplexDouble* inverse,
+    size_t n);
+
+// ============================================================================
+// Single Precision Linear Algebra
+// ============================================================================
+
 /**
  * @brief Solve linear system Ax = b
- * 
+ *
  * Uses LU decomposition to solve the system.
  * Matrix A must be square and non-singular.
- * 
+ *
  * @param a System matrix A (n x n)
  * @param b Right-hand side vector b (n)
  * @param x Solution vector x (n)

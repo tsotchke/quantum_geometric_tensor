@@ -3,7 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <omp.h>
+
+// OpenMP support is handled by quantum_geometric_operations.h which provides
+// fallback macros when _OPENMP is not defined
 
 // Optimization parameters
 #define MAX_ITERATIONS 1000

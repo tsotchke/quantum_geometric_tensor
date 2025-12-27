@@ -5,12 +5,20 @@
 #include "quantum_geometric/core/quantum_scheduler.h"
 #include "quantum_geometric/core/operation_fusion.h"
 #include "quantum_geometric/core/geometric_processor.h"
+#include "quantum_geometric/core/quantum_circuit_types.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 
-// Initialize quantum circuit
-quantum_circuit_t* quantum_circuit_create(size_t num_qubits) {
+// Forward declaration for add_gate (defined in quantum_circuit_operations.c)
+qgt_error_t add_gate(quantum_circuit* circuit, gate_type_t type,
+                     size_t* qubits, size_t num_qubits,
+                     double* parameters, size_t num_parameters);
+
+// Initialize quantum circuit with geometric processor and computational graph
+// Note: Renamed from quantum_circuit_create to avoid conflict with quantum_circuit_operations.c
+// Use this for geometric computation workflows; use quantum_circuit_create for gate-based circuits
+quantum_circuit_t* qgc_circuit_create(size_t num_qubits) {
     quantum_circuit_t* circuit = malloc(sizeof(quantum_circuit_t));
     if (!circuit) return NULL;
     
@@ -128,8 +136,8 @@ bool quantum_circuit_add_operation(quantum_circuit_t* circuit,
     return true;
 }
 
-// Execute quantum circuit
-bool quantum_circuit_execute(quantum_circuit_t* circuit) {
+// Execute quantum circuit (geometric compute version)
+bool qgc_circuit_execute(quantum_circuit_t* circuit) {
     if (!circuit) return false;
     
     // Initialize numerical backend if not already done
@@ -450,45 +458,85 @@ bool quantum_circuit_execute(quantum_circuit_t* circuit) {
     return true;
 }
 
-// Add dense quantum layer
-void add_quantum_dense_layer(quantum_circuit* circuit, void* params) {
+// Add dense quantum layer (implementation for quantum_circuit_t)
+// Note: This implements the interface declared in quantum_circuit_types.h
+// but operates on quantum_circuit_t for use with geometric compute functions
+void qgc_add_dense_layer(quantum_circuit_t* circuit, void* params) {
     if (!circuit || !params) return;
-    
+
     // Create a new layer of gates
     size_t num_qubits = circuit->num_qubits;
-    
+
     // Add rotation gates for each qubit
     for (size_t i = 0; i < num_qubits; i++) {
         // Add RY rotation gate
-        if (!quantum_circuit_add_rotation((quantum_circuit_t*)circuit, i, GATE_TYPE_RY, 0.0f)) {
+        if (!quantum_circuit_add_rotation(circuit, i, GATE_TYPE_RY, 0.0f)) {
             return;
         }
-        
+
         // Add RZ rotation gate
-        if (!quantum_circuit_add_rotation((quantum_circuit_t*)circuit, i, GATE_TYPE_RZ, 0.0f)) {
+        if (!quantum_circuit_add_rotation(circuit, i, GATE_TYPE_RZ, 0.0f)) {
             return;
         }
     }
-    
+
     // Add entangling CNOT gates between adjacent qubits
     for (size_t i = 0; i < num_qubits - 1; i++) {
-        if (!quantum_circuit_add_cnot((quantum_circuit_t*)circuit, i, i + 1)) {
+        if (!quantum_circuit_add_cnot(circuit, i, i + 1)) {
             return;
         }
     }
-    
+
     // Add final rotation layer
     for (size_t i = 0; i < num_qubits; i++) {
-        if (!quantum_circuit_add_rotation((quantum_circuit_t*)circuit, i, GATE_TYPE_RY, 0.0f)) {
+        if (!quantum_circuit_add_rotation(circuit, i, GATE_TYPE_RY, 0.0f)) {
             return;
         }
     }
 }
 
-// Clean up quantum circuit
-void quantum_circuit_destroy(quantum_circuit_t* circuit) {
+// Add dense quantum layer for quantum_circuit (ML circuit type)
+// This is the canonical implementation for quantum_circuit* (from quantum_circuit_types.h)
+// Note: qgc_add_dense_layer above is for quantum_circuit_t* (geometric compute type)
+void add_quantum_dense_layer(quantum_circuit* circuit, void* params) {
     if (!circuit) return;
-    
+    (void)params;  // Layer config not used for basic dense layer
+
+    size_t num_qubits = circuit->num_qubits;
+
+    // Add rotation gates for each qubit (RY followed by RZ)
+    for (size_t i = 0; i < num_qubits; i++) {
+        size_t qubit = i;
+        double angle = 0.0;
+
+        // Add RY rotation gate
+        add_gate(circuit, GATE_TYPE_RY, &qubit, 1, &angle, 1);
+
+        // Add RZ rotation gate
+        add_gate(circuit, GATE_TYPE_RZ, &qubit, 1, &angle, 1);
+    }
+
+    // Add entangling CNOT gates between adjacent qubits
+    for (size_t i = 0; i < num_qubits - 1; i++) {
+        size_t cnot_qubits[2];
+        cnot_qubits[0] = i;
+        cnot_qubits[1] = i + 1;
+        add_gate(circuit, GATE_TYPE_CNOT, cnot_qubits, 2, NULL, 0);
+    }
+
+    // Add final rotation layer (RY only)
+    for (size_t i = 0; i < num_qubits; i++) {
+        size_t qubit = i;
+        double angle = 0.0;
+        add_gate(circuit, GATE_TYPE_RY, &qubit, 1, &angle, 1);
+    }
+}
+
+// Clean up quantum circuit created with qgc_circuit_create
+// Note: Renamed from quantum_circuit_destroy to avoid conflict with quantum_circuit_operations.c
+void qgc_circuit_destroy(quantum_circuit_t* circuit) {
+    if (!circuit) return;
+
     // Clean up nodes
     for (size_t i = 0; i < circuit->num_nodes; i++) {
         quantum_compute_node_t* node = circuit->nodes[i];
@@ -498,11 +546,11 @@ void quantum_circuit_destroy(quantum_circuit_t* circuit) {
         free(node);
     }
     free(circuit->nodes);
-    
+
     // Clean up state and graph
     geometric_destroy_state(circuit->state);
     destroy_computational_graph(circuit->graph);
-    
+
     free(circuit);
 }
 

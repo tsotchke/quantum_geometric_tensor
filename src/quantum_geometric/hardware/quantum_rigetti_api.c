@@ -12,6 +12,12 @@
 #include "quantum_geometric/hardware/quantum_rigetti_api.h"
 #include "quantum_geometric/core/quantum_geometric_logging.h"
 #include <stdlib.h>
+
+// Logging macros for this file
+#define log_info(...)  geometric_log_info(__VA_ARGS__)
+#define log_warn(...)  geometric_log_warning(__VA_ARGS__)
+#define log_error(...) geometric_log_error(__VA_ARGS__)
+#define log_debug(...) geometric_log_debug(__VA_ARGS__)
 #include <string.h>
 #include <stdio.h>
 #include <stdbool.h>

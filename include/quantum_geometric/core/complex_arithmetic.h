@@ -37,17 +37,20 @@ void complex_matrix_conjugate_transpose(const ComplexFloat* a,
 
 // Type conversion utilities
 #ifdef __APPLE__
-#include "accelerate_wrapper.h"
+#include <Accelerate/Accelerate.h>
+// DSPComplex and DSPDoubleComplex are provided by Accelerate
+// Define our own LAPACK complex type for conversion that matches Accelerate's layout
+typedef struct { float r; float i; } LapackComplex;
 #else
 typedef struct { float real; float imag; } DSPComplex;
 typedef struct { double real; double imag; } DSPDoubleComplex;
-typedef struct { float real; float imag; } __CLPK_complex;
+typedef struct { float r; float i; } LapackComplex;
 #endif
 
 DSPComplex to_dsp_complex(ComplexFloat a);
 ComplexFloat from_dsp_complex(DSPComplex a);
-__CLPK_complex to_lapack_complex(ComplexFloat a);
-ComplexFloat from_lapack_complex(__CLPK_complex a);
+LapackComplex to_lapack_complex(ComplexFloat a);
+ComplexFloat from_lapack_complex(LapackComplex a);
 
 // OpenBLAS complex type conversions
 #ifdef HAVE_OPENBLAS

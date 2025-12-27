@@ -35,23 +35,8 @@ struct MultiGPUManager {
 
 #else
 
-// CPU fallback implementation when CUDA is disabled
-// Provides single-device CPU emulation for multi-GPU operations
-
-#define MAX_GPUS 1  // CPU fallback uses single "device"
-
-typedef struct {
-    int device_id;
-    void* host_memory;      // CPU memory buffer
-    size_t memory_size;
-    size_t element_count;
-    DataType data_type;
-    bool is_active;
-} CPUContext;
-
+// Stub implementation when CUDA is disabled
 struct MultiGPUManager {
-    CPUContext context;     // Single CPU context
-    size_t num_devices;     // Always 1 for CPU fallback
     bool initialized;
 };
 
@@ -121,19 +106,11 @@ MultiGPUManager* init_multi_gpu_manager(void) {
     manager->initialized = true;
     return manager;
 #else
-    // CPU fallback implementation
+    // Return stub implementation when CUDA is disabled
     MultiGPUManager* manager = malloc(sizeof(MultiGPUManager));
-    if (!manager) return NULL;
-
-    // Initialize single CPU context
-    manager->num_devices = 1;
-    manager->context.device_id = 0;
-    manager->context.host_memory = NULL;
-    manager->context.memory_size = 0;
-    manager->context.element_count = 0;
-    manager->context.is_active = true;
-    manager->initialized = true;
-
+    if (manager) {
+        manager->initialized = false;
+    }
     return manager;
 #endif
 }
@@ -206,39 +183,8 @@ int distribute_tensor(MultiGPUManager* manager,
     
     return 0;
 #else
-    // CPU fallback: allocate host memory and copy data
-    if (!manager || !manager->initialized || !host_data || size == 0) return -1;
-
-    size_t element_size;
-    switch (dtype) {
-        case TYPE_FLOAT:
-            element_size = sizeof(float);
-            break;
-        case TYPE_DOUBLE:
-            element_size = sizeof(double);
-            break;
-        default:
-            return -1;
-    }
-
-    // Free any existing memory
-    if (manager->context.host_memory) {
-        free(manager->context.host_memory);
-    }
-
-    // Allocate CPU memory
-    manager->context.host_memory = malloc(size);
-    if (!manager->context.host_memory) {
-        return -1;
-    }
-
-    // Copy data to our buffer
-    memcpy(manager->context.host_memory, host_data, size);
-    manager->context.memory_size = size;
-    manager->context.element_count = size / element_size;
-    manager->context.data_type = dtype;
-
-    return 0;
+    // Return error when CUDA is disabled
+    return -1;
 #endif
 }
 
@@ -312,81 +258,8 @@ int all_reduce(MultiGPUManager* manager,
     
     return 0;
 #else
-    // CPU fallback: perform reduction on single CPU buffer
-    if (!manager || !manager->initialized || !data || count == 0) return -1;
-
-    // For single-device CPU, all-reduce with external data means:
-    // reduce data into internal buffer, then copy result back
-    void* internal = manager->context.host_memory;
-    if (!internal) {
-        // No internal buffer - just return success (data is already reduced with itself)
-        return 0;
-    }
-
-    size_t element_size;
-    switch (dtype) {
-        case TYPE_FLOAT:
-            element_size = sizeof(float);
-            break;
-        case TYPE_DOUBLE:
-            element_size = sizeof(double);
-            break;
-        default:
-            return -1;
-    }
-
-    // Perform element-wise reduction between external data and internal buffer
-    size_t max_count = manager->context.element_count < count ?
-                       manager->context.element_count : count;
-
-    if (dtype == TYPE_FLOAT) {
-        float* ext = (float*)data;
-        float* intl = (float*)internal;
-        for (size_t i = 0; i < max_count; i++) {
-            switch (op) {
-                case REDUCE_SUM:
-                    ext[i] = ext[i] + intl[i];
-                    break;
-                case REDUCE_PROD:
-                    ext[i] = ext[i] * intl[i];
-                    break;
-                case REDUCE_MAX:
-                    ext[i] = ext[i] > intl[i] ? ext[i] : intl[i];
-                    break;
-                case REDUCE_MIN:
-                    ext[i] = ext[i] < intl[i] ? ext[i] : intl[i];
-                    break;
-                default:
-                    return -1;
-            }
-        }
-    } else {  // TYPE_DOUBLE
-        double* ext = (double*)data;
-        double* intl = (double*)internal;
-        for (size_t i = 0; i < max_count; i++) {
-            switch (op) {
-                case REDUCE_SUM:
-                    ext[i] = ext[i] + intl[i];
-                    break;
-                case REDUCE_PROD:
-                    ext[i] = ext[i] * intl[i];
-                    break;
-                case REDUCE_MAX:
-                    ext[i] = ext[i] > intl[i] ? ext[i] : intl[i];
-                    break;
-                case REDUCE_MIN:
-                    ext[i] = ext[i] < intl[i] ? ext[i] : intl[i];
-                    break;
-                default:
-                    return -1;
-            }
-        }
-    }
-
-    // Update internal buffer with reduced result
-    memcpy(internal, data, max_count * element_size);
-
-    return 0;
+    // Return error when CUDA is disabled
+    return -1;
 #endif
 }
 
@@ -422,20 +295,8 @@ int gather_results(MultiGPUManager* manager,
     
     return 0;
 #else
-    // CPU fallback: copy internal buffer to host_data
-    if (!manager || !manager->initialized || !host_data) return -1;
-
-    if (!manager->context.host_memory || manager->context.memory_size == 0) {
-        // No data to gather
-        return 0;
-    }
-
-    // Copy from internal buffer to output
-    size_t copy_size = size < manager->context.memory_size ?
-                       size : manager->context.memory_size;
-    memcpy(host_data, manager->context.host_memory, copy_size);
-
-    return 0;
+    // Return error when CUDA is disabled
+    return -1;
 #endif
 }
 
@@ -478,21 +339,8 @@ int execute_multi_gpu_kernel(MultiGPUManager* manager,
     
     return 0;
 #else
-    // CPU fallback: execute callback function if provided
-    // Note: KernelFunction in CPU mode should be a CPU function pointer
-    if (!manager || !manager->initialized) return -1;
-
-    // For CPU fallback, we interpret KernelFunction as a CPU callback
-    // that takes (data, args) parameters
-    if (kernel && manager->context.host_memory) {
-        // Execute the "kernel" as a CPU function on our data
-        // The kernel function signature must match: void (*)(void* data, void* args)
-        typedef void (*CPUKernelFunction)(void*, void*);
-        CPUKernelFunction cpu_kernel = (CPUKernelFunction)kernel;
-        cpu_kernel(manager->context.host_memory, args);
-    }
-
-    return 0;
+    // Return error when CUDA is disabled
+    return -1;
 #endif
 }
 
@@ -518,15 +366,9 @@ void cleanup_multi_gpu_manager(MultiGPUManager* manager) {
     
     free(manager);
 #else
-    // CPU fallback cleanup
-    if (!manager) return;
-
-    // Free allocated host memory
-    if (manager->context.host_memory) {
-        free(manager->context.host_memory);
-        manager->context.host_memory = NULL;
+    // Just free the manager when CUDA is disabled
+    if (manager) {
+        free(manager);
     }
-
-    free(manager);
 #endif
 }

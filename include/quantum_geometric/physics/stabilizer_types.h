@@ -12,9 +12,14 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-// Forward declarations
-typedef struct ProtectionSystem ProtectionSystem;
+// Forward declarations for opaque types
+// MatchingGraph is fully defined in error_syndrome.h
+#ifndef MATCHING_GRAPH_DEFINED
+struct MatchingGraph;
 typedef struct MatchingGraph MatchingGraph;
+#endif
+
+typedef struct ProtectionSystem ProtectionSystem;
 typedef struct AnyonSet AnyonSet;
 typedef struct CorrectionPattern CorrectionPattern;
 
@@ -25,10 +30,20 @@ typedef struct {
 } StabilizerArray;
 
 // Stabilizer type enumeration
-typedef enum {
-    STABILIZER_PLAQUETTE,    // Plaquette stabilizer
-    STABILIZER_VERTEX        // Vertex stabilizer
+#ifndef STABILIZER_TYPE_DEFINED
+#define STABILIZER_TYPE_DEFINED
+typedef enum StabilizerType {
+    // Names used in stabilizer_types.h
+    STABILIZER_PLAQUETTE = 0,    // Plaquette stabilizer (Z-type)
+    STABILIZER_VERTEX = 1,       // Vertex stabilizer (X-type)
+    // Aliases matching basic_topological naming convention
+    PLAQUETTE_STABILIZER = 0,
+    VERTEX_STABILIZER = 1,
+    // Aliases for Floquet code naming convention
+    STABILIZER_Z = 0,            // Z stabilizer (same as plaquette)
+    STABILIZER_X = 1             // X stabilizer (same as vertex)
 } StabilizerType;
+#endif
 
 // Stabilizer configuration
 typedef struct {
@@ -66,17 +81,10 @@ typedef struct {
     double** measurement_history;          // History of measurements
 } StabilizerState;
 
-// Protection system configuration
-typedef struct {
-    double detection_threshold;      // Error detection threshold
-    double confidence_threshold;     // Confidence threshold
-    double weight_scale_factor;      // Weight scaling factor
-    bool use_boundary_matching;      // Enable boundary matching
-    bool enable_parallel;            // Enable parallel operations
-    size_t parallel_group_size;      // Size of parallel groups
-    size_t min_pattern_occurrences; // Minimum pattern occurrences
-    double pattern_threshold;       // Pattern recognition threshold
-    size_t max_matching_iterations; // Maximum matching iterations
-} SyndromeConfig;
+// SyndromeConfig is defined in error_syndrome.h
+// Forward declaration here for use in types that can't include error_syndrome.h
+#ifndef SYNDROME_CONFIG_DEFINED
+typedef struct SyndromeConfig SyndromeConfig;
+#endif
 
 #endif // QUANTUM_GEOMETRIC_STABILIZER_TYPES_H

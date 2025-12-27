@@ -91,7 +91,7 @@ bool apply_quantum_circuit(
     const quantum_circuit_t* circuit
 );
 
-bool measure_quantum_state(
+bool qgtn_measure_qubit(
     const quantum_geometric_tensor_network_t* qgtn,
     size_t qubit,
     double* probability_zero,

@@ -18,6 +18,8 @@
 #include <string.h>
 #include <math.h>
 
+// Forward declaration for qgc_add_dense_layer (defined in quantum_geometric_compute.c)
+void qgc_add_dense_layer(quantum_circuit_t* circuit, void* params);
 
 // Global gradient options
 static gradient_options_t g_gradient_options = {
@@ -1071,12 +1073,13 @@ bool compute_quantum_gradient(
     }
     
     // For gradient computation, we can work directly with the tensor network data
-    if (!qgtn || !qgtn->network || !qgtn->network->nodes || 
+    if (!qgtn || !qgtn->network || !qgtn->network->nodes ||
         qgtn->network->num_nodes < 1) {
         printf("DEBUG: Invalid tensor network state\n");
         return false;
     }
-    
+
+    // Access first tensor node (unified tensor_node_t structure)
     tensor_node_t* node = qgtn->network->nodes[0];
     if (!node || !node->data) {
         printf("DEBUG: Invalid tensor node or data\n");
@@ -1126,7 +1129,7 @@ bool compute_quantum_gradient(
         return false;
     }
     
-    // Initialize network nodes
+    // Initialize network nodes using unified tensor_network_t structure
     printf("DEBUG: Initializing network nodes\n");
     if (!qgtn->network || !qgtn->network->nodes || qgtn->network->num_nodes < 1) {
         printf("DEBUG: Creating new network nodes\n");
@@ -1138,15 +1141,22 @@ bool compute_quantum_gradient(
             return false;
         }
         memset(((quantum_geometric_tensor_network_t*)qgtn)->network, 0, sizeof(tensor_network_t));
-        
-        // Initialize network properties
+
+        // Initialize network properties (unified tensor_network_t)
         ((quantum_geometric_tensor_network_t*)qgtn)->network->num_nodes = 1;
         ((quantum_geometric_tensor_network_t*)qgtn)->network->capacity = 16;
         ((quantum_geometric_tensor_network_t*)qgtn)->network->next_id = 1;
+        ((quantum_geometric_tensor_network_t*)qgtn)->network->is_optimized = false;
         ((quantum_geometric_tensor_network_t*)qgtn)->network->optimized = false;
+        ((quantum_geometric_tensor_network_t*)qgtn)->network->contraction_order = NULL;
+        ((quantum_geometric_tensor_network_t*)qgtn)->network->max_memory = 0;
+        ((quantum_geometric_tensor_network_t*)qgtn)->network->auxiliary_data = NULL;
+        ((quantum_geometric_tensor_network_t*)qgtn)->network->device = NULL;
         ((quantum_geometric_tensor_network_t*)qgtn)->network->last_error = TENSOR_NETWORK_SUCCESS;
         memset(&((quantum_geometric_tensor_network_t*)qgtn)->network->metrics, 0, sizeof(tensor_network_metrics_t));
-        ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes = malloc(16 * sizeof(tensor_node_t*));
+
+        // Allocate nodes array (array of pointers to tensor_node_t)
+        ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes = calloc(16, sizeof(tensor_node_t*));
         if (!qgtn->network->nodes) {
             printf("DEBUG: Failed to allocate network nodes\n");
             free(((quantum_geometric_tensor_network_t*)qgtn)->network);
@@ -1154,11 +1164,10 @@ bool compute_quantum_gradient(
             destroy_memory_system(memory);
             return false;
         }
-        memset(((quantum_geometric_tensor_network_t*)qgtn)->network->nodes, 0, 16 * sizeof(tensor_node_t*));
-        
-        // Initialize first node
-        ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0] = malloc(sizeof(tensor_node_t));
-        if (!qgtn->network->nodes[0]) {
+
+        // Allocate and initialize first tensor node (tensor_node_t structure)
+        tensor_node_t* first_node = malloc(sizeof(tensor_node_t));
+        if (!first_node) {
             printf("DEBUG: Failed to allocate first node\n");
             free(((quantum_geometric_tensor_network_t*)qgtn)->network->nodes);
             free(((quantum_geometric_tensor_network_t*)qgtn)->network);
@@ -1166,78 +1175,64 @@ bool compute_quantum_gradient(
             destroy_memory_system(memory);
             return false;
         }
-        memset(((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0], 0, sizeof(tensor_node_t));
-        
-        // Initialize node properties
-        ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->id = 0;
-        ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->is_valid = true;
-        ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->num_dimensions = 1;
-        ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->dimensions = malloc(sizeof(size_t));
-        if (!qgtn->network->nodes[0]->dimensions) {
+        memset(first_node, 0, sizeof(tensor_node_t));
+        ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0] = first_node;
+
+        first_node->num_dimensions = 1;
+        first_node->id = 0;
+        first_node->is_valid = true;
+        first_node->num_connections = 0;
+        first_node->connected_nodes = NULL;
+        first_node->connected_dims = NULL;
+
+        first_node->dimensions = malloc(sizeof(size_t));
+        if (!first_node->dimensions) {
             printf("DEBUG: Failed to allocate node dimensions\n");
-            free(((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]);
+            free(first_node);
             free(((quantum_geometric_tensor_network_t*)qgtn)->network->nodes);
             free(((quantum_geometric_tensor_network_t*)qgtn)->network);
             memory_free(memory, state);
             destroy_memory_system(memory);
             return false;
         }
-        ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->dimensions[0] = state_dim;
-        
+        first_node->dimensions[0] = state_dim;
+
         // Initialize node data
-        ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->data = malloc(state_dim * sizeof(ComplexFloat));
-        if (!qgtn->network->nodes[0]->data) {
+        first_node->data = malloc(state_dim * sizeof(ComplexFloat));
+        if (!first_node->data) {
             printf("DEBUG: Failed to allocate node data\n");
-            free(((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->dimensions);
-            free(((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]);
+            free(first_node->dimensions);
+            free(first_node);
             free(((quantum_geometric_tensor_network_t*)qgtn)->network->nodes);
             free(((quantum_geometric_tensor_network_t*)qgtn)->network);
             memory_free(memory, state);
             destroy_memory_system(memory);
             return false;
         }
-        
+
         // Initialize to |0⟩ state
-        memset(((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->data, 0, state_dim * sizeof(ComplexFloat));
-        ((ComplexFloat*)((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->data)[0].real = 1.0f;
-        ((ComplexFloat*)((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->data)[0].imag = 0.0f;
-        
-        // Initialize node connections for gradient flow
-        ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->num_connections = 2;  // Connect to previous and next layer
-        ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->connected_nodes = malloc(2 * sizeof(tensor_node_t*));
-        if (!qgtn->network->nodes[0]->connected_nodes) {
-            printf("DEBUG: Failed to allocate connected nodes\n");
-            free(((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->data);
-            free(((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->dimensions);
-            free(((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]);
+        memset(first_node->data, 0, state_dim * sizeof(ComplexFloat));
+        first_node->data[0].real = 1.0f;
+        first_node->data[0].imag = 0.0f;
+
+        // Use network connections array for gradient flow tracking
+        ((quantum_geometric_tensor_network_t*)qgtn)->network->connections = malloc(4 * sizeof(size_t));
+        if (!qgtn->network->connections) {
+            printf("DEBUG: Failed to allocate connections\n");
+            free(first_node->data);
+            free(first_node->dimensions);
+            free(first_node);
             free(((quantum_geometric_tensor_network_t*)qgtn)->network->nodes);
             free(((quantum_geometric_tensor_network_t*)qgtn)->network);
             memory_free(memory, state);
             destroy_memory_system(memory);
             return false;
         }
-        ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->connected_nodes[0] = (size_t)0;  // Self connection for current layer
-        ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->connected_nodes[1] = (size_t)0;  // Connection for gradient backprop
-        
-        ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->connected_dims = malloc(2 * sizeof(size_t));
-        if (!qgtn->network->nodes[0]->connected_dims) {
-            printf("DEBUG: Failed to allocate connected dims\n");
-            free(((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->connected_nodes);
-            free(((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->data);
-            free(((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->dimensions);
-            free(((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]);
-            free(((quantum_geometric_tensor_network_t*)qgtn)->network->nodes);
-            free(((quantum_geometric_tensor_network_t*)qgtn)->network);
-            memory_free(memory, state);
-            destroy_memory_system(memory);
-            return false;
-        }
-        ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->connected_dims[0] = 0;  // Forward dimension
-        ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->connected_dims[1] = 1;  // Backward dimension
-        ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->id = 0;
-        ((quantum_geometric_tensor_network_t*)qgtn)->network->nodes[0]->is_valid = true;
+        ((quantum_geometric_tensor_network_t*)qgtn)->network->num_connections = 2;
+        ((quantum_geometric_tensor_network_t*)qgtn)->network->connections[0] = 0;  // Self connection
+        ((quantum_geometric_tensor_network_t*)qgtn)->network->connections[1] = 0;  // Gradient connection
     }
-    
+
     // Initialize state from node data
     printf("DEBUG: Initializing state from node data\n");
     memcpy(state, qgtn->network->nodes[0]->data, state_dim * sizeof(ComplexFloat));
@@ -1332,7 +1327,7 @@ bool compute_quantum_gradient(
         layer_config.params[1] = NULL;  // Will be set during parameter shift
         
         // Add layers to circuit
-        add_quantum_dense_layer((quantum_circuit*)((quantum_geometric_tensor_network_t*)qgtn)->circuit, &layer_config);
+        qgc_add_dense_layer(((quantum_geometric_tensor_network_t*)qgtn)->circuit, &layer_config);
         
         free(layer_config.types);
         free(layer_config.params);

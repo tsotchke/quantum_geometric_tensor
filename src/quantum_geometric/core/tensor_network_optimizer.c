@@ -868,3 +868,330 @@ void cleanup_tensor_optimizer(TensorNetworkOptimizer* optimizer) {
 // Note: cleanup functions are defined as cleanup_tensor_internal and
 // cleanup_internal_tensor_network above to avoid conflicts with
 // tensor_network_operations.h declarations
+
+// =============================================================================
+// Network Creation Functions
+// =============================================================================
+
+/**
+ * @brief Helper to create and initialize a tensor node with Xavier initialization
+ *
+ * Creates a tensor node for use in feed-forward and projection networks.
+ * Uses Xavier initialization scaled for the layer dimensions.
+ */
+static tensor_node_t* create_initialized_tensor_node(
+    size_t id,
+    size_t dim0,
+    size_t dim1,
+    double init_scale) {
+
+    tensor_node_t* node = aligned_alloc(64, sizeof(tensor_node_t));
+    if (!node) return NULL;
+
+    memset(node, 0, sizeof(tensor_node_t));
+
+    // Set dimensions
+    node->rank = 2;
+    node->num_dimensions = 2;
+    node->dimensions = aligned_alloc(64, 2 * sizeof(size_t));
+    if (!node->dimensions) {
+        free(node);
+        return NULL;
+    }
+    node->dimensions[0] = dim0;
+    node->dimensions[1] = dim1;
+
+    // Calculate total size
+    size_t total_size = dim0 * dim1;
+    node->total_size = total_size;
+
+    // Allocate and initialize data with Xavier initialization
+    node->data = aligned_alloc(64, total_size * sizeof(ComplexFloat));
+    if (!node->data) {
+        free(node->dimensions);
+        free(node);
+        return NULL;
+    }
+
+    // Xavier/Glorot initialization for neural network weights
+    for (size_t i = 0; i < total_size; i++) {
+        float val = (float)(((double)rand() / RAND_MAX - 0.5) * 2.0 * init_scale);
+        node->data[i] = complex_float_create(val, 0.0f);
+    }
+
+    // Allocate connection tracking arrays
+    node->connected_nodes = aligned_alloc(64, 2 * sizeof(size_t));
+    node->connected_dims = aligned_alloc(64, 2 * sizeof(size_t));
+    if (!node->connected_nodes || !node->connected_dims) {
+        free(node->connected_nodes);
+        free(node->connected_dims);
+        free(node->data);
+        free(node->dimensions);
+        free(node);
+        return NULL;
+    }
+    node->num_connections = 0;
+
+    // Set node metadata
+    node->id = id;
+    node->is_valid = true;
+
+    return node;
+}
+
+/**
+ * @brief Helper to add a connection between two tensor nodes
+ *
+ * Updates the connection tracking arrays on both nodes.
+ */
+static void connect_nodes_internal(
+    tensor_node_t* node1,
+    size_t dim1,
+    tensor_node_t* node2,
+    size_t dim2) {
+
+    if (!node1 || !node2) return;
+
+    // Add connection from node1 to node2
+    if (node1->num_connections < 2) {
+        node1->connected_nodes[node1->num_connections] = node2->id;
+        node1->connected_dims[node1->num_connections] = dim1;
+        node1->num_connections++;
+    }
+
+    // Add connection from node2 to node1
+    if (node2->num_connections < 2) {
+        node2->connected_nodes[node2->num_connections] = node1->id;
+        node2->connected_dims[node2->num_connections] = dim2;
+        node2->num_connections++;
+    }
+}
+
+/**
+ * @brief Create a feed-forward neural network using tensor network structure
+ *
+ * Creates a multi-layer perceptron as a tensor network where each layer
+ * is represented as a matrix tensor. The network structure follows the
+ * Matrix Product State (MPS) decomposition common in tensor network methods.
+ *
+ * Architecture:
+ *   Input Layer (input_dim x hidden_dim)
+ *        |
+ *   Hidden Layer (hidden_dim x hidden_dim)
+ *        |
+ *   Output Layer (hidden_dim x output_dim)
+ *
+ * Each layer's weights are represented as a rank-2 tensor node, and
+ * connections between layers represent the contracted bond dimensions.
+ */
+tensor_network_t* create_feed_forward_network(
+    tensor_network_optimizer_t* optimizer,
+    size_t input_dim,
+    size_t output_dim) {
+
+    if (!optimizer || input_dim == 0 || output_dim == 0) return NULL;
+
+    // Allocate tensor network structure
+    tensor_network_t* network = aligned_alloc(64, sizeof(tensor_network_t));
+    if (!network) return NULL;
+
+    // Initialize basic structure
+    memset(network, 0, sizeof(tensor_network_t));
+
+    // Allocate nodes array with initial capacity
+    size_t initial_capacity = 8;
+    network->nodes = aligned_alloc(64, initial_capacity * sizeof(tensor_node_t*));
+    if (!network->nodes) {
+        free(network);
+        return NULL;
+    }
+    network->num_nodes = 0;
+    network->capacity = initial_capacity;
+    network->next_id = 0;
+    network->optimized = false;
+    network->is_optimized = false;
+    network->last_error = TENSOR_NETWORK_SUCCESS;
+
+    // Determine hidden layer size using geometric mean heuristic
+    // This provides a balanced bottleneck between input and output
+    size_t hidden_dim = (size_t)sqrt((double)input_dim * (double)output_dim);
+    if (hidden_dim < 16) hidden_dim = 16;  // Minimum hidden dimension for capacity
+    if (hidden_dim > 256) hidden_dim = 256;  // Cap for memory efficiency
+
+    // Calculate Xavier initialization scales for each layer
+    double scale_input_hidden = sqrt(2.0 / (double)(input_dim + hidden_dim));
+    double scale_hidden_hidden = sqrt(2.0 / (double)(hidden_dim * 2));
+    double scale_hidden_output = sqrt(2.0 / (double)(hidden_dim + output_dim));
+
+    // Create input layer tensor (input_dim x hidden_dim)
+    tensor_node_t* input_node = create_initialized_tensor_node(
+        network->next_id++, input_dim, hidden_dim, scale_input_hidden);
+    if (!input_node) {
+        free(network->nodes);
+        free(network);
+        return NULL;
+    }
+    network->nodes[network->num_nodes++] = input_node;
+
+    // Create hidden layer tensor (hidden_dim x hidden_dim)
+    tensor_node_t* hidden_node = create_initialized_tensor_node(
+        network->next_id++, hidden_dim, hidden_dim, scale_hidden_hidden);
+    if (!hidden_node) {
+        // Cleanup on failure
+        free(input_node->data);
+        free(input_node->dimensions);
+        free(input_node->connected_nodes);
+        free(input_node->connected_dims);
+        free(input_node);
+        free(network->nodes);
+        free(network);
+        return NULL;
+    }
+    network->nodes[network->num_nodes++] = hidden_node;
+
+    // Create output layer tensor (hidden_dim x output_dim)
+    tensor_node_t* output_node = create_initialized_tensor_node(
+        network->next_id++, hidden_dim, output_dim, scale_hidden_output);
+    if (!output_node) {
+        // Cleanup on failure
+        for (size_t i = 0; i < network->num_nodes; i++) {
+            tensor_node_t* n = network->nodes[i];
+            free(n->data);
+            free(n->dimensions);
+            free(n->connected_nodes);
+            free(n->connected_dims);
+            free(n);
+        }
+        free(network->nodes);
+        free(network);
+        return NULL;
+    }
+    network->nodes[network->num_nodes++] = output_node;
+
+    // Establish connections between layers
+    // Input -> Hidden: contract on dimension 1 (hidden_dim) of input with dimension 0 of hidden
+    connect_nodes_internal(input_node, 1, hidden_node, 0);
+
+    // Hidden -> Output: contract on dimension 1 (hidden_dim) of hidden with dimension 0 of output
+    connect_nodes_internal(hidden_node, 1, output_node, 0);
+
+    // Track connections in legacy format for backward compatibility
+    network->num_connections = 2;
+    network->connections = aligned_alloc(64, 4 * sizeof(size_t));
+    if (network->connections) {
+        // Connection 0: input(dim1) -> hidden(dim0)
+        network->connections[0] = input_node->id;
+        network->connections[1] = hidden_node->id;
+        // Connection 1: hidden(dim1) -> output(dim0)
+        network->connections[2] = hidden_node->id;
+        network->connections[3] = output_node->id;
+    }
+
+    // Initialize performance metrics
+    memset(&network->metrics, 0, sizeof(tensor_network_metrics_t));
+
+    // Update optimizer metrics
+    optimizer->metrics.total_optimizations++;
+
+    return network;
+}
+
+/**
+ * @brief Create a projection network for dimensionality reduction
+ *
+ * Creates a tensor network that projects high-dimensional inputs to
+ * lower-dimensional outputs using a two-stage tensor decomposition.
+ * This is similar to a truncated SVD or PCA projection.
+ *
+ * Architecture:
+ *   Left Projection (input_dim x bottleneck_dim)
+ *         |
+ *   Right Projection (bottleneck_dim x output_dim)
+ *
+ * The bottleneck dimension controls the effective rank of the projection,
+ * enabling dimensionality reduction while preserving important features.
+ */
+tensor_network_t* create_projection_network(
+    tensor_network_optimizer_t* optimizer,
+    size_t input_dim,
+    size_t output_dim) {
+
+    if (!optimizer || input_dim == 0 || output_dim == 0) return NULL;
+
+    // Allocate tensor network structure
+    tensor_network_t* network = aligned_alloc(64, sizeof(tensor_network_t));
+    if (!network) return NULL;
+
+    // Initialize basic structure
+    memset(network, 0, sizeof(tensor_network_t));
+
+    // Allocate nodes array with initial capacity
+    size_t initial_capacity = 8;
+    network->nodes = aligned_alloc(64, initial_capacity * sizeof(tensor_node_t*));
+    if (!network->nodes) {
+        free(network);
+        return NULL;
+    }
+    network->num_nodes = 0;
+    network->capacity = initial_capacity;
+    network->next_id = 0;
+    network->optimized = false;
+    network->is_optimized = false;
+    network->last_error = TENSOR_NETWORK_SUCCESS;
+
+    // Compute bottleneck dimension
+    // For projection networks, the bottleneck controls the effective rank
+    size_t bottleneck_dim = (input_dim < output_dim) ? input_dim : output_dim;
+    if (bottleneck_dim < 8) bottleneck_dim = 8;  // Minimum for numerical stability
+    if (bottleneck_dim > 128) bottleneck_dim = 128;  // Cap for efficiency
+
+    // Calculate orthogonal-like initialization scales
+    // For projection matrices, we approximate orthogonal initialization
+    double scale_left = sqrt(1.0 / (double)input_dim);
+    double scale_right = sqrt(1.0 / (double)bottleneck_dim);
+
+    // Create left projection tensor (input_dim x bottleneck_dim)
+    tensor_node_t* left_node = create_initialized_tensor_node(
+        network->next_id++, input_dim, bottleneck_dim, scale_left);
+    if (!left_node) {
+        free(network->nodes);
+        free(network);
+        return NULL;
+    }
+    network->nodes[network->num_nodes++] = left_node;
+
+    // Create right projection tensor (bottleneck_dim x output_dim)
+    tensor_node_t* right_node = create_initialized_tensor_node(
+        network->next_id++, bottleneck_dim, output_dim, scale_right);
+    if (!right_node) {
+        free(left_node->data);
+        free(left_node->dimensions);
+        free(left_node->connected_nodes);
+        free(left_node->connected_dims);
+        free(left_node);
+        free(network->nodes);
+        free(network);
+        return NULL;
+    }
+    network->nodes[network->num_nodes++] = right_node;
+
+    // Establish connection between projection stages
+    // Left -> Right: contract on bottleneck dimension
+    connect_nodes_internal(left_node, 1, right_node, 0);
+
+    // Track connections in legacy format
+    network->num_connections = 1;
+    network->connections = aligned_alloc(64, 2 * sizeof(size_t));
+    if (network->connections) {
+        network->connections[0] = left_node->id;
+        network->connections[1] = right_node->id;
+    }
+
+    // Initialize performance metrics
+    memset(&network->metrics, 0, sizeof(tensor_network_metrics_t));
+
+    // Update optimizer metrics
+    optimizer->metrics.total_optimizations++;
+
+    return network;
+}

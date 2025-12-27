@@ -33,10 +33,14 @@ typedef struct quantum_circuit {
     size_t num_gates;        // Number of gates
     size_t capacity;         // Allocated capacity
     size_t num_qubits;       // Total number of qubits
+    size_t num_classical_bits; // Number of classical bits
     bool* measured;          // Array tracking measured qubits
     void* optimization_data; // Data for circuit optimization
     geometric_processor_t* processor; // Geometric processor for computations
     computational_graph_t* graph;    // Computational graph
+    double* initial_state;   // Initial quantum state (if any)
+    char* name;              // Circuit name/identifier
+    void* backend_data;      // Backend-specific data
 } quantum_circuit;
 
 // Function declarations

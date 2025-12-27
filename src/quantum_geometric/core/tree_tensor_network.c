@@ -2,6 +2,7 @@
 #include "quantum_geometric/core/numerical_backend.h"
 #include "quantum_geometric/core/error_handling.h"
 #include "quantum_geometric/core/memory_singleton.h"
+#include "quantum_geometric/core/advanced_memory_system.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -40,7 +41,7 @@ static MemoryPool* create_default_memory_pool(void) {
     }
     
     // Create memory pool
-    void* pool = create_memory_pool(memory, &pool_config);
+    void* pool = ams_create_memory_pool(memory, &pool_config);
     if (!pool) {
         printf("DEBUG: Failed to create memory pool\n");
         return NULL;
@@ -76,7 +77,7 @@ static void* pool_alloc(MemoryPool* pool, size_t size) {
         return malloc(size);
     }
     
-    return pool_allocate(memory, pool->fast_path_cache, size);
+    return ams_pool_allocate(memory, pool->fast_path_cache, size);
 }
 
 // Helper function to free memory from pool
@@ -93,7 +94,7 @@ static void pool_free_memory(MemoryPool* pool, void* ptr) {
         return;
     }
     
-    pool_free(memory, pool->fast_path_cache, ptr);
+    ams_pool_free(memory, pool->fast_path_cache, ptr);
 }
 
 // Create a new tree tensor network
@@ -172,7 +173,7 @@ void destroy_tree_tensor_network(tree_tensor_network_t* ttn) {
         // Get global memory system
         advanced_memory_system_t* memory = ttn->memory_system;
         if (memory && ttn->memory_pool->fast_path_cache) {
-            destroy_memory_pool(memory, ttn->memory_pool->fast_path_cache);
+            ams_destroy_memory_pool(memory, ttn->memory_pool->fast_path_cache);
         }
         free(ttn->memory_pool);
     }
@@ -467,35 +468,21 @@ bool contract_tensor_streams(
         size_t chunk2_size = (stream2->current_offset < stream2->total_size) ? 
                             stream2->chunk_size : stream2->total_size % stream2->chunk_size;
         
-        // Tensor contraction: compute outer product for streaming chunks
-        // For tensor indices i (from stream1) and j (from stream2), compute C[i,j] = A[i] * B[j]
-        // This handles the general case of tensor outer product contraction
+        // Simple matrix multiplication as an example
+        // In a real implementation, this would be a more complex tensor contraction
         for (size_t i = 0; i < chunk1_size; i++) {
             for (size_t j = 0; j < chunk2_size; j++) {
-                size_t result_idx = i * chunk2_size + j;
-                if (result_idx < result->chunk_size) {
-                    // Complex multiplication: (a + bi)(c + di) = (ac - bd) + (ad + bc)i
-                    result->buffer[result_idx].real =
-                        stream1->buffer[i].real * stream2->buffer[j].real -
-                        stream1->buffer[i].imag * stream2->buffer[j].imag;
-                    result->buffer[result_idx].imag =
-                        stream1->buffer[i].real * stream2->buffer[j].imag +
-                        stream1->buffer[i].imag * stream2->buffer[j].real;
-                }
+                result->buffer[i * chunk2_size + j].real = 
+                    stream1->buffer[i].real * stream2->buffer[j].real - 
+                    stream1->buffer[i].imag * stream2->buffer[j].imag;
+                result->buffer[i * chunk2_size + j].imag = 
+                    stream1->buffer[i].real * stream2->buffer[j].imag + 
+                    stream1->buffer[i].imag * stream2->buffer[j].real;
             }
         }
-
-        // Write result chunk to hierarchical matrix storage
-        // The result is accumulated into the result stream's source tensor
-        tree_tensor_node_t* result_node = (tree_tensor_node_t*)result->source;
-        if (result_node && result_node->h_matrix && result_node->h_matrix->data) {
-            size_t write_offset = result->current_offset;
-            size_t write_size = chunk1_size * chunk2_size;
-            for (size_t k = 0; k < write_size && (write_offset + k) < result_node->h_matrix->n; k++) {
-                result_node->h_matrix->data[write_offset + k] =
-                    (double complex){result->buffer[k].real, result->buffer[k].imag};
-            }
-        }
+        
+        // Write result chunk
+        // In a real implementation, this would write to the result tensor
         
         // Load next chunks
         if (!stream_next_chunk(stream1) || !stream_next_chunk(stream2)) {
@@ -551,10 +538,9 @@ bool contract_tree_tensor_nodes(
             return false;
         }
         
-        // Calculate result dimensions for tensor contraction
-        // General tensor contraction: C[i,k,j,l,...] = A[i,k,...] * B[j,l,...]
-        // When contracting over shared indices, dimensions reduce accordingly
-        // For outer product (no shared indices), result dims = dims(A) + dims(B)
+        // Calculate result dimensions
+        // For simplicity, we'll just concatenate the dimensions
+        // In a real implementation, this would handle tensor contraction properly
         size_t num_result_dims = node1->num_dimensions + node2->num_dimensions;
         size_t* result_dims = pool_alloc(ttn->memory_pool, num_result_dims * sizeof(size_t));
         if (!result_dims) {
@@ -569,8 +555,9 @@ bool contract_tree_tensor_nodes(
         memcpy(result_dims + node1->num_dimensions, node2->dimensions, 
                node2->num_dimensions * sizeof(size_t));
         
-        // Create result node for streaming contraction
-        // The actual data will be populated by contract_tensor_streams below
+        // Create result node
+        // For now, we'll just create a placeholder node
+        // In a real implementation, this would be filled with the contraction result
         *result = pool_alloc(ttn->memory_pool, sizeof(tree_tensor_node_t));
         if (!*result) {
             printf("DEBUG: Failed to allocate result node\n");
@@ -633,12 +620,13 @@ bool contract_tree_tensor_nodes(
         destroy_tensor_stream(stream2);
     } else {
         printf("DEBUG: Using direct contraction for small tensors\n");
-
-        // For small tensors, use direct in-memory contraction
-        // This performs general tensor contraction between node1 and node2
-        // The result tensor is formed by outer product of the input tensors
-
-        // Calculate result dimensions for outer product contraction
+        
+        // For small tensors, use direct contraction
+        // This is a simplified implementation
+        // In a real implementation, this would handle tensor contraction properly
+        
+        // Calculate result dimensions
+        // For simplicity, we'll just concatenate the dimensions
         size_t num_result_dims = node1->num_dimensions + node2->num_dimensions;
         size_t* result_dims = pool_alloc(ttn->memory_pool, num_result_dims * sizeof(size_t));
         if (!result_dims) {
@@ -662,111 +650,27 @@ bool contract_tree_tensor_nodes(
             return false;
         }
         
-        // Perform tensor contraction
-        // For outer products: C[i,j] = A[i] * B[j]
-        // For contractions: C[i,k] = sum_j A[i,j] * B[j,k]
-
-        ComplexFloat* data1 = NULL;
-        ComplexFloat* data2 = NULL;
-        bool free_data1 = false;
-        bool free_data2 = false;
-
-        // Extract data from hierarchical matrices if needed
-        if (node1->use_hierarchical && node1->h_matrix) {
-            data1 = pool_alloc(ttn->memory_pool, total_size1 * sizeof(ComplexFloat));
-            if (data1) {
-                // Convert hierarchical to dense
-                for (size_t i = 0; i < total_size1 && i < node1->h_matrix->n; i++) {
-                    data1[i].real = creal(node1->h_matrix->data[i]);
-                    data1[i].imag = cimag(node1->h_matrix->data[i]);
-                }
-                free_data1 = true;
-            }
+        // Perform contraction
+        // This is a simplified implementation (outer product)
+        // In a real implementation, this would handle tensor contraction properly
+        if (node1->use_hierarchical || node2->use_hierarchical) {
+            // Handle hierarchical matrices
+            // This is a placeholder
+            memset(result_data, 0, result_size * sizeof(ComplexFloat));
         } else {
-            data1 = node1->data;
-        }
-
-        if (node2->use_hierarchical && node2->h_matrix) {
-            data2 = pool_alloc(ttn->memory_pool, total_size2 * sizeof(ComplexFloat));
-            if (data2) {
-                // Convert hierarchical to dense
-                for (size_t i = 0; i < total_size2 && i < node2->h_matrix->n; i++) {
-                    data2[i].real = creal(node2->h_matrix->data[i]);
-                    data2[i].imag = cimag(node2->h_matrix->data[i]);
-                }
-                free_data2 = true;
-            }
-        } else {
-            data2 = node2->data;
-        }
-
-        if (!data1 || !data2) {
-            printf("DEBUG: Failed to extract tensor data\n");
-            if (free_data1) pool_free_memory(ttn->memory_pool, data1);
-            if (free_data2) pool_free_memory(ttn->memory_pool, data2);
-            pool_free_memory(ttn->memory_pool, result_data);
-            pool_free_memory(ttn->memory_pool, result_dims);
-            return false;
-        }
-
-        // Determine contraction type based on shared dimensions
-        // For simplicity, we check if node1's last dim matches node2's first dim
-        bool is_contraction = false;
-        size_t contract_dim = 0;
-
-        if (node1->num_dimensions > 0 && node2->num_dimensions > 0) {
-            size_t last_dim1 = node1->dimensions[node1->num_dimensions - 1];
-            size_t first_dim2 = node2->dimensions[0];
-            if (last_dim1 == first_dim2) {
-                is_contraction = true;
-                contract_dim = last_dim1;
-            }
-        }
-
-        if (is_contraction && contract_dim > 0) {
-            // Matrix-like contraction: C[i,k] = sum_j A[i,j] * B[j,k]
-            size_t outer1 = total_size1 / contract_dim;
-            size_t outer2 = total_size2 / contract_dim;
-
-            for (size_t i = 0; i < outer1; i++) {
-                for (size_t k = 0; k < outer2; k++) {
-                    ComplexFloat sum = {0.0f, 0.0f};
-                    for (size_t j = 0; j < contract_dim; j++) {
-                        size_t idx1 = i * contract_dim + j;
-                        size_t idx2 = j * outer2 + k;
-                        if (idx1 < total_size1 && idx2 < total_size2) {
-                            sum.real += data1[idx1].real * data2[idx2].real -
-                                       data1[idx1].imag * data2[idx2].imag;
-                            sum.imag += data1[idx1].real * data2[idx2].imag +
-                                       data1[idx1].imag * data2[idx2].real;
-                        }
-                    }
-                    size_t result_idx = i * outer2 + k;
-                    if (result_idx < result_size) {
-                        result_data[result_idx] = sum;
-                    }
-                }
-            }
-        } else {
-            // Outer product: C[i,j] = A[i] * B[j]
+            // Simple outer product as an example
             for (size_t i = 0; i < total_size1; i++) {
                 for (size_t j = 0; j < total_size2; j++) {
                     size_t idx = i * total_size2 + j;
-                    if (idx < result_size) {
-                        result_data[idx].real =
-                            data1[i].real * data2[j].real -
-                            data1[i].imag * data2[j].imag;
-                        result_data[idx].imag =
-                            data1[i].real * data2[j].imag +
-                            data1[i].imag * data2[j].real;
-                    }
+                    result_data[idx].real = 
+                        node1->data[i].real * node2->data[j].real - 
+                        node1->data[i].imag * node2->data[j].imag;
+                    result_data[idx].imag = 
+                        node1->data[i].real * node2->data[j].imag + 
+                        node1->data[i].imag * node2->data[j].real;
                 }
             }
         }
-
-        // Clean up temporary data
-        if (free_data1) pool_free_memory(ttn->memory_pool, data1);
-        if (free_data2) pool_free_memory(ttn->memory_pool, data2);
         
         // Create result node
         *result = add_tree_tensor_node(ttn, result_data, result_dims, num_result_dims, false);
@@ -2288,61 +2192,30 @@ bool convert_tensor_network_to_tree(
     size_t tree_node_idx = 0;
     tree_tensor_node_t* current = (*ttn)->root;
     
-    // Build proper ID-based mapping from original tensor network to tree tensor nodes
-    // Use breadth-first traversal to match nodes by ID
-    tree_tensor_node_t** bfs_queue = malloc((*ttn)->num_nodes * sizeof(tree_tensor_node_t*));
-    size_t queue_head = 0, queue_tail = 0;
-
-    if (bfs_queue && (*ttn)->root) {
-        bfs_queue[queue_tail++] = (*ttn)->root;
-    }
-
-    // Map nodes by traversing tree and matching IDs
-    while (queue_head < queue_tail && bfs_queue) {
-        tree_tensor_node_t* tree_node = bfs_queue[queue_head++];
-        if (!tree_node) continue;
-
-        // Find matching original node by ID
-        for (size_t i = 0; i < network->num_nodes; i++) {
-            tensor_node_t* orig_node = network->nodes[i];
-            if (orig_node && orig_node->is_valid && orig_node->id == tree_node->id) {
-                node_map[orig_node->id] = tree_node;
-                break;
-            }
-        }
-
-        // Add children to queue for traversal
-        for (size_t c = 0; c < tree_node->num_children; c++) {
-            if (tree_node->children[c] && queue_tail < (*ttn)->num_nodes) {
-                bfs_queue[queue_tail++] = tree_node->children[c];
-            }
-        }
-    }
-
-    free(bfs_queue);
-
-    // Verify mapping completeness and handle any unmapped nodes
+    // Simple mapping of nodes by index (this is a simplification)
+    // In a real implementation, we would need to handle the tree structure properly
+    // and map nodes by their IDs rather than indices
     for (size_t i = 0; i < network->num_nodes; i++) {
         tensor_node_t* orig_node = network->nodes[i];
-        if (!orig_node || !orig_node->is_valid) continue;
-
-        if (!node_map[orig_node->id]) {
-            // Node not yet mapped - create new tree node for it using add_tree_tensor_node
-            tree_tensor_node_t* new_node = add_tree_tensor_node(
-                *ttn,
-                orig_node->data,
-                orig_node->dimensions,
-                orig_node->num_dimensions,
-                true  // use_hierarchical
-            );
-            if (new_node) {
-                node_map[orig_node->id] = new_node;
-                // Connect to root as parent if not already the root
-                if ((*ttn)->root && new_node != (*ttn)->root) {
-                    connect_tree_tensor_nodes(*ttn, (*ttn)->root, new_node);
-                }
+        if (!orig_node || !orig_node->is_valid) {
+            continue;
+        }
+        
+        // Find the corresponding tree node (simplified approach)
+        if (i == 0) {
+            // First node is the root
+            node_map[orig_node->id] = (*ttn)->root;
+        } else if (tree_node_idx < (*ttn)->num_nodes) {
+            // For simplicity, we're assuming nodes are created in order
+            // This is a major simplification and would need to be improved
+            // in a real implementation
+            if (current && current->num_children > 0) {
+                current = current->children[0];
+                node_map[orig_node->id] = current;
             }
         }
+        
+        tree_node_idx++;
     }
     
     // Establish connections based on each node's connections

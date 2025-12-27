@@ -15,7 +15,7 @@ typedef struct quantum_gate_t quantum_gate_t;
 
 // VQE context
 typedef struct VQEContext {
-    struct quantum_circuit* ansatz;
+    quantum_circuit_t* ansatz;
     HamiltonianOperator* hamiltonian;
     OptimizationContext* optimizer;
     double* parameters;
@@ -25,8 +25,8 @@ typedef struct VQEContext {
 
 // QAOA context
 typedef struct QAOAContext {
-    struct quantum_circuit* mixer;
-    struct quantum_circuit* problem;
+    quantum_circuit_t* mixer;
+    quantum_circuit_t* problem;
     OptimizationContext* optimizer;
     double* parameters;
     size_t num_parameters;
@@ -49,7 +49,7 @@ typedef struct {
 } QAOAResult;
 
 // VQE initialization and execution
-VQEContext* init_vqe(const struct quantum_circuit* ansatz,
+VQEContext* init_vqe(const quantum_circuit_t* ansatz,
                     const HamiltonianOperator* hamiltonian);
 int run_vqe(VQEContext* ctx,
             HybridOrchestrator* orchestrator,
@@ -57,7 +57,7 @@ int run_vqe(VQEContext* ctx,
 void cleanup_vqe(VQEContext* ctx);
 
 // QAOA initialization and execution
-QAOAContext* init_qaoa(const struct quantum_circuit* problem,
+QAOAContext* init_qaoa(const quantum_circuit_t* problem,
                       size_t depth);
 int run_qaoa(QAOAContext* ctx,
              HybridOrchestrator* orchestrator,

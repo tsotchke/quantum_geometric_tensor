@@ -1,10 +1,11 @@
 #ifndef QUANTUM_FUNCTIONS_H
 #define QUANTUM_FUNCTIONS_H
 
+#include <stdbool.h>
+#include "quantum_geometric/hybrid/classical_optimization_engine.h"
 #include "quantum_geometric/core/hierarchical_matrix.h"
 #include "quantum_geometric/core/tensor_network_operations.h"
 #include "quantum_geometric/learning/learning_task.h"
-#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {

@@ -94,10 +94,6 @@ struct CommunicationManager {
     bool initialized;
     int rank;
     int world_size;
-    // Single-process mode tracking (used when NO_MPI defined)
-    size_t pending_message_size;
-    MessageType pending_message_type;
-    bool has_pending_message;
 #ifndef NO_MPI
     MPI_Request pending_requests[MAX_PENDING_REQUESTS];
 #else
@@ -281,27 +277,8 @@ int send_optimized(CommunicationManager* manager,
     pthread_mutex_unlock(&manager->mutex);
     return 0;
 #else
-    // Single-process fallback: store data in send buffer for later receive
-    if (!manager || !data || size == 0) return -1;
-    (void)dest;  // In single-process mode, destination is always self
-
-    pthread_mutex_lock(&manager->mutex);
-
-    // Copy data to send buffer (simulates sending to self)
-    if (size <= manager->buffer_size) {
-        memcpy(manager->send_buffer, data, size);
-        manager->pending_message_size = size;
-        manager->pending_message_type = type;
-        manager->has_pending_message = true;
-        manager->stats.bytes_sent += size;
-        manager->stats.messages_sent++;
-    } else {
-        pthread_mutex_unlock(&manager->mutex);
-        return -1;  // Message too large for buffer
-    }
-
-    pthread_mutex_unlock(&manager->mutex);
-    return 0;
+    // Stub implementation - return error when MPI is disabled
+    return -1;
 #endif
 }
 
@@ -370,38 +347,8 @@ int receive_optimized(CommunicationManager* manager,
     pthread_mutex_unlock(&manager->mutex);
     return 0;
 #else
-    // Single-process fallback: retrieve data from send buffer
-    if (!manager || !data || !size || !type) return -1;
-    (void)source;  // In single-process mode, source is always self
-
-    pthread_mutex_lock(&manager->mutex);
-
-    // Check if there's a pending message to receive
-    if (!manager->has_pending_message) {
-        pthread_mutex_unlock(&manager->mutex);
-        return -1;  // No message available
-    }
-
-    // Check if output buffer is large enough
-    if (*size < manager->pending_message_size) {
-        // Return required size so caller can reallocate
-        *size = manager->pending_message_size;
-        pthread_mutex_unlock(&manager->mutex);
-        return -1;  // Buffer too small
-    }
-
-    // Copy data from send buffer to output
-    memcpy(data, manager->send_buffer, manager->pending_message_size);
-    *size = manager->pending_message_size;
-    *type = manager->pending_message_type;
-    manager->has_pending_message = false;
-
-    // Update stats
-    manager->stats.bytes_received += manager->pending_message_size;
-    manager->stats.messages_received++;
-
-    pthread_mutex_unlock(&manager->mutex);
-    return 0;
+    // Stub implementation - return error when MPI is disabled
+    return -1;
 #endif
 }
 
