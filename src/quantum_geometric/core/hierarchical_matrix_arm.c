@@ -63,7 +63,7 @@ static bool init_backend(void) {
 
 // Helper function to determine optimal execution path
 static bool should_use_optimized_path(size_t rows, size_t cols) {
-    return (rows * cols > ADAPTIVE_BLOCK_SIZE);
+    return use_optimized_path && (rows * cols > ADAPTIVE_BLOCK_SIZE);
 }
 
 // Enhanced error handling macro with cleanup

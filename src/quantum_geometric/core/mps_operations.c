@@ -648,6 +648,13 @@ qgt_error_t mps_to_state_vector(const MatrixProductState* mps, ComplexFloat* sta
             size_t right_bond = mps->right_bond_dims[site];
             size_t phys = phys_indices[site];
 
+            // Validate MPS structure: current_dim should match left_bond
+            if (current_dim != left_bond) {
+                free(current_vector);
+                free(phys_indices);
+                return QGT_ERROR_INVALID_ARGUMENT;  // MPS bond dimensions inconsistent
+            }
+
             // Extract the slice for this physical index
             // Tensor layout: [left_bond][phys_dim][right_bond]
             // We want the matrix at physical index phys
@@ -661,7 +668,7 @@ qgt_error_t mps_to_state_vector(const MatrixProductState* mps, ComplexFloat* sta
 
             // Multiply current_vector by the matrix slice
             for (size_t r = 0; r < right_bond; r++) {
-                for (size_t l = 0; l < current_dim; l++) {
+                for (size_t l = 0; l < left_bond; l++) {
                     // Index into tensor: l * d * right_bond + phys * right_bond + r
                     size_t tensor_idx = l * d * right_bond + phys * right_bond + r;
                     ComplexFloat a = current_vector[l];
@@ -837,6 +844,12 @@ static qgt_error_t canonicalize_site_right(MatrixProductState* mps, size_t site)
     size_t prev_right = mps->right_bond_dims[site - 1];  // = left_bond = m
     size_t prev_size = prev_left * d * k;
 
+    // Validate MPS bond consistency: previous right bond must match current left bond
+    if (prev_right != m) {
+        free(L);
+        return QGT_ERROR_INVALID_ARGUMENT;  // Bond dimension mismatch
+    }
+
     ComplexFloat* new_prev = malloc(prev_size * sizeof(ComplexFloat));
     if (!new_prev) {
         free(L);
@@ -846,8 +859,8 @@ static qgt_error_t canonicalize_site_right(MatrixProductState* mps, size_t site)
     // Contract previous tensor with L
     // prev: (prev_left, d, prev_right=m), L: (m, k)
     // Result: (prev_left, d, k)
-    // Reshape prev to (prev_left * d, m) for matrix multiply
-    matrix_multiply(mps->tensors[site - 1], L, new_prev, prev_left * d, m, k);
+    // Reshape prev to (prev_left * d, prev_right) for matrix multiply
+    matrix_multiply(mps->tensors[site - 1], L, new_prev, prev_left * d, prev_right, k);
 
     free(L);
     free(mps->tensors[site - 1]);

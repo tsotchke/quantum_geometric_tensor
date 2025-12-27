@@ -20,7 +20,9 @@
 #endif
 
 // D-Wave parameters
+#ifndef MAX_QUBITS
 #define MAX_QUBITS 5000
+#endif
 #define MAX_COUPLERS 10000
 #define API_TIMEOUT 60
 #define MAX_RETRIES 5

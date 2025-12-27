@@ -377,6 +377,11 @@ static void reduce_to_hessenberg(ComplexFloat* h, size_t n, ComplexFloat* q) {
 
         free(v);
 
+        // Set subdiagonal element to the computed norm for numerical stability
+        // After Householder transformation, h[k+1,k] = r (the norm with proper sign)
+        // This is more numerically stable than relying on the transformed value
+        h[(k + 1) * n + k] = (ComplexFloat){(float)r, 0.0f};
+
         // Explicitly zero out elements below subdiagonal
         for (size_t i = k + 2; i < n; i++) {
             h[i * n + k] = (ComplexFloat){0, 0};

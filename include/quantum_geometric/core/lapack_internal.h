@@ -8,6 +8,7 @@
 #include <Accelerate/Accelerate.h>
 
 // Helper inline functions to bridge ComplexFloat to Apple's complex types
+// ComplexFloat has same memory layout as _Complex float (two contiguous floats)
 static inline void apple_cgemm(const char* transa, const char* transb,
                                int m, int n, int k,
                                const ComplexFloat* alpha,
@@ -18,7 +19,12 @@ static inline void apple_cgemm(const char* transa, const char* transb,
     cblas_cgemm(CblasColMajor,
                 *transa == 'N' ? CblasNoTrans : (*transa == 'T' ? CblasTrans : CblasConjTrans),
                 *transb == 'N' ? CblasNoTrans : (*transb == 'T' ? CblasTrans : CblasConjTrans),
-                m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+                m, n, k,
+                (const _Complex float*)alpha,
+                (const _Complex float*)a, lda,
+                (const _Complex float*)b, ldb,
+                (const _Complex float*)beta,
+                (_Complex float*)c, ldc);
 }
 
 #else

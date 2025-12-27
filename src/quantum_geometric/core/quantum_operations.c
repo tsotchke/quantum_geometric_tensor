@@ -11,8 +11,8 @@
 
 // LAPACK double complex compatibility for macOS Accelerate framework
 #ifdef __APPLE__
-    // __CLPK_doublecomplex is provided by Accelerate/Accelerate.h via lapack_internal.h
-    #define LAPACK_COMPLEX_CAST(ptr) ((__CLPK_doublecomplex*)(ptr))
+    // ComplexDouble has same memory layout as LAPACK complex (two contiguous doubles)
+    #define LAPACK_COMPLEX_CAST(ptr) ((ComplexDouble*)(ptr))
 #else
     // On Linux/other platforms, complex double is used directly
     #define LAPACK_COMPLEX_CAST(ptr) (ptr)

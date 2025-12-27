@@ -510,7 +510,7 @@ qgt_error_t dmrg_init_environment(
     // W[n-1] = [h_R, S_R, I]^T (right boundary)
 
     // Left block at site -1 (before chain): just identity on MPO index
-    env->left_dims[0] = mps->bond_dimensions[0] > 0 ? mps->bond_dimensions[0] : 1;
+    env->left_dims[0] = mps->right_bond_dims[0] > 0 ? mps->right_bond_dims[0] : 1;
     size_t left_mps_dim = env->left_dims[0];
 
     // Allocate left boundary block
@@ -518,7 +518,7 @@ qgt_error_t dmrg_init_environment(
     // But we store it as flat: mps_dim^2 * w
     size_t block_size = left_mps_dim * left_mps_dim * w;
     env->left_blocks[0] = calloc(block_size, sizeof(ComplexFloat));
-    if (!env->left_blocks[0]) return QGT_ERROR_MEMORY;
+    if (!env->left_blocks[0]) return QGT_ERROR_NO_MEMORY;
 
     // Initialize: only the w=0 component has identity
     for (size_t i = 0; i < left_mps_dim; i++) {
@@ -529,12 +529,12 @@ qgt_error_t dmrg_init_environment(
 
     // Initialize right boundary (site n)
     // Right block at site n: identity on last MPO index
-    size_t right_mps_dim = mps->bond_dimensions[n - 1] > 0 ? mps->bond_dimensions[n - 1] : 1;
+    size_t right_mps_dim = mps->right_bond_dims[n - 1] > 0 ? mps->right_bond_dims[n - 1] : 1;
     env->right_dims[n - 1] = right_mps_dim;
 
     block_size = right_mps_dim * right_mps_dim * w;
     env->right_blocks[n - 1] = calloc(block_size, sizeof(ComplexFloat));
-    if (!env->right_blocks[n - 1]) return QGT_ERROR_MEMORY;
+    if (!env->right_blocks[n - 1]) return QGT_ERROR_NO_MEMORY;
 
     // Initialize: only the w=w-1 component has identity
     for (size_t i = 0; i < right_mps_dim; i++) {
@@ -564,8 +564,8 @@ qgt_error_t dmrg_update_left_block(
     size_t w = env->mpo_bond_dim;
 
     // Get dimensions
-    size_t left_dim = (site == 0) ? 1 : mps->bond_dimensions[site - 1];
-    size_t right_dim = mps->bond_dimensions[site];
+    size_t left_dim = (site == 0) ? 1 : mps->right_bond_dims[site - 1];
+    size_t right_dim = mps->right_bond_dims[site];
 
     // Current MPS tensor: A[left_dim, d, right_dim]
     const ComplexFloat* A = mps->tensors[site];
@@ -576,7 +576,7 @@ qgt_error_t dmrg_update_left_block(
     // New left block: L_new[w, right_dim, right_dim]
     size_t new_block_size = w * right_dim * right_dim;
     ComplexFloat* L_new = calloc(new_block_size, sizeof(ComplexFloat));
-    if (!L_new) return QGT_ERROR_MEMORY;
+    if (!L_new) return QGT_ERROR_NO_MEMORY;
 
     // Contract: L_new[w', a', a] = Σ_{b,b',σ} L_prev[w, b', b] * A*[b', σ, a'] * MPO[w, w', σ', σ] * A[b, σ', a]
 
@@ -671,8 +671,8 @@ qgt_error_t dmrg_update_right_block(
     size_t w = env->mpo_bond_dim;
 
     // Get dimensions
-    size_t left_dim = mps->bond_dimensions[site - 1];
-    size_t right_dim = (site == mps->num_sites - 1) ? 1 : mps->bond_dimensions[site];
+    size_t left_dim = mps->right_bond_dims[site - 1];
+    size_t right_dim = (site == mps->num_sites - 1) ? 1 : mps->right_bond_dims[site];
 
     // Current MPS tensor: A[left_dim, d, right_dim]
     const ComplexFloat* A = mps->tensors[site];
@@ -683,7 +683,7 @@ qgt_error_t dmrg_update_right_block(
     // New right block: R_new[w, left_dim, left_dim]
     size_t new_block_size = w * left_dim * left_dim;
     ComplexFloat* R_new = calloc(new_block_size, sizeof(ComplexFloat));
-    if (!R_new) return QGT_ERROR_MEMORY;
+    if (!R_new) return QGT_ERROR_NO_MEMORY;
 
     const ComplexFloat* H_local = hamiltonian->local_terms[site];
 
@@ -780,14 +780,14 @@ qgt_error_t lanczos_ground_state(
 
     // Allocate Lanczos vectors
     ComplexFloat** lanczos_vecs = malloc(max_iterations * sizeof(ComplexFloat*));
-    if (!lanczos_vecs) return QGT_ERROR_MEMORY;
+    if (!lanczos_vecs) return QGT_ERROR_NO_MEMORY;
 
     for (size_t i = 0; i < max_iterations; i++) {
         lanczos_vecs[i] = calloc(dim, sizeof(ComplexFloat));
         if (!lanczos_vecs[i]) {
             for (size_t j = 0; j < i; j++) free(lanczos_vecs[j]);
             free(lanczos_vecs);
-            return QGT_ERROR_MEMORY;
+            return QGT_ERROR_NO_MEMORY;
         }
     }
 
@@ -800,7 +800,7 @@ qgt_error_t lanczos_ground_state(
         free(alpha); free(beta); free(w);
         for (size_t i = 0; i < max_iterations; i++) free(lanczos_vecs[i]);
         free(lanczos_vecs);
-        return QGT_ERROR_MEMORY;
+        return QGT_ERROR_NO_MEMORY;
     }
 
     // Initialize with random vector
@@ -1173,14 +1173,14 @@ qgt_error_t dmrg_split_two_site(
 
     if (!S || !U || !Vt || !matrix) {
         free(S); free(U); free(Vt); free(matrix);
-        return QGT_ERROR_MEMORY;
+        return QGT_ERROR_NO_MEMORY;
     }
 
     // Copy and reshape two_site tensor
     memcpy(matrix, two_site, m * n * sizeof(ComplexFloat));
 
     // Perform SVD: two_site = U * S * Vt
-    bool svd_success = lapack_svd(matrix, m, n, U, S, Vt, LAPACK_LAYOUT_ROW);
+    bool svd_success = lapack_svd(matrix, m, n, U, S, Vt, LAPACK_ROW_MAJOR);
     if (!svd_success) {
         free(S); free(U); free(Vt); free(matrix);
         return QGT_ERROR_INTERNAL;
@@ -1219,7 +1219,7 @@ qgt_error_t dmrg_split_two_site(
     if (!*A_left || !*A_right) {
         free(*A_left); free(*A_right);
         free(S); free(U); free(Vt); free(matrix);
-        return QGT_ERROR_MEMORY;
+        return QGT_ERROR_NO_MEMORY;
     }
 
     if (direction) {
@@ -1304,14 +1304,14 @@ qgt_error_t dmrg_sweep(
     if (direction) {
         // Left-to-right sweep
         for (size_t site = 0; site < n - 1; site++) {
-            size_t left_dim = (site == 0) ? 1 : mps->bond_dimensions[site - 1];
-            size_t right_dim = (site + 1 == n - 1) ? 1 : mps->bond_dimensions[site + 1];
-            size_t mid_dim = mps->bond_dimensions[site];
+            size_t left_dim = (site == 0) ? 1 : mps->right_bond_dims[site - 1];
+            size_t right_dim = (site + 1 == n - 1) ? 1 : mps->right_bond_dims[site + 1];
+            size_t mid_dim = mps->right_bond_dims[site];
 
             // Form two-site tensor
             size_t two_site_dim = left_dim * d * d * right_dim;
             ComplexFloat* two_site = calloc(two_site_dim, sizeof(ComplexFloat));
-            if (!two_site) return QGT_ERROR_MEMORY;
+            if (!two_site) return QGT_ERROR_NO_MEMORY;
 
             // Contract: Θ[b, s1, s2, a] = A1[b, s1, m] * A2[m, s2, a]
             const ComplexFloat* A1 = mps->tensors[site];
@@ -1402,7 +1402,7 @@ qgt_error_t dmrg_sweep(
             free(mps->tensors[site + 1]);
             mps->tensors[site] = A_left;
             mps->tensors[site + 1] = A_right;
-            mps->bond_dimensions[site] = new_bond;
+            mps->right_bond_dims[site] = new_bond;
 
             // Update left environment
             dmrg_update_left_block(env, mps, hamiltonian, site);
@@ -1410,14 +1410,14 @@ qgt_error_t dmrg_sweep(
     } else {
         // Right-to-left sweep
         for (size_t site = n - 2; site < n - 1; site--) {  // Careful with size_t underflow
-            size_t left_dim = (site == 0) ? 1 : mps->bond_dimensions[site - 1];
-            size_t right_dim = (site + 1 == n - 1) ? 1 : mps->bond_dimensions[site + 1];
-            size_t mid_dim = mps->bond_dimensions[site];
+            size_t left_dim = (site == 0) ? 1 : mps->right_bond_dims[site - 1];
+            size_t right_dim = (site + 1 == n - 1) ? 1 : mps->right_bond_dims[site + 1];
+            size_t mid_dim = mps->right_bond_dims[site];
 
             // Form two-site tensor
             size_t two_site_dim = left_dim * d * d * right_dim;
             ComplexFloat* two_site = calloc(two_site_dim, sizeof(ComplexFloat));
-            if (!two_site) return QGT_ERROR_MEMORY;
+            if (!two_site) return QGT_ERROR_NO_MEMORY;
 
             const ComplexFloat* A1 = mps->tensors[site];
             const ComplexFloat* A2 = mps->tensors[site + 1];
@@ -1501,7 +1501,7 @@ qgt_error_t dmrg_sweep(
             free(mps->tensors[site + 1]);
             mps->tensors[site] = A_left;
             mps->tensors[site + 1] = A_right;
-            mps->bond_dimensions[site] = new_bond;
+            mps->right_bond_dims[site] = new_bond;
 
             // Update right environment
             dmrg_update_right_block(env, mps, hamiltonian, site + 1);
@@ -1533,7 +1533,7 @@ qgt_error_t dmrg_ground_state(
 
     // Create environment
     DMRGEnvironment* env = dmrg_create_environment(n, 3);  // MPO bond dim = 3 for NN
-    if (!env) return QGT_ERROR_MEMORY;
+    if (!env) return QGT_ERROR_NO_MEMORY;
 
     // Initialize environment from MPS
     qgt_error_t err = dmrg_init_environment(env, ground_state, hamiltonian);
@@ -1609,7 +1609,7 @@ qgt_error_t dmrg_ground_state(
 
         // Copy bond dimensions
         for (size_t i = 0; i < n - 1; i++) {
-            result->bond_dimensions[i] = ground_state->bond_dimensions[i];
+            result->bond_dimensions[i] = ground_state->right_bond_dims[i];
         }
     }
 
@@ -1642,9 +1642,9 @@ static qgt_error_t compute_two_site_expectation(
     size_t d2 = d * d;
 
     // Get tensor dimensions
-    size_t left_dim = (site == 0) ? 1 : mps->bond_dimensions[site - 1];
-    size_t mid_dim = mps->bond_dimensions[site];
-    size_t right_dim = (site + 1 == n - 1) ? 1 : mps->bond_dimensions[site + 1];
+    size_t left_dim = (site == 0) ? 1 : mps->right_bond_dims[site - 1];
+    size_t mid_dim = mps->right_bond_dims[site];
+    size_t right_dim = (site + 1 == n - 1) ? 1 : mps->right_bond_dims[site + 1];
 
     // Get MPS tensors for the two sites
     const ComplexFloat* A_left = mps->tensors[site];
@@ -1657,21 +1657,21 @@ static qgt_error_t compute_two_site_expectation(
     if (site > 0) {
         // Start with identity
         left_env = calloc(left_dim * left_dim, sizeof(ComplexFloat));
-        if (!left_env) return QGT_ERROR_MEMORY;
+        if (!left_env) return QGT_ERROR_NO_MEMORY;
         for (size_t i = 0; i < left_dim; i++) {
             left_env[i * left_dim + i] = (ComplexFloat){1.0f, 0.0f};
         }
 
         // Contract sites 0 to site-1
         for (size_t s = 0; s < site; s++) {
-            size_t l_dim = (s == 0) ? 1 : mps->bond_dimensions[s - 1];
-            size_t r_dim = mps->bond_dimensions[s];
+            size_t l_dim = (s == 0) ? 1 : mps->right_bond_dims[s - 1];
+            size_t r_dim = mps->right_bond_dims[s];
             const ComplexFloat* A = mps->tensors[s];
 
             ComplexFloat* new_env = calloc(r_dim * r_dim, sizeof(ComplexFloat));
             if (!new_env) {
                 free(left_env);
-                return QGT_ERROR_MEMORY;
+                return QGT_ERROR_NO_MEMORY;
             }
 
             // new_env[a', a] = Σ_{b', b, σ} left_env[b', b] * A*[b', σ, a'] * A[b, σ, a]
@@ -1711,7 +1711,7 @@ static qgt_error_t compute_two_site_expectation(
         right_env = calloc(right_dim * right_dim, sizeof(ComplexFloat));
         if (!right_env) {
             free(left_env);
-            return QGT_ERROR_MEMORY;
+            return QGT_ERROR_NO_MEMORY;
         }
         for (size_t i = 0; i < right_dim; i++) {
             right_env[i * right_dim + i] = (ComplexFloat){1.0f, 0.0f};
@@ -1719,14 +1719,14 @@ static qgt_error_t compute_two_site_expectation(
 
         // Contract sites n-1 down to site+2
         for (size_t s = n - 1; s > site + 1; s--) {
-            size_t l_dim = mps->bond_dimensions[s - 1];
-            size_t r_dim = (s == n - 1) ? 1 : mps->bond_dimensions[s];
+            size_t l_dim = mps->right_bond_dims[s - 1];
+            size_t r_dim = (s == n - 1) ? 1 : mps->right_bond_dims[s];
             const ComplexFloat* A = mps->tensors[s];
 
             ComplexFloat* new_env = calloc(l_dim * l_dim, sizeof(ComplexFloat));
             if (!new_env) {
                 free(left_env); free(right_env);
-                return QGT_ERROR_MEMORY;
+                return QGT_ERROR_NO_MEMORY;
             }
 
             // new_env[b', b] = Σ_{a', a, σ} A[b', σ, a'] * right_env[a', a] * A*[b, σ, a]
@@ -1860,10 +1860,117 @@ qgt_error_t dmrg_compute_energy(
 }
 
 /**
+ * @brief Decompose a two-site operator into sum of tensor products using SVD
+ *
+ * Given H_nn as d² x d² matrix, reshapes to (d x d) matrix and performs SVD
+ * to get H_nn = Σ_k s_k * S_L[k] ⊗ S_R[k]
+ *
+ * @param nn_term The nearest-neighbor term (d² x d² matrix)
+ * @param d Physical dimension
+ * @param S_L Output: array of left operators (d x d each), caller must free
+ * @param S_R Output: array of right operators (d x d each), caller must free
+ * @param num_terms Output: number of non-zero singular values (coupling terms)
+ * @param cutoff SVD cutoff for singular values
+ * @return QGT_SUCCESS on success
+ */
+static qgt_error_t decompose_nn_term(
+    const ComplexFloat* nn_term,
+    size_t d,
+    ComplexFloat** S_L,
+    ComplexFloat** S_R,
+    size_t* num_terms,
+    double cutoff)
+{
+    size_t d2 = d * d;
+
+    // Reshape nn_term from (d² x d²) to (d² x d²) for SVD
+    // Interpret as matrix M[σ1*d+σ1', σ2*d+σ2'] = H_nn[(σ1,σ2), (σ1',σ2')]
+    // SVD: M = U * S * V^H
+    // Then S_L[k][σ1,σ1'] = U[σ1*d+σ1', k] * sqrt(s[k])
+    //      S_R[k][σ2,σ2'] = V^H[k, σ2*d+σ2'] * sqrt(s[k])
+
+    ComplexFloat* U = malloc(d2 * d2 * sizeof(ComplexFloat));
+    ComplexFloat* VT = malloc(d2 * d2 * sizeof(ComplexFloat));
+    float* S_vals = malloc(d2 * sizeof(float));
+
+    if (!U || !VT || !S_vals) {
+        free(U); free(VT); free(S_vals);
+        return QGT_ERROR_NO_MEMORY;
+    }
+
+    // Perform SVD on the nn_term matrix
+    if (!lapack_svd(nn_term, d2, d2, U, S_vals, VT, LAPACK_ROW_MAJOR)) {
+        free(U); free(VT); free(S_vals);
+        return QGT_ERROR_SVD_FAILED;
+    }
+
+    // Count significant singular values
+    size_t count = 0;
+    for (size_t k = 0; k < d2; k++) {
+        if (S_vals[k] > cutoff) count++;
+    }
+
+    if (count == 0) {
+        // No coupling terms (nn_term is effectively zero)
+        *S_L = NULL;
+        *S_R = NULL;
+        *num_terms = 0;
+        free(U); free(VT); free(S_vals);
+        return QGT_SUCCESS;
+    }
+
+    // Allocate output arrays
+    *S_L = malloc(count * d2 * sizeof(ComplexFloat));
+    *S_R = malloc(count * d2 * sizeof(ComplexFloat));
+
+    if (!*S_L || !*S_R) {
+        free(*S_L); free(*S_R);
+        free(U); free(VT); free(S_vals);
+        return QGT_ERROR_NO_MEMORY;
+    }
+
+    // Extract coupling operators
+    size_t term_idx = 0;
+    for (size_t k = 0; k < d2 && term_idx < count; k++) {
+        if (S_vals[k] <= cutoff) continue;
+
+        float sqrt_s = sqrtf(S_vals[k]);
+
+        // S_L[term][σ1, σ1'] = U[σ1*d+σ1', k] * sqrt(s[k])
+        // S_R[term][σ2, σ2'] = V^H[k, σ2*d+σ2'] * sqrt(s[k])
+        for (size_t i = 0; i < d2; i++) {
+            // U is stored column-major from LAPACK, so U[i,k] = U[k*d2 + i]
+            ComplexFloat u_val = U[k * d2 + i];
+            (*S_L)[term_idx * d2 + i] = cf_scale(u_val, sqrt_s);
+
+            // VT is V^H, stored row-major, so VT[k,i] = VT[k*d2 + i]
+            ComplexFloat vt_val = VT[k * d2 + i];
+            (*S_R)[term_idx * d2 + i] = cf_scale(vt_val, sqrt_s);
+        }
+        term_idx++;
+    }
+
+    *num_terms = count;
+
+    free(U); free(VT); free(S_vals);
+    return QGT_SUCCESS;
+}
+
+/**
  * @brief Apply MPO to MPS: |ψ'> = H |ψ>
  *
  * Creates a new MPS representing the application of the Hamiltonian MPO to the input MPS.
- * The result has increased bond dimension: χ' = χ * w where w is the MPO bond dimension.
+ * Uses SVD decomposition of nearest-neighbor terms to properly construct the MPO.
+ * The result has increased bond dimension that may be compressed afterward.
+ *
+ * MPO structure for site i (with coupling term decomposition):
+ *   W[0,0] = I               (identity pass-through)
+ *   W[0,1..r] = S_L[1..r]    (left coupling operators from SVD)
+ *   W[0,r+1] = H_local       (on-site Hamiltonian)
+ *   W[1..r,r+1] = S_R[1..r]  (right coupling operators from SVD)
+ *   W[r+1,r+1] = I           (identity pass-through)
+ *
+ * where r is the number of coupling terms from SVD decomposition.
  */
 static qgt_error_t apply_mpo_to_mps(
     MatrixProductState** result,
@@ -1874,58 +1981,93 @@ static qgt_error_t apply_mpo_to_mps(
 
     size_t n = mps->num_sites;
     size_t d = mps->physical_dim;
-    size_t w = 3;  // MPO bond dimension for nearest-neighbor Hamiltonian
+    size_t d2 = d * d;
+    const double svd_cutoff = 1e-12;
+
+    // First, decompose all nearest-neighbor terms to determine MPO bond dimension
+    ComplexFloat** all_S_L = calloc(n - 1, sizeof(ComplexFloat*));
+    ComplexFloat** all_S_R = calloc(n - 1, sizeof(ComplexFloat*));
+    size_t* num_coupling_terms = calloc(n - 1, sizeof(size_t));
+
+    if (!all_S_L || !all_S_R || !num_coupling_terms) {
+        free(all_S_L); free(all_S_R); free(num_coupling_terms);
+        return QGT_ERROR_NO_MEMORY;
+    }
+
+    size_t max_coupling = 0;
+    for (size_t bond = 0; bond < n - 1; bond++) {
+        qgt_error_t err = decompose_nn_term(
+            hamiltonian->nn_terms[bond], d,
+            &all_S_L[bond], &all_S_R[bond], &num_coupling_terms[bond],
+            svd_cutoff);
+        if (err != QGT_SUCCESS) {
+            for (size_t j = 0; j < bond; j++) {
+                free(all_S_L[j]); free(all_S_R[j]);
+            }
+            free(all_S_L); free(all_S_R); free(num_coupling_terms);
+            return err;
+        }
+        if (num_coupling_terms[bond] > max_coupling) {
+            max_coupling = num_coupling_terms[bond];
+        }
+    }
+
+    // MPO bond dimension: w = 2 + max_coupling (identity in, coupling terms, identity out)
+    size_t w = 2 + max_coupling;
+    if (w < 3) w = 3;  // Minimum for local + identity terms
 
     // Create result MPS with inflated bond dimension
     *result = mps_create(n, d, mps->max_bond_dim * w);
-    if (!*result) return QGT_ERROR_MEMORY;
+    if (!*result) {
+        for (size_t j = 0; j < n - 1; j++) {
+            free(all_S_L[j]); free(all_S_R[j]);
+        }
+        free(all_S_L); free(all_S_R); free(num_coupling_terms);
+        return QGT_ERROR_NO_MEMORY;
+    }
 
     // For each site, contract MPS tensor with MPO tensor
-    // Result tensor: A'[b*w_L, σ', a*w_R] = Σ_{σ, w} A[b, σ, a] * W[w_L, w_R, σ', σ]
-
     for (size_t site = 0; site < n; site++) {
-        size_t left_dim = (site == 0) ? 1 : mps->bond_dimensions[site - 1];
-        size_t right_dim = (site == n - 1) ? 1 : mps->bond_dimensions[site];
+        size_t left_dim = (site == 0) ? 1 : mps->right_bond_dims[site - 1];
+        size_t right_dim = (site == n - 1) ? 1 : mps->right_bond_dims[site];
 
-        // New dimensions
-        size_t new_left = left_dim * w;
-        size_t new_right = right_dim * w;
-
-        // Boundary adjustments
-        if (site == 0) new_left = w;      // Start from MPO w=0
-        if (site == n - 1) new_right = w;  // End at MPO w=w-1
-
-        // Actually for boundary sites in the typical MPO construction:
-        // site 0: left MPO index is just 1 (boundary vector), right is w
-        // site n-1: left MPO index is w, right is just 1 (boundary vector)
-
-        // Simplify: just expand by w at each internal bond
+        // Output dimensions: left MPS bond * w, right MPS bond * w
+        // Boundary sites collapse the MPO indices
         size_t out_left = (site == 0) ? 1 : left_dim * w;
         size_t out_right = (site == n - 1) ? 1 : right_dim * w;
 
         const ComplexFloat* A = mps->tensors[site];
         const ComplexFloat* H_local = hamiltonian->local_terms[site];
 
+        // Get coupling operators for bonds adjacent to this site
+        ComplexFloat* S_L_left = (site > 0) ? all_S_L[site - 1] : NULL;
+        ComplexFloat* S_R_left = (site > 0) ? all_S_R[site - 1] : NULL;
+        size_t n_left = (site > 0) ? num_coupling_terms[site - 1] : 0;
+
+        ComplexFloat* S_L_right = (site < n - 1) ? all_S_L[site] : NULL;
+        size_t n_right = (site < n - 1) ? num_coupling_terms[site] : 0;
+
         // Allocate output tensor
         ComplexFloat* A_new = calloc(out_left * d * out_right, sizeof(ComplexFloat));
         if (!A_new) {
-            mps_destroy(*result);
-            *result = NULL;
-            return QGT_ERROR_MEMORY;
+            mps_destroy(*result); *result = NULL;
+            for (size_t j = 0; j < n - 1; j++) {
+                free(all_S_L[j]); free(all_S_R[j]);
+            }
+            free(all_S_L); free(all_S_R); free(num_coupling_terms);
+            return QGT_ERROR_NO_MEMORY;
         }
 
-        // Build MPO action
-        // For simplicity, implement the explicit MPO structure for NN Hamiltonians
-        // W[0,0] = I, W[2,2] = I (identity flow)
-        // W[0,1] = S_L (left coupling operator)
-        // W[1,2] = S_R (right coupling operator)
-        // W[0,2] = H_local (on-site energy)
-
-        // For site 0 (left boundary): only start from w=0
-        // For site n-1 (right boundary): only collect at w=2
+        // Build MPO tensor and contract with MPS tensor
+        // MPO indices: w_L (left MPO bond), w_R (right MPO bond)
+        // MPO structure:
+        //   Row 0: [I, S_L[1], ..., S_L[r], H_local]
+        //   Row 1..r: [0, 0, ..., 0, S_R[1..r]]
+        //   Row w-1: [0, 0, ..., 0, I]
 
         if (site == 0) {
-            // Left boundary: A'[σ', a*w_R] = Σ_σ A[σ, a] * W[0, w_R, σ', σ]
+            // Left boundary: MPO starts from row 0 only
+            // A'[σ', a*w_R] = Σ_σ A[σ, a] * W[0, w_R, σ', σ]
             for (size_t sigma_p = 0; sigma_p < d; sigma_p++) {
                 for (size_t a = 0; a < right_dim; a++) {
                     for (size_t w_r = 0; w_r < w; w_r++) {
@@ -1933,15 +2075,19 @@ static qgt_error_t apply_mpo_to_mps(
 
                         for (size_t sigma = 0; sigma < d; sigma++) {
                             ComplexFloat a_val = A[sigma * right_dim + a];
-
-                            // W[0, w_r, σ', σ]
                             ComplexFloat w_val = {0.0f, 0.0f};
+
                             if (w_r == 0 && sigma_p == sigma) {
-                                w_val = (ComplexFloat){1.0f, 0.0f};  // Identity
-                            } else if (w_r == 2) {
-                                w_val = H_local[sigma_p * d + sigma];  // Local term
+                                // W[0,0] = I
+                                w_val = (ComplexFloat){1.0f, 0.0f};
+                            } else if (w_r >= 1 && w_r <= n_right && S_L_right) {
+                                // W[0, 1..r] = S_L[1..r]
+                                size_t term_idx = w_r - 1;
+                                w_val = S_L_right[term_idx * d2 + sigma_p * d + sigma];
+                            } else if (w_r == w - 1) {
+                                // W[0, w-1] = H_local
+                                w_val = H_local[sigma_p * d + sigma];
                             }
-                            // w_r == 1: S_L coupling (depends on Hamiltonian structure)
 
                             sum = cf_add(sum, cf_mul(a_val, w_val));
                         }
@@ -1952,7 +2098,8 @@ static qgt_error_t apply_mpo_to_mps(
                 }
             }
         } else if (site == n - 1) {
-            // Right boundary: A'[b*w_L, σ'] = Σ_σ A[b, σ] * W[w_L, 2, σ', σ]
+            // Right boundary: MPO ends at column w-1 only
+            // A'[b*w_L, σ'] = Σ_σ A[b, σ] * W[w_L, w-1, σ', σ]
             for (size_t b = 0; b < left_dim; b++) {
                 for (size_t w_l = 0; w_l < w; w_l++) {
                     for (size_t sigma_p = 0; sigma_p < d; sigma_p++) {
@@ -1960,15 +2107,19 @@ static qgt_error_t apply_mpo_to_mps(
 
                         for (size_t sigma = 0; sigma < d; sigma++) {
                             ComplexFloat a_val = A[b * d + sigma];
-
-                            // W[w_l, 2, σ', σ]
                             ComplexFloat w_val = {0.0f, 0.0f};
-                            if (w_l == 2 && sigma_p == sigma) {
-                                w_val = (ComplexFloat){1.0f, 0.0f};  // Identity
-                            } else if (w_l == 0) {
-                                w_val = H_local[sigma_p * d + sigma];  // Local term
+
+                            if (w_l == 0) {
+                                // W[0, w-1] = H_local
+                                w_val = H_local[sigma_p * d + sigma];
+                            } else if (w_l >= 1 && w_l <= n_left && S_R_left) {
+                                // W[1..r, w-1] = S_R[1..r]
+                                size_t term_idx = w_l - 1;
+                                w_val = S_R_left[term_idx * d2 + sigma_p * d + sigma];
+                            } else if (w_l == w - 1 && sigma_p == sigma) {
+                                // W[w-1, w-1] = I
+                                w_val = (ComplexFloat){1.0f, 0.0f};
                             }
-                            // w_l == 1: S_R coupling (depends on Hamiltonian structure)
 
                             sum = cf_add(sum, cf_mul(a_val, w_val));
                         }
@@ -1979,7 +2130,7 @@ static qgt_error_t apply_mpo_to_mps(
                 }
             }
         } else {
-            // Bulk site
+            // Bulk site: full MPO structure
             for (size_t b = 0; b < left_dim; b++) {
                 for (size_t w_l = 0; w_l < w; w_l++) {
                     for (size_t sigma_p = 0; sigma_p < d; sigma_p++) {
@@ -1989,21 +2140,34 @@ static qgt_error_t apply_mpo_to_mps(
 
                                 for (size_t sigma = 0; sigma < d; sigma++) {
                                     ComplexFloat a_val = A[b * d * right_dim + sigma * right_dim + a];
-
-                                    // W[w_l, w_r, σ', σ]
                                     ComplexFloat w_val = {0.0f, 0.0f};
 
-                                    // Identity flow: W[0,0] = I, W[2,2] = I
+                                    // Identity flow: W[0,0] = I
                                     if (w_l == 0 && w_r == 0 && sigma_p == sigma) {
                                         w_val = (ComplexFloat){1.0f, 0.0f};
-                                    } else if (w_l == 2 && w_r == 2 && sigma_p == sigma) {
+                                    }
+                                    // Identity flow: W[w-1, w-1] = I
+                                    else if (w_l == w - 1 && w_r == w - 1 && sigma_p == sigma) {
                                         w_val = (ComplexFloat){1.0f, 0.0f};
                                     }
-                                    // Local term: W[0,2] = H_local
-                                    else if (w_l == 0 && w_r == 2) {
+                                    // Local term: W[0, w-1] = H_local
+                                    else if (w_l == 0 && w_r == w - 1) {
                                         w_val = H_local[sigma_p * d + sigma];
                                     }
-                                    // Coupling terms would go here for S_L, S_R
+                                    // Left coupling: W[0, 1..r] = S_L (for right bond)
+                                    else if (w_l == 0 && w_r >= 1 && w_r <= n_right && S_L_right) {
+                                        size_t term_idx = w_r - 1;
+                                        w_val = S_L_right[term_idx * d2 + sigma_p * d + sigma];
+                                    }
+                                    // Right coupling: W[1..r, w-1] = S_R (for left bond)
+                                    else if (w_l >= 1 && w_l <= n_left && w_r == w - 1 && S_R_left) {
+                                        size_t term_idx = w_l - 1;
+                                        w_val = S_R_left[term_idx * d2 + sigma_p * d + sigma];
+                                    }
+                                    // Coupling propagation: W[k, k] = I for intermediate terms
+                                    else if (w_l == w_r && w_l >= 1 && w_l < w - 1 && sigma_p == sigma) {
+                                        w_val = (ComplexFloat){1.0f, 0.0f};
+                                    }
 
                                     sum = cf_add(sum, cf_mul(a_val, w_val));
                                 }
@@ -2021,9 +2185,15 @@ static qgt_error_t apply_mpo_to_mps(
 
         (*result)->tensors[site] = A_new;
         if (site < n - 1) {
-            (*result)->bond_dimensions[site] = out_right;
+            (*result)->right_bond_dims[site] = out_right;
         }
     }
+
+    // Cleanup
+    for (size_t j = 0; j < n - 1; j++) {
+        free(all_S_L[j]); free(all_S_R[j]);
+    }
+    free(all_S_L); free(all_S_R); free(num_coupling_terms);
 
     return QGT_SUCCESS;
 }
@@ -2035,90 +2205,40 @@ qgt_error_t dmrg_compute_variance(
 {
     if (!mps || !hamiltonian || !variance) return QGT_ERROR_INVALID_ARGUMENT;
 
-    // Variance = <H^2> - <H>^2
+    // Variance = <H²> - <H>²
+    // where <H²> = <ψ|H²|ψ> = <Hψ|Hψ>
+    //
+    // Algorithm:
+    // 1. Compute <H> using energy calculation
+    // 2. Apply MPO to get |Hψ⟩ = H|ψ⟩
+    // 3. Compute <Hψ|Hψ⟩ = <H²> using MPS inner product
+    // 4. Variance = <H²> - <H>²
 
-    // Compute <H>
+    // Step 1: Compute <H>
     double energy;
     qgt_error_t err = dmrg_compute_energy(mps, hamiltonian, &energy);
     if (err != QGT_SUCCESS) return err;
 
-    // For exact variance, we would need to apply MPO twice and compute <H|H>
-    // This is expensive, so we use an approximation:
-    // Compute <H^2> by applying H|ψ> and computing <ψ|H|Hψ>
+    // Step 2: Apply MPO to get H|ψ⟩
+    MatrixProductState* h_psi = NULL;
+    err = apply_mpo_to_mps(&h_psi, mps, hamiltonian);
+    if (err != QGT_SUCCESS) return err;
 
-    // However, a simpler approach for convergence checking:
-    // Compute variance at each bond using the environments
+    // Step 3: Compute <Hψ|Hψ⟩ = <ψ|H²|ψ⟩
+    // Note: The result MPS from apply_mpo_to_mps has inflated bond dimension
+    // For numerical stability, we should compress it first, but for variance
+    // calculation we can compute the inner product directly
 
-    // For now, we implement a simplified version that computes
-    // the sum of local variances as an upper bound
+    ComplexFloat h2_inner;
+    err = mps_inner_product(h_psi, h_psi, &h2_inner);
+    mps_destroy(h_psi);
 
-    double h2_expectation = 0.0;
+    if (err != QGT_SUCCESS) return err;
 
-    size_t n = mps->num_sites;
+    // <H²> should be real and positive for a Hermitian Hamiltonian
+    double h2_expectation = h2_inner.real;
 
-    // Local terms squared contribution
-    for (size_t site = 0; site < n; site++) {
-        // <H_local^2>
-        size_t d = mps->physical_dim;
-        ComplexFloat* h_squared = calloc(d * d, sizeof(ComplexFloat));
-        if (!h_squared) return QGT_ERROR_MEMORY;
-
-        const ComplexFloat* h = hamiltonian->local_terms[site];
-
-        // H^2 = H * H (matrix multiplication)
-        for (size_t i = 0; i < d; i++) {
-            for (size_t j = 0; j < d; j++) {
-                ComplexFloat sum = {0.0f, 0.0f};
-                for (size_t k = 0; k < d; k++) {
-                    sum = cf_add(sum, cf_mul(h[i * d + k], h[k * d + j]));
-                }
-                h_squared[i * d + j] = sum;
-            }
-        }
-
-        ComplexFloat h2_exp;
-        err = mps_expectation_local(mps, h_squared, site, &h2_exp);
-        free(h_squared);
-        if (err != QGT_SUCCESS) return err;
-
-        h2_expectation += h2_exp.real;
-    }
-
-    // Nearest-neighbor terms squared contribution
-    for (size_t site = 0; site < n - 1; site++) {
-        size_t d = mps->physical_dim;
-        size_t d2 = d * d;
-        size_t d4 = d2 * d2;
-
-        ComplexFloat* h_squared = calloc(d4, sizeof(ComplexFloat));
-        if (!h_squared) return QGT_ERROR_MEMORY;
-
-        const ComplexFloat* h = hamiltonian->nn_terms[site];
-
-        // H^2 = H * H
-        for (size_t i = 0; i < d2; i++) {
-            for (size_t j = 0; j < d2; j++) {
-                ComplexFloat sum = {0.0f, 0.0f};
-                for (size_t k = 0; k < d2; k++) {
-                    sum = cf_add(sum, cf_mul(h[i * d2 + k], h[k * d2 + j]));
-                }
-                h_squared[i * d2 + j] = sum;
-            }
-        }
-
-        ComplexFloat h2_exp;
-        err = compute_two_site_expectation(mps, h_squared, site, &h2_exp);
-        free(h_squared);
-        if (err != QGT_SUCCESS) return err;
-
-        h2_expectation += h2_exp.real;
-    }
-
-    // Cross terms between local and NN terms, and between different bonds
-    // are ignored in this approximation (they would require 3-site or 4-site expectation values)
-
-    // A proper implementation would apply the MPO twice to get the exact <H^2>
-
+    // Step 4: Variance = <H²> - <H>²
     *variance = h2_expectation - energy * energy;
 
     // Ensure non-negative (numerical errors can cause slight negative values)

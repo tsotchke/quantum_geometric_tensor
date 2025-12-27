@@ -36,7 +36,9 @@
 
 // Quantum phase estimation and amplitude constants
 #define QG_PHASE_PRECISION             1e-6     // Phase estimation precision
+#ifndef QG_QUANTUM_ESTIMATION_PRECISION
 #define QG_QUANTUM_ESTIMATION_PRECISION 1e-8    // Quantum amplitude estimation precision
+#endif
 #define QG_SUCCESS_PROBABILITY         0.99     // Success probability for quantum algorithms
 
 // Geometric constants
@@ -54,7 +56,9 @@
 #define QGT_MAX_BATCH_SIZE    1024              // Maximum batch size
 #define QGT_MAX_THREADS       64                // Maximum threads
 #define QGT_CACHE_LINE_SIZE   64                // Cache line size in bytes
+#ifndef QGT_PAGE_SIZE
 #define QGT_PAGE_SIZE         4096              // Memory page size in bytes
+#endif
 
 // Error correction constants
 #define QGT_MAX_ERROR_RATE    0.01              // Maximum error rate

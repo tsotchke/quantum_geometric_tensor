@@ -68,6 +68,7 @@
 // =============================================================================
 // Platform-specific memory page size
 // =============================================================================
+#ifndef QGT_PAGE_SIZE
 #ifdef QGT_PLATFORM_LINUX
     #include <unistd.h>
     #define QGT_PAGE_SIZE sysconf(_SC_PAGESIZE)
@@ -85,6 +86,7 @@
 #else
     #define QGT_PAGE_SIZE 4096
 #endif
+#endif // QGT_PAGE_SIZE
 
 // =============================================================================
 // Platform-specific huge pages

@@ -230,8 +230,7 @@ static void write_json_metrics(FILE* file, const char* event_name, const perform
 static void add_derived_events(int event_set);
 static void generate_memory_plot(FILE* report, const performance_section_t* sections, int num_sections);
 
-// Circular buffer for real-time monitoring
-#define MONITOR_BUFFER_SIZE 1024
+// Circular buffer for real-time monitoring (uses MONITOR_BUFFER_SIZE defined above)
 static struct {
     struct {
         uint64_t timestamp;

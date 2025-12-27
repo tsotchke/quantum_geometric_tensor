@@ -445,11 +445,11 @@ qgt_error_t geometric_tensor_qr(quantum_geometric_tensor_t* q,
 
     // Compute QR decomposition using LAPACK
 #ifdef __APPLE__
-    __CLPK_integer m_int = m;
-    __CLPK_integer n_int = n;
-    __CLPK_integer lda = n;
-    __CLPK_integer info;
-    __CLPK_integer lwork = -1;
+    lapack_int m_int = m;
+    lapack_int n_int = n;
+    lapack_int lda = n;
+    lapack_int info;
+    lapack_int lwork = -1;
     float work_query;
 
     // Query optimal workspace size
@@ -569,10 +569,10 @@ qgt_error_t geometric_tensor_eigendecomposition(quantum_geometric_tensor_t* eige
 #ifdef __APPLE__
     char jobz = 'V';
     char uplo = 'U';
-    __CLPK_integer n_int = n;
-    __CLPK_integer lda = n;
-    __CLPK_integer info;
-    __CLPK_integer lwork = -1;
+    lapack_int n_int = n;
+    lapack_int lda = n;
+    lapack_int info;
+    lapack_int lwork = -1;
     float work_query;
 
     // Query optimal workspace size

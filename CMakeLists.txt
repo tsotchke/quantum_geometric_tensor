@@ -37,8 +37,9 @@ if(APPLE)
     set(QGT_PLATFORM_MACOS ON)
     add_definitions(-DQGT_PLATFORM_MACOS=1)
 
-    # Apple Accelerate framework
+    # Apple Accelerate framework with new LAPACK interface to avoid deprecation warnings
     find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
+    add_definitions(-DACCELERATE_NEW_LAPACK)
 
     # Auto-detect Metal support
     find_library(METAL_FRAMEWORK Metal)

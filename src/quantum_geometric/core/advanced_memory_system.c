@@ -25,8 +25,12 @@
 #endif
 
 // Memory system parameters
+#ifndef CACHE_LINE_SIZE
 #define CACHE_LINE_SIZE 64
+#endif
+#ifndef PAGE_SIZE
 #define PAGE_SIZE 4096
+#endif
 #define PREFETCH_DISTANCE 8
 #define MAX_DIMENSIONS 8
 

@@ -30,7 +30,9 @@
 #define MAX_GATE_DEPTH 50
 #define MAX_SWAP_DEPTH 5
 #define CROSSTALK_THRESHOLD 0.01
+#ifndef MAX_QUBITS
 #define MAX_QUBITS 128
+#endif
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846

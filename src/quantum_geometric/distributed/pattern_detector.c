@@ -4,7 +4,9 @@
 #include <math.h>
 
 // Pattern parameters
+#ifndef MAX_PATTERNS
 #define MAX_PATTERNS 1000
+#endif
 #define MIN_CONFIDENCE 0.8
 #define MIN_SUPPORT 10
 #define MAX_LAG 100

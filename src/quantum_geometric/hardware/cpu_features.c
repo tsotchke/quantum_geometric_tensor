@@ -4,10 +4,14 @@
 
 // Platform-specific includes
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#ifndef QGT_ARCH_X86
 #define QGT_ARCH_X86
+#endif
 #include <cpuid.h>
 #elif defined(__aarch64__) || defined(_M_ARM64)
+#ifndef QGT_ARCH_ARM64
 #define QGT_ARCH_ARM64
+#endif
 #ifdef __APPLE__
 #include <sys/sysctl.h>
 #endif
