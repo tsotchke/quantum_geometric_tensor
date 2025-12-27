@@ -130,6 +130,7 @@ static size_t count_shared_indices(const tensor_node_t* t1, const tensor_node_t*
 static float compute_contraction_cost(const tensor_node_t* t1, const tensor_node_t* t2, size_t shared);
 static void find_optimal_sequence(const float* cost_matrix, size_t n, size_t* sequence, float* min_cost);
 static int contract_pair(const tensor_node_t* t1, const tensor_node_t* t2, tensor_node_t** result);
+static int contract_pair_tensors(const tensor_t* t1, const tensor_t* t2, tensor_t** result);
 static float compute_truncation_error(const ComplexFloat* singular_values, size_t size, float tolerance);
 static size_t find_truncation_rank(const ComplexFloat* singular_values, size_t size, float tolerance);
 static tensor_node_t* create_compressed_node(const tensor_t* u, const tensor_t* s, const tensor_t* v, size_t rank);
@@ -255,6 +256,43 @@ void qg_tensor_network_tensor_cleanup(tensor_t* tensor) {
     tensor->device = NULL;
 }
 
+// Tensor node cleanup with pool deallocation
+static void tensor_node_cleanup(tensor_node_t* node) {
+    if (!node) return;
+
+    if (node->data) {
+        size_t data_size = node->total_size * sizeof(ComplexFloat);
+        if (tensor_pool) {
+            pool_free(tensor_pool, node->data);
+        } else {
+            free(node->data);
+        }
+        update_memory_stats(data_size, false);
+        node->data = NULL;
+    }
+
+    if (node->dimensions) {
+        free(node->dimensions);
+        node->dimensions = NULL;
+    }
+
+    if (node->connected_nodes) {
+        free(node->connected_nodes);
+        node->connected_nodes = NULL;
+    }
+
+    if (node->connected_dims) {
+        free(node->connected_dims);
+        node->connected_dims = NULL;
+    }
+
+    node->rank = 0;
+    node->num_dimensions = 0;
+    node->total_size = 0;
+    node->num_connections = 0;
+    node->is_valid = false;
+}
+
 // Tensor node initialization with pool allocation
 static int tensor_node_init(tensor_node_t* node, const size_t* dimensions, size_t rank) {
     if (!node || !dimensions || rank == 0) {
@@ -311,43 +349,6 @@ static int tensor_node_init(tensor_node_t* node, const size_t* dimensions, size_
     return QG_SUCCESS;
 }
 
-// Tensor node cleanup with pool deallocation
-static void tensor_node_cleanup(tensor_node_t* node) {
-    if (!node) return;
-
-    if (node->data) {
-        size_t data_size = node->total_size * sizeof(ComplexFloat);
-        if (tensor_pool) {
-            pool_free(tensor_pool, node->data);
-        } else {
-            free(node->data);
-        }
-        update_memory_stats(data_size, false);
-        node->data = NULL;
-    }
-
-    if (node->dimensions) {
-        free(node->dimensions);
-        node->dimensions = NULL;
-    }
-
-    if (node->connected_nodes) {
-        free(node->connected_nodes);
-        node->connected_nodes = NULL;
-    }
-
-    if (node->connected_dims) {
-        free(node->connected_dims);
-        node->connected_dims = NULL;
-    }
-
-    node->rank = 0;
-    node->num_dimensions = 0;
-    node->total_size = 0;
-    node->is_valid = false;
-    node->num_connections = 0;
-}
-
 // Network initialization
 int qg_tensor_network_init(tensor_network_t* network, size_t capacity) {
     if (!network || capacity == 0) {
@@ -383,10 +384,13 @@ int qg_tensor_network_init(tensor_network_t* network, size_t capacity) {
 void qg_tensor_network_cleanup(tensor_network_t* network) {
     if (!network) return;
 
-    // Clean up individual tensors
+    // Clean up individual tensor nodes
     if (network->nodes) {
         for (size_t i = 0; i < network->num_nodes; i++) {
-            qg_tensor_network_tensor_cleanup(&network->nodes[i]);
+            if (network->nodes[i]) {
+                tensor_node_cleanup(network->nodes[i]);
+                free(network->nodes[i]);
+            }
         }
         free(network->nodes);
         network->nodes = NULL;
@@ -548,6 +552,75 @@ static int contract_pair(const tensor_node_t* t1, const tensor_node_t* t2, tenso
 
     if (!success) {
         tensor_node_cleanup(*result);
+        free(*result);
+        *result = NULL;
+        return QG_ERROR_INVALID_ARGUMENT;
+    }
+
+    return QG_SUCCESS;
+}
+
+// Contract a pair of tensors (tensor_t version for work arrays)
+static int contract_pair_tensors(const tensor_t* t1, const tensor_t* t2, tensor_t** result) {
+    if (!t1 || !t2 || !result || !t1->data || !t2->data) {
+        return QG_ERROR_INVALID_ARGUMENT;
+    }
+
+    // Allocate result tensor
+    *result = (tensor_t*)malloc(sizeof(tensor_t));
+    if (!*result) {
+        return QG_ERROR_OUT_OF_MEMORY;
+    }
+    memset(*result, 0, sizeof(tensor_t));
+
+    // For now, assume last dimension of t1 contracts with first of t2 (matrix multiplication style)
+    size_t new_rank = t1->rank + t2->rank - 2;
+    if (new_rank == 0) new_rank = 1;  // Handle scalar result
+
+    size_t* new_dims = (size_t*)malloc(new_rank * sizeof(size_t));
+    if (!new_dims) {
+        free(*result);
+        *result = NULL;
+        return QG_ERROR_OUT_OF_MEMORY;
+    }
+
+    // Build output dimensions (exclude contracted dimensions)
+    size_t dim_idx = 0;
+    for (size_t i = 0; i < t1->rank - 1; i++) {
+        new_dims[dim_idx++] = t1->dimensions[i];
+    }
+    for (size_t i = 1; i < t2->rank; i++) {
+        new_dims[dim_idx++] = t2->dimensions[i];
+    }
+
+    // Initialize result tensor
+    int status = qg_tensor_network_tensor_init(*result, new_dims, new_rank);
+    free(new_dims);
+
+    if (status != QG_SUCCESS) {
+        free(*result);
+        *result = NULL;
+        return status;
+    }
+
+    // Perform contraction using core tensor contract function
+    size_t contract_idx_a = t1->rank - 1;
+    size_t contract_idx_b = 0;
+
+    bool success = qg_tensor_contract(
+        (*result)->data,
+        t1->data,
+        t2->data,
+        t1->dimensions,
+        t2->dimensions,
+        t1->rank,
+        t2->rank,
+        &contract_idx_a,
+        &contract_idx_b,
+        1);
+
+    if (!success) {
+        qg_tensor_network_tensor_cleanup(*result);
         free(*result);
         *result = NULL;
         return QG_ERROR_INVALID_ARGUMENT;
@@ -1238,7 +1311,7 @@ int qg_tensor_network_contract_sequence(tensor_network_t* network,
         }
 
         tensor_t* contracted = NULL;
-        int status = contract_pair(&work_tensors[idx1], &work_tensors[idx2], &contracted);
+        int status = contract_pair_tensors(&work_tensors[idx1], &work_tensors[idx2], &contracted);
         if (status != QG_SUCCESS || !contracted) {
             for (size_t i = 0; i < n; i++) {
                 qg_tensor_network_tensor_cleanup(&work_tensors[i]);

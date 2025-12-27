@@ -28,6 +28,22 @@ static inline void* align_ptr(void* ptr) {
 static bool decompose_recursive(const float* matrix, int size, tensor_network_t* network, int depth);
 static bool compute_condition_recursive(const HierarchicalMatrix* hmatrix, float* min_sv, float* max_sv);
 
+// Helper to convert tensor_node_t fields to a temporary tensor_t for API compatibility
+static inline tensor_t tensor_from_node(const tensor_node_t* node) {
+    tensor_t t = {
+        .rank = node->rank,
+        .dimensions = node->dimensions,
+        .data = node->data,
+        .is_contiguous = true,
+        .total_size = node->total_size,
+        .strides = NULL,
+        .owns_data = false,
+        .device = NULL,
+        .auxiliary_data = NULL
+    };
+    return t;
+}
+
 bool quantum_decompose_matrix(float* matrix, int size, float* U, float* V) {
     // Use LAPACKE SVD for optimal performance
     float* s = malloc(size * sizeof(float));
@@ -358,8 +374,8 @@ static bool decompose_recursive(const float* matrix, int size, tensor_network_t*
     // Combine results
     for (int i = 0; i < 4; i++) {
         size_t edge_index = network->num_nodes;
-        if (!qg_tensor_network_add_node(network, 
-                                       &sub_networks[i].nodes[0], NULL)) {
+        tensor_t temp_tensor = tensor_from_node(sub_networks[i].nodes[0]);
+        if (!qg_tensor_network_add_node(network, &temp_tensor, NULL)) {
             return false;
         }
         if (i > 0) {

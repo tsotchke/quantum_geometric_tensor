@@ -210,7 +210,7 @@ float measure_parameter_update_fidelity(const quantum_llm_state_t* state);
 quantum_status_t prepare_noisy_quantum_state(quantum_state_t* state, float noise_level);
 quantum_status_t apply_error_correction(quantum_distributed_system_t* system,
                                       quantum_state_t* state);
-float llm_measure_quantum_error_rate(const quantum_state_t* state);  // llm_ prefix to avoid conflict
+float llm_measure_quantum_error_rate(const quantum_geometric_state_t* state);  // llm_ prefix to avoid conflict
 float measure_quantum_stability(const quantum_state_t* state);
 
 // Training data management

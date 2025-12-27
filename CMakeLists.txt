@@ -198,6 +198,67 @@ else()
     message(STATUS "libcurl not found - cloud backends will use stub implementation")
 endif()
 
+# =============================================================================
+# Quantum Format Parser Libraries (optional)
+# =============================================================================
+
+# qe-qasm support (OpenQASM parser from IBM)
+# Repository: https://github.com/openqasm/qe-qasm
+option(QGT_ENABLE_QEQASM "Enable qe-qasm OpenQASM parser library" OFF)
+if(QGT_ENABLE_QEQASM)
+    find_path(QEQASM_INCLUDE_DIRS qasm/QasmParser.h
+        PATHS /opt/homebrew/include /usr/local/include /usr/include
+              ${CMAKE_CURRENT_SOURCE_DIR}/external/qe-qasm/include)
+    find_library(QEQASM_PARSER_LIB qasmParser
+        PATHS /opt/homebrew/lib /usr/local/lib /usr/lib
+              ${CMAKE_CURRENT_SOURCE_DIR}/external/qe-qasm/lib)
+    find_library(QEQASM_AST_LIB qasmAST
+        PATHS /opt/homebrew/lib /usr/local/lib /usr/lib
+              ${CMAKE_CURRENT_SOURCE_DIR}/external/qe-qasm/lib)
+    find_library(QEQASM_FRONTEND_LIB qasmFrontend
+        PATHS /opt/homebrew/lib /usr/local/lib /usr/lib
+              ${CMAKE_CURRENT_SOURCE_DIR}/external/qe-qasm/lib)
+    if(QEQASM_INCLUDE_DIRS AND QEQASM_PARSER_LIB AND QEQASM_AST_LIB AND QEQASM_FRONTEND_LIB)
+        set(QEQASM_FOUND TRUE)
+        set(QEQASM_LIBRARIES ${QEQASM_PARSER_LIB} ${QEQASM_AST_LIB} ${QEQASM_FRONTEND_LIB})
+        add_definitions(-DQGT_HAS_QEQASM)
+        include_directories(${QEQASM_INCLUDE_DIRS})
+        message(STATUS "qe-qasm found: ${QEQASM_LIBRARIES}")
+    else()
+        set(QEQASM_FOUND FALSE)
+        message(WARNING "qe-qasm enabled but not found - QASM parsing will use fallback")
+    endif()
+else()
+    set(QEQASM_FOUND FALSE)
+    message(STATUS "qe-qasm disabled - QASM parsing will use fallback implementation")
+endif()
+
+# libquil support (Quil parser from Rigetti)
+# Repository: https://github.com/rigetti/libquil
+option(QGT_ENABLE_LIBQUIL "Enable libquil Quil parser library" OFF)
+if(QGT_ENABLE_LIBQUIL)
+    find_path(LIBQUIL_INCLUDE_DIRS libquil.h
+        PATHS /opt/homebrew/include /usr/local/include /usr/include
+              ${CMAKE_CURRENT_SOURCE_DIR}/external/libquil/include
+              $ENV{HOME}/.local/include)
+    find_library(LIBQUIL_LIBRARIES quil
+        PATHS /opt/homebrew/lib /usr/local/lib /usr/lib
+              ${CMAKE_CURRENT_SOURCE_DIR}/external/libquil/lib
+              $ENV{HOME}/.local/lib)
+    if(LIBQUIL_INCLUDE_DIRS AND LIBQUIL_LIBRARIES)
+        set(LIBQUIL_FOUND TRUE)
+        add_definitions(-DQGT_HAS_LIBQUIL)
+        include_directories(${LIBQUIL_INCLUDE_DIRS})
+        message(STATUS "libquil found: ${LIBQUIL_LIBRARIES}")
+    else()
+        set(LIBQUIL_FOUND FALSE)
+        message(WARNING "libquil enabled but not found - Quil parsing will use fallback")
+    endif()
+else()
+    set(LIBQUIL_FOUND FALSE)
+    message(STATUS "libquil disabled - Quil parsing will use fallback implementation")
+endif()
+
 # Metal support configuration
 if(QGT_ENABLE_METAL)
     add_definitions(-DQGT_HAS_METAL=1)
@@ -406,6 +467,14 @@ if(QGT_BUILD_STATIC)
         target_link_libraries(quantum_geometric_static PUBLIC ${ZLIB_LIBRARIES})
     endif()
 
+    if(QEQASM_FOUND)
+        target_link_libraries(quantum_geometric_static PUBLIC ${QEQASM_LIBRARIES})
+    endif()
+
+    if(LIBQUIL_FOUND)
+        target_link_libraries(quantum_geometric_static PUBLIC ${LIBQUIL_LIBRARIES})
+    endif()
+
     set_target_properties(quantum_geometric_static PROPERTIES
         OUTPUT_NAME quantum_geometric
         ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
@@ -449,6 +518,14 @@ if(QGT_BUILD_SHARED)
 
     if(ZLIB_FOUND)
         target_link_libraries(quantum_geometric_shared PUBLIC ${ZLIB_LIBRARIES})
+    endif()
+
+    if(QEQASM_FOUND)
+        target_link_libraries(quantum_geometric_shared PUBLIC ${QEQASM_LIBRARIES})
+    endif()
+
+    if(LIBQUIL_FOUND)
+        target_link_libraries(quantum_geometric_shared PUBLIC ${LIBQUIL_LIBRARIES})
     endif()
 
     set_target_properties(quantum_geometric_shared PROPERTIES

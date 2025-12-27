@@ -809,36 +809,471 @@ int submit_ibm_circuit(struct IBMConfig* config, struct QuantumCircuit* circuit,
     return state->connected ? 0 : -1;
 }
 
+// Helper: Convert HardwareGate to QASM instruction
+static int hardware_gate_to_qasm(const HardwareGate* gate, char* qasm, size_t size) {
+    if (!gate || !qasm) return 0;
+
+    switch (gate->type) {
+        case GATE_I:
+            return snprintf(qasm, size, "id q[%u];\n", gate->target);
+        case GATE_H:
+            return snprintf(qasm, size, "h q[%u];\n", gate->target);
+        case GATE_X:
+            return snprintf(qasm, size, "x q[%u];\n", gate->target);
+        case GATE_Y:
+            return snprintf(qasm, size, "y q[%u];\n", gate->target);
+        case GATE_Z:
+            return snprintf(qasm, size, "z q[%u];\n", gate->target);
+        case GATE_S:
+            return snprintf(qasm, size, "s q[%u];\n", gate->target);
+        case GATE_SDG:
+            return snprintf(qasm, size, "sdg q[%u];\n", gate->target);
+        case GATE_T:
+            return snprintf(qasm, size, "t q[%u];\n", gate->target);
+        case GATE_TDG:
+            return snprintf(qasm, size, "tdg q[%u];\n", gate->target);
+        case GATE_SX:
+            return snprintf(qasm, size, "sx q[%u];\n", gate->target);
+        case GATE_RX:
+            return snprintf(qasm, size, "rx(%g) q[%u];\n", gate->parameter, gate->target);
+        case GATE_RY:
+            return snprintf(qasm, size, "ry(%g) q[%u];\n", gate->parameter, gate->target);
+        case GATE_RZ:
+            return snprintf(qasm, size, "rz(%g) q[%u];\n", gate->parameter, gate->target);
+        case GATE_U1:
+            return snprintf(qasm, size, "u1(%g) q[%u];\n", gate->parameter, gate->target);
+        case GATE_CNOT:
+            return snprintf(qasm, size, "cx q[%u],q[%u];\n", gate->control, gate->target);
+        case GATE_CZ:
+            return snprintf(qasm, size, "cz q[%u],q[%u];\n", gate->control, gate->target);
+        case GATE_SWAP:
+            return snprintf(qasm, size, "swap q[%u],q[%u];\n", gate->control, gate->target);
+        case GATE_CCX:
+            return snprintf(qasm, size, "ccx q[%u],q[%u],q[%u];\n",
+                          gate->target, gate->control, gate->target1);
+        case GATE_CSWAP:
+            return snprintf(qasm, size, "cswap q[%u],q[%u],q[%u];\n",
+                          gate->target, gate->control, gate->target1);
+        default:
+            return 0;
+    }
+}
+
 /**
  * Convert a quantum circuit to OpenQASM 3.0 format
  * Uses the existing quantum_circuit type from the codebase
  */
 char* circuit_to_qasm(const struct QuantumCircuit* circuit) {
-    (void)circuit;
+    if (!circuit) {
+        // Fallback to global state if no circuit provided
+        IBMBackendState* state = g_backend_state;
+        if (!state || !state->api_handle) {
+            return NULL;
+        }
 
-    // Get the internal circuit from global state if available
-    IBMBackendState* state = g_backend_state;
-    if (!state || !state->api_handle) {
-        return NULL;
+        size_t num_qubits = state->num_qubits > 0 ? state->num_qubits : 5;
+        size_t buffer_size = 1024;
+        char* qasm = malloc(buffer_size);
+        if (!qasm) return NULL;
+
+        snprintf(qasm, buffer_size,
+            "OPENQASM 3.0;\n"
+            "include \"stdgates.inc\";\n\n"
+            "qubit[%zu] q;\n"
+            "bit[%zu] c;\n\n",
+            num_qubits, num_qubits);
+
+        return qasm;
     }
 
-    // Create a minimal QASM header for now
-    // The actual circuit conversion is done through the internal execute_circuit
-    size_t num_qubits = state->num_qubits > 0 ? state->num_qubits : 5;
-
-    size_t buffer_size = 1024;
+    // Calculate buffer size needed (generous estimate)
+    size_t buffer_size = 256 + circuit->num_gates * 64 + circuit->num_qubits * 32;
     char* qasm = malloc(buffer_size);
-    if (!qasm) {
-        return NULL;
-    }
+    if (!qasm) return NULL;
 
-    snprintf(qasm, buffer_size,
+    // Write header
+    int offset = snprintf(qasm, buffer_size,
         "OPENQASM 3.0;\n"
         "include \"stdgates.inc\";\n\n"
         "qubit[%zu] q;\n"
-        "bit[%zu] c;\n\n"
-        "// Circuit gates would be added here\n",
-        num_qubits, num_qubits);
+        "bit[%zu] c;\n\n",
+        circuit->num_qubits, circuit->num_classical_bits);
+
+    // Convert each gate
+    for (size_t i = 0; i < circuit->num_gates && (size_t)offset < buffer_size - 64; i++) {
+        offset += hardware_gate_to_qasm(&circuit->gates[i],
+                                        qasm + offset,
+                                        buffer_size - offset);
+    }
+
+    // Add measurements
+    offset += snprintf(qasm + offset, buffer_size - offset, "\n// Measurements\n");
+    for (size_t i = 0; i < circuit->num_qubits && (size_t)offset < buffer_size - 32; i++) {
+        if (circuit->measured && circuit->measured[i]) {
+            offset += snprintf(qasm + offset, buffer_size - offset,
+                             "measure q[%zu] -> c[%zu];\n", i, i);
+        }
+    }
 
     return qasm;
 }
+
+// =============================================================================
+// QASM Parser (Fallback Implementation)
+// =============================================================================
+
+#ifdef QGT_HAS_QEQASM
+// Use qe-qasm for parsing when available
+#include <qasm/QasmParser.h>
+
+struct QuantumCircuit* qasm_to_circuit(const char* qasm) {
+    if (!qasm) return NULL;
+
+    // qe-qasm parsing would go here
+    // This requires C++ integration which is complex for a C library
+
+    // For now, fall through to the fallback implementation
+    return NULL;
+}
+
+#else
+// Fallback: Simple QASM parser (OpenQASM 2.0 basic gates)
+
+// Helper functions for QASM parsing
+static const char* qasm_skip_ws(const char* s) {
+    while (*s && (*s == ' ' || *s == '\t')) s++;
+    return s;
+}
+
+static bool qasm_parse_uint(const char** s, uint32_t* val) {
+    const char* p = qasm_skip_ws(*s);
+    if (!*p || (*p < '0' || *p > '9')) return false;
+    *val = 0;
+    while (*p >= '0' && *p <= '9') {
+        *val = *val * 10 + (*p - '0');
+        p++;
+    }
+    *s = p;
+    return true;
+}
+
+static bool qasm_parse_double(const char** s, double* val) {
+    const char* p = qasm_skip_ws(*s);
+    char* end;
+    *val = strtod(p, &end);
+    if (end == p) {
+        // Check for pi
+        if (strncmp(p, "pi", 2) == 0) {
+            *val = 3.14159265358979323846;
+            *s = p + 2;
+            return true;
+        } else if (strncmp(p, "-pi", 3) == 0) {
+            *val = -3.14159265358979323846;
+            *s = p + 3;
+            return true;
+        }
+        return false;
+    }
+    *s = end;
+    return true;
+}
+
+// Parse q[N] syntax
+static bool qasm_parse_qubit(const char** s, uint32_t* qubit) {
+    const char* p = qasm_skip_ws(*s);
+    if (*p != 'q') return false;
+    p++;
+    if (*p != '[') return false;
+    p++;
+    if (!qasm_parse_uint(&p, qubit)) return false;
+    p = qasm_skip_ws(p);
+    if (*p != ']') return false;
+    p++;
+    *s = p;
+    return true;
+}
+
+// Parse parameter (e.g., "(pi/2)" or "(1.5707)")
+static bool qasm_parse_param(const char** s, double* val) {
+    const char* p = qasm_skip_ws(*s);
+    if (*p != '(') return false;
+    p++;
+
+    double num = 0, denom = 1;
+    bool neg = false;
+
+    p = qasm_skip_ws(p);
+    if (*p == '-') { neg = true; p++; }
+
+    if (strncmp(p, "pi", 2) == 0) {
+        num = 3.14159265358979323846;
+        p += 2;
+    } else {
+        if (!qasm_parse_double(&p, &num)) return false;
+    }
+
+    p = qasm_skip_ws(p);
+    if (*p == '/') {
+        p++;
+        if (!qasm_parse_double(&p, &denom)) return false;
+    } else if (*p == '*') {
+        p++;
+        double mult;
+        if (strncmp(qasm_skip_ws(p), "pi", 2) == 0) {
+            mult = 3.14159265358979323846;
+            p = qasm_skip_ws(p) + 2;
+        } else if (!qasm_parse_double(&p, &mult)) {
+            return false;
+        }
+        num *= mult;
+    }
+
+    p = qasm_skip_ws(p);
+    if (*p != ')') return false;
+    p++;
+
+    *val = (neg ? -num : num) / denom;
+    *s = p;
+    return true;
+}
+
+// Match gate name
+static bool qasm_match_gate(const char** s, const char* name) {
+    const char* p = qasm_skip_ws(*s);
+    size_t len = strlen(name);
+    if (strncmp(p, name, len) == 0 &&
+        (p[len] == ' ' || p[len] == '(' || p[len] == '\n' || p[len] == '\0' || p[len] == ';')) {
+        *s = p + len;
+        return true;
+    }
+    return false;
+}
+
+struct QuantumCircuit* qasm_to_circuit(const char* qasm) {
+    if (!qasm) return NULL;
+
+    // First pass: find qreg/creg declarations and count gates
+    size_t num_qubits = 0;
+    size_t num_classical = 0;
+    size_t num_gates = 0;
+
+    const char* line = qasm;
+    while (*line) {
+        const char* p = qasm_skip_ws(line);
+
+        // Skip empty lines, comments, OPENQASM/include
+        if (*p == '\n' || *p == '\0' || *p == '/' ||
+            strncmp(p, "OPENQASM", 8) == 0 ||
+            strncmp(p, "include", 7) == 0) {
+            while (*line && *line != '\n') line++;
+            if (*line == '\n') line++;
+            continue;
+        }
+
+        // Parse qreg q[N];
+        if (strncmp(p, "qreg", 4) == 0 || strncmp(p, "qubit", 5) == 0) {
+            const char* bracket = strchr(p, '[');
+            if (bracket) {
+                bracket++;
+                uint32_t n = 0;
+                qasm_parse_uint(&bracket, &n);
+                if (n > num_qubits) num_qubits = n;
+            }
+        }
+        // Parse creg c[N];
+        else if (strncmp(p, "creg", 4) == 0 || strncmp(p, "bit", 3) == 0) {
+            const char* bracket = strchr(p, '[');
+            if (bracket) {
+                bracket++;
+                uint32_t n = 0;
+                qasm_parse_uint(&bracket, &n);
+                if (n > num_classical) num_classical = n;
+            }
+        }
+        // Count gate instructions
+        else if (strncmp(p, "h ", 2) == 0 || strncmp(p, "x ", 2) == 0 ||
+                 strncmp(p, "y ", 2) == 0 || strncmp(p, "z ", 2) == 0 ||
+                 strncmp(p, "s ", 2) == 0 || strncmp(p, "sdg ", 4) == 0 ||
+                 strncmp(p, "t ", 2) == 0 || strncmp(p, "tdg ", 4) == 0 ||
+                 strncmp(p, "sx ", 3) == 0 || strncmp(p, "id ", 3) == 0 ||
+                 strncmp(p, "rx(", 3) == 0 || strncmp(p, "ry(", 3) == 0 ||
+                 strncmp(p, "rz(", 3) == 0 ||
+                 strncmp(p, "u1(", 3) == 0 || strncmp(p, "u2(", 3) == 0 ||
+                 strncmp(p, "u3(", 3) == 0 ||
+                 strncmp(p, "cx ", 3) == 0 || strncmp(p, "cz ", 3) == 0 ||
+                 strncmp(p, "swap ", 5) == 0 ||
+                 strncmp(p, "crx(", 4) == 0 || strncmp(p, "cry(", 4) == 0 ||
+                 strncmp(p, "crz(", 4) == 0 || strncmp(p, "ch ", 3) == 0 ||
+                 strncmp(p, "ccx ", 4) == 0 || strncmp(p, "cswap ", 6) == 0) {
+            num_gates++;
+        }
+
+        while (*line && *line != '\n') line++;
+        if (*line == '\n') line++;
+    }
+
+    if (num_qubits == 0) num_qubits = 5;  // Default
+    if (num_classical == 0) num_classical = num_qubits;
+
+    // Create circuit
+    QuantumCircuit* circuit = malloc(sizeof(QuantumCircuit));
+    if (!circuit) return NULL;
+    memset(circuit, 0, sizeof(QuantumCircuit));
+
+    circuit->num_qubits = num_qubits;
+    circuit->num_classical_bits = num_classical;
+    circuit->capacity = num_gates + 16;
+    circuit->gates = calloc(circuit->capacity, sizeof(HardwareGate));
+    circuit->measured = calloc(circuit->num_qubits, sizeof(bool));
+
+    if (!circuit->gates || !circuit->measured) {
+        free(circuit->gates);
+        free(circuit->measured);
+        free(circuit);
+        return NULL;
+    }
+
+    // Second pass: parse gates
+    line = qasm;
+    while (*line) {
+        const char* p = qasm_skip_ws(line);
+
+        // Skip headers and declarations
+        if (*p == '\n' || *p == '\0' || *p == '/' ||
+            strncmp(p, "OPENQASM", 8) == 0 || strncmp(p, "include", 7) == 0 ||
+            strncmp(p, "qreg", 4) == 0 || strncmp(p, "creg", 4) == 0 ||
+            strncmp(p, "qubit", 5) == 0 || strncmp(p, "bit", 3) == 0) {
+            while (*line && *line != '\n') line++;
+            if (*line == '\n') line++;
+            continue;
+        }
+
+        HardwareGate gate = {0};
+        bool valid = false;
+
+        // Single-qubit gates without parameters
+        if (qasm_match_gate(&p, "h")) {
+            gate.type = GATE_H;
+            if (qasm_parse_qubit(&p, &gate.target)) valid = true;
+        } else if (qasm_match_gate(&p, "x")) {
+            gate.type = GATE_X;
+            if (qasm_parse_qubit(&p, &gate.target)) valid = true;
+        } else if (qasm_match_gate(&p, "y")) {
+            gate.type = GATE_Y;
+            if (qasm_parse_qubit(&p, &gate.target)) valid = true;
+        } else if (qasm_match_gate(&p, "z")) {
+            gate.type = GATE_Z;
+            if (qasm_parse_qubit(&p, &gate.target)) valid = true;
+        } else if (qasm_match_gate(&p, "id")) {
+            gate.type = GATE_I;
+            if (qasm_parse_qubit(&p, &gate.target)) valid = true;
+        } else if (qasm_match_gate(&p, "s")) {
+            gate.type = GATE_S;
+            if (qasm_parse_qubit(&p, &gate.target)) valid = true;
+        } else if (qasm_match_gate(&p, "sdg")) {
+            gate.type = GATE_SDG;
+            if (qasm_parse_qubit(&p, &gate.target)) valid = true;
+        } else if (qasm_match_gate(&p, "t")) {
+            gate.type = GATE_T;
+            if (qasm_parse_qubit(&p, &gate.target)) valid = true;
+        } else if (qasm_match_gate(&p, "tdg")) {
+            gate.type = GATE_TDG;
+            if (qasm_parse_qubit(&p, &gate.target)) valid = true;
+        } else if (qasm_match_gate(&p, "sx")) {
+            gate.type = GATE_SX;
+            if (qasm_parse_qubit(&p, &gate.target)) valid = true;
+        }
+        // Rotation gates
+        else if (qasm_match_gate(&p, "rx")) {
+            gate.type = GATE_RX;
+            if (qasm_parse_param(&p, &gate.parameter) && qasm_parse_qubit(&p, &gate.target))
+                valid = true;
+        } else if (qasm_match_gate(&p, "ry")) {
+            gate.type = GATE_RY;
+            if (qasm_parse_param(&p, &gate.parameter) && qasm_parse_qubit(&p, &gate.target))
+                valid = true;
+        } else if (qasm_match_gate(&p, "rz")) {
+            gate.type = GATE_RZ;
+            if (qasm_parse_param(&p, &gate.parameter) && qasm_parse_qubit(&p, &gate.target))
+                valid = true;
+        } else if (qasm_match_gate(&p, "u1")) {
+            gate.type = GATE_U1;
+            if (qasm_parse_param(&p, &gate.parameter) && qasm_parse_qubit(&p, &gate.target))
+                valid = true;
+        }
+        // Two-qubit gates
+        else if (qasm_match_gate(&p, "cx")) {
+            gate.type = GATE_CNOT;
+            if (qasm_parse_qubit(&p, &gate.control)) {
+                p = qasm_skip_ws(p);
+                if (*p == ',') p++;
+                if (qasm_parse_qubit(&p, &gate.target)) valid = true;
+            }
+        } else if (qasm_match_gate(&p, "cz")) {
+            gate.type = GATE_CZ;
+            if (qasm_parse_qubit(&p, &gate.control)) {
+                p = qasm_skip_ws(p);
+                if (*p == ',') p++;
+                if (qasm_parse_qubit(&p, &gate.target)) valid = true;
+            }
+        } else if (qasm_match_gate(&p, "swap")) {
+            gate.type = GATE_SWAP;
+            if (qasm_parse_qubit(&p, &gate.control)) {
+                p = qasm_skip_ws(p);
+                if (*p == ',') p++;
+                if (qasm_parse_qubit(&p, &gate.target)) valid = true;
+            }
+        } else if (qasm_match_gate(&p, "ch")) {
+            gate.type = GATE_CH;
+            if (qasm_parse_qubit(&p, &gate.control)) {
+                p = qasm_skip_ws(p);
+                if (*p == ',') p++;
+                if (qasm_parse_qubit(&p, &gate.target)) valid = true;
+            }
+        }
+        // Three-qubit gates
+        else if (qasm_match_gate(&p, "ccx")) {
+            gate.type = GATE_CCX;
+            if (qasm_parse_qubit(&p, &gate.target)) {
+                p = qasm_skip_ws(p);
+                if (*p == ',') p++;
+                if (qasm_parse_qubit(&p, &gate.control)) {
+                    p = qasm_skip_ws(p);
+                    if (*p == ',') p++;
+                    if (qasm_parse_qubit(&p, &gate.target1)) valid = true;
+                }
+            }
+        } else if (qasm_match_gate(&p, "cswap")) {
+            gate.type = GATE_CSWAP;
+            if (qasm_parse_qubit(&p, &gate.target)) {
+                p = qasm_skip_ws(p);
+                if (*p == ',') p++;
+                if (qasm_parse_qubit(&p, &gate.control)) {
+                    p = qasm_skip_ws(p);
+                    if (*p == ',') p++;
+                    if (qasm_parse_qubit(&p, &gate.target1)) valid = true;
+                }
+            }
+        }
+        // Measure
+        else if (strncmp(p, "measure", 7) == 0) {
+            p += 7;
+            uint32_t qubit;
+            if (qasm_parse_qubit(&p, &qubit) && qubit < circuit->num_qubits) {
+                circuit->measured[qubit] = true;
+            }
+        }
+
+        if (valid && circuit->num_gates < circuit->capacity) {
+            circuit->gates[circuit->num_gates++] = gate;
+        }
+
+        while (*line && *line != '\n') line++;
+        if (*line == '\n') line++;
+    }
+
+    circuit->depth = circuit->num_gates;
+    return circuit;
+}
+
+#endif // QGT_HAS_QEQASM

@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <complex.h>
 #include <pthread.h>
 
 #ifdef __cplusplus
@@ -102,7 +103,7 @@ typedef struct topology_data_t {
 // =============================================================================
 
 typedef struct spin_system_t {
-    double* spin_states;
+    complex double* spin_states;
     size_t num_spins;
     double coupling_strength;
 } spin_system_t;

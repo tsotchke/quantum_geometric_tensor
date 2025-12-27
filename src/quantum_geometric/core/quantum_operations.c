@@ -9,13 +9,15 @@
 #include <math.h>
 #include <complex.h>
 
-// LAPACK double complex compatibility for macOS Accelerate framework
+// LAPACK double complex compatibility for Apple Accelerate framework
 #ifdef __APPLE__
-    // ComplexDouble has same memory layout as LAPACK complex (two contiguous doubles)
-    #define LAPACK_COMPLEX_CAST(ptr) ((ComplexDouble*)(ptr))
+    #include <Accelerate/Accelerate.h>
+    // __LAPACK_double_complex is typedef'd to 'double complex' in lapack_types.h
+    // Our ComplexDouble struct has the same memory layout (two contiguous doubles)
+    #define LAPACK_COMPLEX_CAST(ptr) ((__LAPACK_double_complex*)(ptr))
 #else
-    // On Linux/other platforms, complex double is used directly
-    #define LAPACK_COMPLEX_CAST(ptr) (ptr)
+    // On Linux/other platforms, use complex double directly
+    #define LAPACK_COMPLEX_CAST(ptr) ((complex double*)(ptr))
 #endif
 
 // Platform-specific SIMD includes and compatibility
@@ -193,17 +195,19 @@
 #ifndef GATE_TWO
 #define GATE_TWO 101
 #endif
+
+// Use canonical gate names from quantum_base_types.h
 #ifndef GATE_HADAMARD
-#define GATE_HADAMARD 102
+#define GATE_HADAMARD GATE_H
 #endif
 #ifndef GATE_PAULI_X
-#define GATE_PAULI_X 103
+#define GATE_PAULI_X GATE_X
 #endif
 #ifndef GATE_PAULI_Y
-#define GATE_PAULI_Y 104
+#define GATE_PAULI_Y GATE_Y
 #endif
 #ifndef GATE_PAULI_Z
-#define GATE_PAULI_Z 105
+#define GATE_PAULI_Z GATE_Z
 #endif
 
 // Hardware type compatibility

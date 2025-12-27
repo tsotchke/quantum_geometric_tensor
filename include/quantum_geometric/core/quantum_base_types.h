@@ -30,6 +30,7 @@ extern "C" {
  * the library. All code should use these values.
  */
 typedef enum {
+    // Basic gates
     GATE_TYPE_I = 0,       // Identity gate
     GATE_TYPE_X = 1,       // Pauli-X (NOT) gate
     GATE_TYPE_Y = 2,       // Pauli-Y gate
@@ -43,7 +44,26 @@ typedef enum {
     GATE_TYPE_CNOT = 10,   // Controlled-NOT gate
     GATE_TYPE_CZ = 11,     // Controlled-Z gate
     GATE_TYPE_SWAP = 12,   // SWAP gate
-    GATE_TYPE_CUSTOM = 13  // Custom unitary gate
+    GATE_TYPE_CUSTOM = 13, // Custom unitary gate
+    // Extended gates
+    GATE_TYPE_U1 = 14,     // U1 gate (phase rotation)
+    GATE_TYPE_U2 = 15,     // U2 gate
+    GATE_TYPE_U3 = 16,     // U3 gate (general single qubit)
+    GATE_TYPE_CCX = 17,    // Toffoli gate (CCX)
+    GATE_TYPE_PHASE = 18,  // General phase gate
+    GATE_TYPE_CSWAP = 19,  // Fredkin gate (controlled SWAP)
+    GATE_TYPE_ISWAP = 20,  // iSWAP gate
+    GATE_TYPE_CRX = 21,    // Controlled RX
+    GATE_TYPE_CRY = 22,    // Controlled RY
+    GATE_TYPE_CRZ = 23,    // Controlled RZ
+    GATE_TYPE_CH = 24,     // Controlled Hadamard
+    GATE_TYPE_SDG = 25,    // S-dagger gate
+    GATE_TYPE_TDG = 26,    // T-dagger gate
+    GATE_TYPE_ECR = 27,    // Echoed Cross-Resonance gate (IBM native)
+    GATE_TYPE_SX = 28,     // Square root of X gate
+    GATE_TYPE_MEASURE = 29,// Measurement operation (pseudo-gate)
+    GATE_TYPE_RESET = 30,  // Reset operation (pseudo-gate)
+    GATE_TYPE_BARRIER = 31 // Barrier operation (pseudo-gate)
 } gate_type_t;
 
 // Convenience aliases for backward compatibility
@@ -63,27 +83,25 @@ typedef enum {
 #define GATE_CZ     GATE_TYPE_CZ
 #define GATE_SWAP   GATE_TYPE_SWAP
 #define GATE_CUSTOM GATE_TYPE_CUSTOM
-
-// Extended gate types for special operations
-#define GATE_U1     14     // U1 gate (phase rotation)
-#define GATE_U2     15     // U2 gate
-#define GATE_U3     16     // U3 gate (general single qubit)
-#define GATE_CCX    17     // Toffoli gate (CCX)
-#define GATE_TOFFOLI GATE_CCX  // Alias for Toffoli
-#define GATE_PHASE  18     // General phase gate
-#define GATE_CSWAP  19     // Fredkin gate (controlled SWAP)
-#define GATE_ISWAP  20     // iSWAP gate
-#define GATE_CRX    21     // Controlled RX
-#define GATE_CRY    22     // Controlled RY
-#define GATE_CRZ    23     // Controlled RZ
-#define GATE_CH     24     // Controlled Hadamard
-#define GATE_SDG    25     // S-dagger gate
-#define GATE_TDG    26     // T-dagger gate
-#define GATE_ECR    27     // Echoed Cross-Resonance gate (IBM native)
-#define GATE_SX     28     // Square root of X gate
-#define GATE_MEASURE 29    // Measurement operation (pseudo-gate)
-#define GATE_RESET  30     // Reset operation (pseudo-gate)
-#define GATE_BARRIER 31    // Barrier operation (pseudo-gate)
+#define GATE_U1     GATE_TYPE_U1
+#define GATE_U2     GATE_TYPE_U2
+#define GATE_U3     GATE_TYPE_U3
+#define GATE_CCX    GATE_TYPE_CCX
+#define GATE_TOFFOLI GATE_TYPE_CCX  // Alias for Toffoli
+#define GATE_PHASE  GATE_TYPE_PHASE
+#define GATE_CSWAP  GATE_TYPE_CSWAP
+#define GATE_ISWAP  GATE_TYPE_ISWAP
+#define GATE_CRX    GATE_TYPE_CRX
+#define GATE_CRY    GATE_TYPE_CRY
+#define GATE_CRZ    GATE_TYPE_CRZ
+#define GATE_CH     GATE_TYPE_CH
+#define GATE_SDG    GATE_TYPE_SDG
+#define GATE_TDG    GATE_TYPE_TDG
+#define GATE_ECR    GATE_TYPE_ECR
+#define GATE_SX     GATE_TYPE_SX
+#define GATE_MEASURE GATE_TYPE_MEASURE
+#define GATE_RESET  GATE_TYPE_RESET
+#define GATE_BARRIER GATE_TYPE_BARRIER
 #endif
 
 // ============================================================================
@@ -92,15 +110,24 @@ typedef enum {
 
 /**
  * @brief Hardware platform types
+ *
+ * Includes both compute hardware types (CPU, GPU, etc.) and
+ * quantum backend providers (IBM, Rigetti, etc.)
  */
 typedef enum {
+    // Local compute hardware
     HARDWARE_TYPE_CPU,
     HARDWARE_TYPE_GPU,
     HARDWARE_TYPE_QPU,
     HARDWARE_TYPE_SIMULATOR,
     HARDWARE_TYPE_METAL,
     HARDWARE_TYPE_CUDA,
-    HARDWARE_TYPE_FPGA
+    HARDWARE_TYPE_FPGA,
+    // Quantum backend providers
+    HARDWARE_TYPE_IBM,
+    HARDWARE_TYPE_RIGETTI,
+    HARDWARE_TYPE_DWAVE,
+    HARDWARE_TYPE_CUSTOM
 } HardwareType;
 
 // Backward compatibility aliases for HARDWARE_BACKEND_* naming
@@ -110,15 +137,15 @@ typedef enum {
 #define HARDWARE_BACKEND_CUDA      HARDWARE_TYPE_CUDA
 #define HARDWARE_BACKEND_FPGA      HARDWARE_TYPE_FPGA
 #define HARDWARE_BACKEND_QPU       HARDWARE_TYPE_QPU
-#define HARDWARE_BACKEND_IBM       100  // Distinct value for IBM backend
-#define HARDWARE_BACKEND_RIGETTI   101  // Distinct value for Rigetti backend
-#define HARDWARE_BACKEND_DWAVE     102  // Distinct value for D-Wave backend
-#define HARDWARE_BACKEND_CUSTOM    103  // Distinct value for custom backend
+#define HARDWARE_BACKEND_IBM       HARDWARE_TYPE_IBM
+#define HARDWARE_BACKEND_RIGETTI   HARDWARE_TYPE_RIGETTI
+#define HARDWARE_BACKEND_DWAVE     HARDWARE_TYPE_DWAVE
+#define HARDWARE_BACKEND_CUSTOM    HARDWARE_TYPE_CUSTOM
 #define HARDWARE_BACKEND_SIMULATOR HARDWARE_TYPE_SIMULATOR
 
 // Note: HARDWARE_IBM, HARDWARE_RIGETTI, HARDWARE_DWAVE, HARDWARE_CUSTOM
-// are defined as enum values in quantum_hardware_types.h (HardwareBackendType)
-// Do not redefine them here as macros
+// are also defined in quantum_hardware_types.h (HardwareBackendType)
+// for the hardware abstraction layer
 
 // ============================================================================
 // Quantum State Types

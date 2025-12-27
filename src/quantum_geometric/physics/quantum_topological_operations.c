@@ -1644,17 +1644,17 @@ QuantumState* quantum_calculate_attention(quantum_topological_tensor_t* qgt,
     if (!qgt || !config) return NULL;
     (void)qc;
 
-    QuantumState* state = NULL;
+    quantum_state_t* state = NULL;
     qgt_error_t err = quantum_state_create(&state, QUANTUM_STATE_PURE, qgt->dimension);
     if (err != QGT_SUCCESS || !state) return NULL;
 
     // Calculate attention weights
     for (size_t i = 0; i < qgt->dimension && i < state->dimension; i++) {
-        state->amplitudes[i].real = qgt->components[i].real;
-        state->amplitudes[i].imag = qgt->components[i].imag;
+        state->coordinates[i].real = qgt->components[i].real;
+        state->coordinates[i].imag = qgt->components[i].imag;
     }
 
-    return state;
+    return (QuantumState*)state;
 }
 
 void quantum_apply_attention_chunk(quantum_topological_tensor_t* qgt, QuantumState* attention_state,

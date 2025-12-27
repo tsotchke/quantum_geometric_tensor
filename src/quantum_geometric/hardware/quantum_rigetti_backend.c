@@ -678,32 +678,143 @@ static char* circuit_to_quil_internal(const struct quantum_circuit* circuit) {
 }
 
 // Helper: Convert HardwareGate to Quil instruction
+// Uses native Rigetti gates: RZ, RX, CZ (native gate set for most Aspen QPUs)
 static int hardware_gate_to_quil(const HardwareGate* gate, char* quil, size_t size) {
     if (!gate || !quil) return 0;
 
     switch (gate->type) {
+        // Identity gate
+        case GATE_I:
+            return snprintf(quil, size, "I %u\n", gate->target);
+
+        // Hadamard (decomposed to native RZ/RX)
         case GATE_H:
             return snprintf(quil, size,
                           "RZ(pi/2) %u\nRX(pi/2) %u\nRZ(pi/2) %u\n",
                           gate->target, gate->target, gate->target);
+
+        // Pauli gates
         case GATE_X:
             return snprintf(quil, size, "RX(pi) %u\n", gate->target);
         case GATE_Y:
             return snprintf(quil, size, "RY(pi) %u\n", gate->target);
         case GATE_Z:
             return snprintf(quil, size, "RZ(pi) %u\n", gate->target);
-        case GATE_CNOT:
-            return snprintf(quil, size,
-                          "RX(pi/2) %u\nCZ %u %u\nRX(-pi/2) %u\n",
-                          gate->target, gate->control, gate->target, gate->target);
-        case GATE_CZ:
-            return snprintf(quil, size, "CZ %u %u\n", gate->control, gate->target);
+
+        // Phase gates
+        case GATE_S:
+            return snprintf(quil, size, "RZ(pi/2) %u\n", gate->target);
+        case GATE_SDG:
+            return snprintf(quil, size, "RZ(-pi/2) %u\n", gate->target);
+        case GATE_T:
+            return snprintf(quil, size, "RZ(pi/4) %u\n", gate->target);
+        case GATE_TDG:
+            return snprintf(quil, size, "RZ(-pi/4) %u\n", gate->target);
+
+        // Square root of X
+        case GATE_SX:
+            return snprintf(quil, size, "RX(pi/2) %u\n", gate->target);
+
+        // Rotation gates (native)
         case GATE_RX:
             return snprintf(quil, size, "RX(%g) %u\n", gate->parameter, gate->target);
         case GATE_RY:
             return snprintf(quil, size, "RY(%g) %u\n", gate->parameter, gate->target);
         case GATE_RZ:
             return snprintf(quil, size, "RZ(%g) %u\n", gate->parameter, gate->target);
+
+        // U gates (decomposed to native RZ/RX)
+        case GATE_U1:
+            return snprintf(quil, size, "RZ(%g) %u\n", gate->parameter, gate->target);
+        case GATE_U2:
+            if (gate->parameters && gate->num_params >= 2) {
+                return snprintf(quil, size,
+                              "RZ(%g) %u\nRY(1.5707963267948966) %u\nRZ(%g) %u\n",
+                              gate->parameters[1], gate->target,
+                              gate->target,
+                              gate->parameters[0], gate->target);
+            }
+            return snprintf(quil, size, "RY(1.5707963267948966) %u\n", gate->target);
+        case GATE_U3:
+            if (gate->parameters && gate->num_params >= 3) {
+                return snprintf(quil, size,
+                              "RZ(%g) %u\nRY(%g) %u\nRZ(%g) %u\n",
+                              gate->parameters[2], gate->target,
+                              gate->parameters[0], gate->target,
+                              gate->parameters[1], gate->target);
+            }
+            return snprintf(quil, size, "I %u\n", gate->target);
+
+        // CNOT (decomposed to native CZ + rotations)
+        case GATE_CNOT:
+            return snprintf(quil, size,
+                          "RX(pi/2) %u\nCZ %u %u\nRX(-pi/2) %u\n",
+                          gate->target, gate->control, gate->target, gate->target);
+
+        // CZ (native)
+        case GATE_CZ:
+            return snprintf(quil, size, "CZ %u %u\n", gate->control, gate->target);
+
+        // SWAP gate
+        case GATE_SWAP:
+            return snprintf(quil, size, "SWAP %u %u\n", gate->control, gate->target);
+
+        // iSWAP gate
+        case GATE_ISWAP:
+            return snprintf(quil, size, "ISWAP %u %u\n", gate->control, gate->target);
+
+        // Controlled rotation gates (decomposed)
+        case GATE_CRX:
+            return snprintf(quil, size,
+                          "RZ(pi/2) %u\nCNOT %u %u\nRY(%g) %u\nCNOT %u %u\nRY(%g) %u\nRZ(-pi/2) %u\n",
+                          gate->target,
+                          gate->control, gate->target,
+                          -gate->parameter / 2.0, gate->target,
+                          gate->control, gate->target,
+                          gate->parameter / 2.0, gate->target,
+                          gate->target);
+        case GATE_CRY:
+            return snprintf(quil, size,
+                          "RY(%g) %u\nCNOT %u %u\nRY(%g) %u\nCNOT %u %u\n",
+                          gate->parameter / 2.0, gate->target,
+                          gate->control, gate->target,
+                          -gate->parameter / 2.0, gate->target,
+                          gate->control, gate->target);
+        case GATE_CRZ:
+            return snprintf(quil, size,
+                          "RZ(%g) %u\nCNOT %u %u\nRZ(%g) %u\nCNOT %u %u\n",
+                          gate->parameter / 2.0, gate->target,
+                          gate->control, gate->target,
+                          -gate->parameter / 2.0, gate->target,
+                          gate->control, gate->target);
+        case GATE_CH:
+            return snprintf(quil, size,
+                          "RY(0.7853981633974483) %u\nCNOT %u %u\nRY(-0.7853981633974483) %u\n",
+                          gate->target,
+                          gate->control, gate->target,
+                          gate->target);
+
+        // Three-qubit gates
+        // Note: GATE_TOFFOLI is an alias for GATE_CCX
+        case GATE_CCX:
+            return snprintf(quil, size, "CCNOT %u %u %u\n",
+                          gate->target, gate->control, gate->target1);
+        case GATE_CSWAP:
+            return snprintf(quil, size, "CSWAP %u %u %u\n",
+                          gate->target, gate->control, gate->target1);
+
+        // Phase gate with parameter
+        case GATE_PHASE:
+            return snprintf(quil, size, "RZ(%g) %u\n", gate->parameter, gate->target);
+
+        // ECR gate (decomposed)
+        case GATE_ECR:
+            return snprintf(quil, size,
+                          "RZ(pi/4) %u\nCNOT %u %u\nRX(pi) %u\n",
+                          gate->control,
+                          gate->control, gate->target,
+                          gate->control);
+
         default:
             return 0;
     }
@@ -1887,3 +1998,343 @@ void cleanup_rigetti_result(RigettiJobResult* result) {
     // raw_data is owned by cache, don't free
     free(result);
 }
+
+// =============================================================================
+// Quil Parser (Fallback Implementation)
+// =============================================================================
+
+#ifdef QGT_HAS_LIBQUIL
+// Use libquil for parsing when available
+#include <libquil.h>
+
+struct QuantumCircuit* quil_to_circuit(const char* quil) {
+    if (!quil) return NULL;
+
+    quil_program parsed;
+    libquil_error_t err = quilc_parse_quil((char*)quil, &parsed);
+    if (err != LIBQUIL_SUCCESS) {
+        log_error("Failed to parse Quil program: %s", libquil_error_string(err));
+        return NULL;
+    }
+
+    // Get program info
+    size_t num_qubits = quil_program_num_qubits(parsed);
+    size_t num_instructions = quil_program_num_instructions(parsed);
+
+    // Create circuit
+    QuantumCircuit* circuit = malloc(sizeof(QuantumCircuit));
+    if (!circuit) {
+        quil_program_free(parsed);
+        return NULL;
+    }
+    memset(circuit, 0, sizeof(QuantumCircuit));
+
+    circuit->num_qubits = num_qubits;
+    circuit->num_classical_bits = num_qubits;
+    circuit->capacity = num_instructions + 16;
+    circuit->gates = calloc(circuit->capacity, sizeof(HardwareGate));
+    circuit->measured = calloc(num_qubits, sizeof(bool));
+
+    if (!circuit->gates || !circuit->measured) {
+        free(circuit->gates);
+        free(circuit->measured);
+        free(circuit);
+        quil_program_free(parsed);
+        return NULL;
+    }
+
+    // Convert each instruction
+    for (size_t i = 0; i < num_instructions; i++) {
+        quil_instruction instr = quil_program_get_instruction(parsed, i);
+        // ... convert instruction to HardwareGate ...
+        // This would require libquil API for instruction introspection
+    }
+
+    quil_program_free(parsed);
+    return circuit;
+}
+
+#else
+// Fallback: Simple Quil parser (basic gates only)
+
+// Helper: Skip whitespace
+static const char* skip_ws(const char* s) {
+    while (*s && (*s == ' ' || *s == '\t')) s++;
+    return s;
+}
+
+// Helper: Parse unsigned integer
+static bool parse_uint(const char** s, uint32_t* val) {
+    const char* p = skip_ws(*s);
+    if (!*p || (*p < '0' || *p > '9')) return false;
+    *val = 0;
+    while (*p >= '0' && *p <= '9') {
+        *val = *val * 10 + (*p - '0');
+        p++;
+    }
+    *s = p;
+    return true;
+}
+
+// Helper: Parse floating point number
+static bool parse_double(const char** s, double* val) {
+    const char* p = skip_ws(*s);
+    char* end;
+    *val = strtod(p, &end);
+    if (end == p) {
+        // Check for symbolic constants
+        if (strncmp(p, "pi", 2) == 0) {
+            *val = 3.14159265358979323846;
+            *s = p + 2;
+            return true;
+        } else if (strncmp(p, "-pi", 3) == 0) {
+            *val = -3.14159265358979323846;
+            *s = p + 3;
+            return true;
+        }
+        return false;
+    }
+    *s = end;
+    return true;
+}
+
+// Helper: Parse parameter in parentheses (e.g., "(pi/2)")
+static bool parse_param(const char** s, double* val) {
+    const char* p = skip_ws(*s);
+    if (*p != '(') return false;
+    p++;
+
+    double num = 0, denom = 1;
+    bool neg = false;
+
+    p = skip_ws(p);
+    if (*p == '-') { neg = true; p++; }
+
+    if (strncmp(p, "pi", 2) == 0) {
+        num = 3.14159265358979323846;
+        p += 2;
+    } else {
+        if (!parse_double(&p, &num)) return false;
+    }
+
+    p = skip_ws(p);
+    if (*p == '/') {
+        p++;
+        if (!parse_double(&p, &denom)) return false;
+    } else if (*p == '*') {
+        p++;
+        double mult;
+        if (strncmp(skip_ws(p), "pi", 2) == 0) {
+            mult = 3.14159265358979323846;
+            p = skip_ws(p) + 2;
+        } else if (!parse_double(&p, &mult)) {
+            return false;
+        }
+        num *= mult;
+    }
+
+    p = skip_ws(p);
+    if (*p != ')') return false;
+    p++;
+
+    *val = (neg ? -num : num) / denom;
+    *s = p;
+    return true;
+}
+
+// Helper: Match gate name
+static bool match_gate(const char** s, const char* name) {
+    const char* p = skip_ws(*s);
+    size_t len = strlen(name);
+    if (strncmp(p, name, len) == 0 && (p[len] == ' ' || p[len] == '(' || p[len] == '\n' || p[len] == '\0')) {
+        *s = p + len;
+        return true;
+    }
+    return false;
+}
+
+struct QuantumCircuit* quil_to_circuit(const char* quil) {
+    if (!quil) return NULL;
+
+    // First pass: count qubits and gates
+    size_t max_qubit = 0;
+    size_t num_gates = 0;
+    size_t num_classical = 0;
+
+    const char* line = quil;
+    while (*line) {
+        const char* p = skip_ws(line);
+
+        // Skip empty lines and comments
+        if (*p == '\n' || *p == '\0' || *p == '#') {
+            while (*line && *line != '\n') line++;
+            if (*line == '\n') line++;
+            continue;
+        }
+
+        // Parse DECLARE for classical bits
+        if (strncmp(p, "DECLARE", 7) == 0) {
+            // DECLARE ro BIT[N]
+            const char* bracket = strchr(p, '[');
+            if (bracket) {
+                bracket++;
+                uint32_t bits = 0;
+                parse_uint(&bracket, &bits);
+                if (bits > num_classical) num_classical = bits;
+            }
+        }
+        // Count gate instructions
+        else if (strncmp(p, "H ", 2) == 0 || strncmp(p, "X ", 2) == 0 ||
+                 strncmp(p, "Y ", 2) == 0 || strncmp(p, "Z ", 2) == 0 ||
+                 strncmp(p, "I ", 2) == 0 || strncmp(p, "S ", 2) == 0 ||
+                 strncmp(p, "T ", 2) == 0 ||
+                 strncmp(p, "RX(", 3) == 0 || strncmp(p, "RY(", 3) == 0 ||
+                 strncmp(p, "RZ(", 3) == 0 ||
+                 strncmp(p, "CNOT ", 5) == 0 || strncmp(p, "CZ ", 3) == 0 ||
+                 strncmp(p, "SWAP ", 5) == 0 || strncmp(p, "ISWAP ", 6) == 0 ||
+                 strncmp(p, "CCNOT ", 6) == 0 || strncmp(p, "CSWAP ", 6) == 0) {
+            num_gates++;
+
+            // Find max qubit index
+            while (*p && *p != '\n') {
+                if (*p >= '0' && *p <= '9') {
+                    uint32_t q = 0;
+                    parse_uint(&p, &q);
+                    if (q > max_qubit) max_qubit = q;
+                } else {
+                    p++;
+                }
+            }
+        }
+
+        // Move to next line
+        while (*line && *line != '\n') line++;
+        if (*line == '\n') line++;
+    }
+
+    // Create circuit
+    QuantumCircuit* circuit = malloc(sizeof(QuantumCircuit));
+    if (!circuit) return NULL;
+    memset(circuit, 0, sizeof(QuantumCircuit));
+
+    circuit->num_qubits = max_qubit + 1;
+    circuit->num_classical_bits = num_classical > 0 ? num_classical : circuit->num_qubits;
+    circuit->capacity = num_gates + 16;
+    circuit->gates = calloc(circuit->capacity, sizeof(HardwareGate));
+    circuit->measured = calloc(circuit->num_qubits, sizeof(bool));
+
+    if (!circuit->gates || !circuit->measured) {
+        free(circuit->gates);
+        free(circuit->measured);
+        free(circuit);
+        return NULL;
+    }
+
+    // Second pass: parse gates
+    line = quil;
+    while (*line) {
+        const char* p = skip_ws(line);
+
+        // Skip empty lines, comments, and declarations
+        if (*p == '\n' || *p == '\0' || *p == '#' ||
+            strncmp(p, "DECLARE", 7) == 0 || strncmp(p, "PRAGMA", 6) == 0) {
+            while (*line && *line != '\n') line++;
+            if (*line == '\n') line++;
+            continue;
+        }
+
+        HardwareGate gate = {0};
+        bool valid = false;
+
+        // Single-qubit gates without parameters
+        if (match_gate(&p, "H")) {
+            gate.type = GATE_H;
+            if (parse_uint(&p, &gate.target)) valid = true;
+        } else if (match_gate(&p, "X")) {
+            gate.type = GATE_X;
+            if (parse_uint(&p, &gate.target)) valid = true;
+        } else if (match_gate(&p, "Y")) {
+            gate.type = GATE_Y;
+            if (parse_uint(&p, &gate.target)) valid = true;
+        } else if (match_gate(&p, "Z")) {
+            gate.type = GATE_Z;
+            if (parse_uint(&p, &gate.target)) valid = true;
+        } else if (match_gate(&p, "I")) {
+            gate.type = GATE_I;
+            if (parse_uint(&p, &gate.target)) valid = true;
+        } else if (match_gate(&p, "S")) {
+            gate.type = GATE_S;
+            if (parse_uint(&p, &gate.target)) valid = true;
+        } else if (match_gate(&p, "T")) {
+            gate.type = GATE_T;
+            if (parse_uint(&p, &gate.target)) valid = true;
+        }
+        // Rotation gates with parameters
+        else if (match_gate(&p, "RX")) {
+            gate.type = GATE_RX;
+            if (parse_param(&p, &gate.parameter) && parse_uint(&p, &gate.target))
+                valid = true;
+        } else if (match_gate(&p, "RY")) {
+            gate.type = GATE_RY;
+            if (parse_param(&p, &gate.parameter) && parse_uint(&p, &gate.target))
+                valid = true;
+        } else if (match_gate(&p, "RZ")) {
+            gate.type = GATE_RZ;
+            if (parse_param(&p, &gate.parameter) && parse_uint(&p, &gate.target))
+                valid = true;
+        }
+        // Two-qubit gates
+        else if (match_gate(&p, "CNOT")) {
+            gate.type = GATE_CNOT;
+            if (parse_uint(&p, &gate.control) && parse_uint(&p, &gate.target))
+                valid = true;
+        } else if (match_gate(&p, "CZ")) {
+            gate.type = GATE_CZ;
+            if (parse_uint(&p, &gate.control) && parse_uint(&p, &gate.target))
+                valid = true;
+        } else if (match_gate(&p, "SWAP")) {
+            gate.type = GATE_SWAP;
+            if (parse_uint(&p, &gate.control) && parse_uint(&p, &gate.target))
+                valid = true;
+        } else if (match_gate(&p, "ISWAP")) {
+            gate.type = GATE_ISWAP;
+            if (parse_uint(&p, &gate.control) && parse_uint(&p, &gate.target))
+                valid = true;
+        }
+        // Three-qubit gates
+        else if (match_gate(&p, "CCNOT")) {
+            gate.type = GATE_CCX;
+            if (parse_uint(&p, &gate.target) && parse_uint(&p, &gate.control) &&
+                parse_uint(&p, &gate.target1))
+                valid = true;
+        } else if (match_gate(&p, "CSWAP")) {
+            gate.type = GATE_CSWAP;
+            if (parse_uint(&p, &gate.target) && parse_uint(&p, &gate.control) &&
+                parse_uint(&p, &gate.target1))
+                valid = true;
+        }
+        // MEASURE
+        else if (strncmp(p, "MEASURE", 7) == 0) {
+            p += 7;
+            uint32_t qubit;
+            if (parse_uint(&p, &qubit) && qubit < circuit->num_qubits) {
+                circuit->measured[qubit] = true;
+            }
+        }
+
+        if (valid && circuit->num_gates < circuit->capacity) {
+            circuit->gates[circuit->num_gates++] = gate;
+        }
+
+        // Move to next line
+        while (*line && *line != '\n') line++;
+        if (*line == '\n') line++;
+    }
+
+    // Calculate depth (simplified)
+    circuit->depth = circuit->num_gates;
+
+    return circuit;
+}
+
+#endif // QGT_HAS_LIBQUIL

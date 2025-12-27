@@ -98,7 +98,7 @@ void cleanup_quantum_llm(quantum_llm_state_t* state) {
     
     for (uint32_t i = 0; i < state->num_parameter_states; i++) {
         if (state->parameter_states[i]) {
-            cleanup_quantum_state(state->parameter_states[i]);
+            geometric_destroy_state(state->parameter_states[i]);
         }
     }
     free(state->parameter_states);
@@ -323,9 +323,17 @@ float measure_encoding_fidelity(
 }
 
 float llm_measure_quantum_error_rate(
-    const quantum_state_t* state
+    const quantum_geometric_state_t* state
 ) {
-    return calculate_quantum_error_rate(state);
+    // Use error_rates field if available, otherwise estimate from state properties
+    if (state && state->error_rates && state->num_qubits > 0) {
+        double total_error = 0.0;
+        for (size_t i = 0; i < state->num_qubits; i++) {
+            total_error += state->error_rates[i];
+        }
+        return (float)(total_error / state->num_qubits);
+    }
+    return 0.0f;  // No error rate data available
 }
 
 float measure_quantum_stability(

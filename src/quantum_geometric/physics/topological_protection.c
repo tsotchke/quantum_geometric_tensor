@@ -5,6 +5,7 @@
 
 #include "quantum_geometric/core/quantum_geometric_core.h"
 #include "quantum_geometric/core/quantum_geometric_tensor_network.h"
+#include "quantum_geometric/core/quantum_circuit_operations.h"
 #include "quantum_geometric/physics/quantum_topological_operations.h"
 #include <complex.h>
 #include <math.h>
@@ -183,7 +184,7 @@ void correct_topological_errors_braiding(quantum_topological_tensor_t* qgt) {
     // Identify anyons using quantum phase estimation
     AnyonExcitation* anyons = quantum_identify_anyons(qgt, qc);
     if (!anyons) {
-        cleanup_quantum_circuit(qc);
+        quantum_circuit_destroy(qc);
         return;
     }
 
@@ -456,7 +457,7 @@ void apply_topological_attention(quantum_topological_tensor_t* qgt,
     // Calculate protected attention using quantum interference - O(log N)
     QuantumState* attention_state = quantum_calculate_attention(qgt, config, qc);
     if (!attention_state) {
-        cleanup_quantum_circuit(qc);
+        quantum_circuit_destroy(qc);
         return;
     }
 
@@ -502,7 +503,7 @@ void apply_topological_attention(quantum_topological_tensor_t* qgt,
 
     // Cleanup quantum resources
     free(attention_state);
-    cleanup_quantum_circuit(qc);
+    quantum_circuit_destroy(qc);
 }
 
 /* Monitor and maintain topological order using quantum circuits - O(log N) */
@@ -517,7 +518,7 @@ void monitor_topological_order(quantum_topological_tensor_t* qgt,
     // Create quantum-enhanced monitor
     TopologicalMonitor* monitor = quantum_create_monitor(config, qc);
     if (!monitor) {
-        cleanup_quantum_circuit(qc);
+        quantum_circuit_destroy(qc);
         return;
     }
 
@@ -525,7 +526,7 @@ void monitor_topological_order(quantum_topological_tensor_t* qgt,
     QuantumWorkspace* qws = init_quantum_workspace(QG_QUANTUM_CHUNK_SIZE);
     if (!qws) {
         free_topological_monitor(monitor);
-        cleanup_quantum_circuit(qc);
+        quantum_circuit_destroy(qc);
         return;
     }
 

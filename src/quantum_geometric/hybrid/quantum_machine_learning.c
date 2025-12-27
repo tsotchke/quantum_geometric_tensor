@@ -309,13 +309,13 @@ static double forward_pass(QMLContext* ctx,
     // Process each sample in batch
     for (size_t i = 0; i < batch_size; i++) {
         // Quantum forward pass
-        struct quantum_state* quantum_state = encode_input(
+        QuantumState* quantum_state = encode_input(
             inputs + i * ctx->num_qubits,
-            ctx->quantum_circuit);
-        
+            (const struct QuantumCircuit*)ctx->quantum_circuit);
+
         apply_quantum_layers(ctx->quantum_circuit,
                            quantum_state);
-        
+
         double* quantum_output = measure_quantum_state(
             quantum_state);
         
@@ -1038,7 +1038,7 @@ double evaluate_model(const QMLContext* ctx, const DataSet* data) {
         const double* target = data->targets + i * data->target_dim;
 
         // Forward pass through quantum circuit
-        struct quantum_state* quantum_state = encode_input(input, ctx->quantum_circuit);
+        QuantumState* quantum_state = encode_input(input, (const struct QuantumCircuit*)ctx->quantum_circuit);
         if (!quantum_state) continue;
 
         apply_quantum_layers(ctx->quantum_circuit, quantum_state);
