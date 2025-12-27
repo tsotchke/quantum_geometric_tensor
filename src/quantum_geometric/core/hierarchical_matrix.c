@@ -37,7 +37,7 @@
 #define ADAPTIVE_BLOCK_SIZE 1024   // Size threshold for adaptive blocking
 
 // Runtime optimization selection - always enabled for performance
-static bool use_optimized_path = true;
+static bool use_optimized_path __attribute__((unused)) = true;
 
 // Forward declarations for internal functions
 void hmatrix_destroy(HierarchicalMatrix* matrix);

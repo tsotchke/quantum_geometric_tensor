@@ -1116,22 +1116,63 @@ bool compute_quantum_geometric_tensor(
         return false;
     }
     
-    // Compute geometric tensor components:
-    // g_ij = <∂ψ/∂θi|∂ψ/∂θj>
-    result->real = 0;
-    result->imag = 0;
-    
+    // Compute the full Quantum Geometric Tensor:
+    // Q_μν = <∂_μψ|∂_νψ> - <∂_μψ|ψ><ψ|∂_νψ>
+    //
+    // The real part is the Fubini-Study metric: g_μν = Re[Q_μν]
+    // The imaginary part is the Berry curvature: Ω_μν = Im[Q_μν]
+
+    // Step 1: Compute <∂_μψ|∂_νψ> (overlap term)
+    ComplexFloat overlap = {0.0f, 0.0f};
     for (size_t k = 0; k < dim; k++) {
-        // Complex conjugate of grad_i
+        // Complex conjugate of grad_i: <∂_μψ|
         ComplexFloat grad_i_conj = {grad_i[k].real, -grad_i[k].imag};
-        
-        // Inner product
-        result->real += grad_i_conj.real * grad_j[k].real - 
+
+        // Inner product contribution
+        overlap.real += grad_i_conj.real * grad_j[k].real -
                        grad_i_conj.imag * grad_j[k].imag;
-        result->imag += grad_i_conj.real * grad_j[k].imag + 
+        overlap.imag += grad_i_conj.real * grad_j[k].imag +
                        grad_i_conj.imag * grad_j[k].real;
     }
-    
+
+    // Step 2: Compute <∂_μψ|ψ> (projection coefficient for parameter μ)
+    ComplexFloat proj_i = {0.0f, 0.0f};
+    for (size_t k = 0; k < dim; k++) {
+        // Complex conjugate of grad_i: <∂_μψ|
+        ComplexFloat grad_i_conj = {grad_i[k].real, -grad_i[k].imag};
+
+        // Inner product with state |ψ>
+        proj_i.real += grad_i_conj.real * state[k].real -
+                      grad_i_conj.imag * state[k].imag;
+        proj_i.imag += grad_i_conj.real * state[k].imag +
+                      grad_i_conj.imag * state[k].real;
+    }
+
+    // Step 3: Compute <ψ|∂_νψ> = (<∂_νψ|ψ>)*
+    // First compute <∂_νψ|ψ> then conjugate
+    ComplexFloat proj_j_conj = {0.0f, 0.0f};
+    for (size_t k = 0; k < dim; k++) {
+        // Complex conjugate of grad_j: <∂_νψ|
+        ComplexFloat grad_j_conj = {grad_j[k].real, -grad_j[k].imag};
+
+        // Inner product with state |ψ>
+        proj_j_conj.real += grad_j_conj.real * state[k].real -
+                           grad_j_conj.imag * state[k].imag;
+        proj_j_conj.imag += grad_j_conj.real * state[k].imag +
+                           grad_j_conj.imag * state[k].real;
+    }
+    // Conjugate to get <ψ|∂_νψ>
+    ComplexFloat proj_j = {proj_j_conj.real, -proj_j_conj.imag};
+
+    // Step 4: Compute projection term <∂_μψ|ψ><ψ|∂_νψ>
+    ComplexFloat projection;
+    projection.real = proj_i.real * proj_j.real - proj_i.imag * proj_j.imag;
+    projection.imag = proj_i.real * proj_j.imag + proj_i.imag * proj_j.real;
+
+    // Step 5: Q_μν = <∂_μψ|∂_νψ> - <∂_μψ|ψ><ψ|∂_νψ>
+    result->real = overlap.real - projection.real;
+    result->imag = overlap.imag - projection.imag;
+
     free(state);
     free(grad_i);
     free(grad_j);

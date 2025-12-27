@@ -171,7 +171,8 @@ int qg_cache_free(void* ptr) {
         .optimization_level = QUANTUM_OPT_AGGRESSIVE,
         .cache_type = QUANTUM_MEMORY_OPTIMAL
     };
-    
+    (void)qconfig;  // Configuration stored for potential future use in extended cache modes
+
     // Create quantum circuit for cache deallocation
     quantum_circuit_t* circuit = quantum_create_cache_circuit(
         MAX_CACHE_LINES,

@@ -182,6 +182,85 @@ bool compute_forward_loss(
     size_t output_dim,
     double* loss);
 
+/**
+ * @brief Configuration for regularized natural gradient computation
+ */
+typedef struct {
+    float regularization_param;      // Tikhonov regularization parameter λ (default: 1e-4)
+    float condition_threshold;       // Threshold for condition number warning (default: 1e8)
+    bool use_adaptive_regularization; // Auto-adjust λ based on condition number
+    bool use_pseudoinverse_fallback;  // Use SVD pseudo-inverse if inversion fails
+    float singular_value_cutoff;      // Cutoff for small singular values (default: 1e-10)
+} natural_gradient_config_t;
+
+/**
+ * @brief Get default configuration for regularized natural gradient
+ *
+ * @return Default configuration with reasonable values
+ */
+natural_gradient_config_t get_default_natural_gradient_config(void);
+
+/**
+ * @brief Compute condition number of a complex matrix using SVD
+ *
+ * The condition number κ = σ_max / σ_min measures how sensitive the matrix
+ * inversion is to perturbations. Large values indicate ill-conditioning.
+ *
+ * @param matrix The input matrix (dimension x dimension)
+ * @param dimension Matrix dimension
+ * @param condition_number Output: the condition number
+ * @return true if successful, false otherwise
+ */
+bool compute_complex_matrix_condition_number(
+    const ComplexFloat* matrix,
+    size_t dimension,
+    float* condition_number);
+
+/**
+ * @brief Compute regularized natural gradient with Tikhonov regularization
+ *
+ * Computes: natural_grad = (G + λI)^{-1} * gradient
+ *
+ * This adds stability when the metric tensor G is ill-conditioned or singular.
+ * If inversion still fails, falls back to SVD-based pseudo-inverse.
+ *
+ * @param gradient The standard gradient vector
+ * @param metric The Fubini-Study metric tensor
+ * @param natural_gradient Output: the regularized natural gradient
+ * @param dimension Dimension of the gradient/metric
+ * @param config Configuration for regularization
+ * @return true if successful, false otherwise
+ */
+bool compute_regularized_natural_gradient(
+    const ComplexFloat* gradient,
+    const ComplexFloat* metric,
+    ComplexFloat* natural_gradient,
+    size_t dimension,
+    const natural_gradient_config_t* config);
+
+/**
+ * @brief Compute natural gradient using SVD pseudo-inverse
+ *
+ * Uses SVD decomposition: G = U S V^†
+ * Pseudo-inverse: G^+ = V S^+ U^†
+ * Where S^+ inverts only singular values > cutoff
+ *
+ * This is more numerically stable for ill-conditioned metrics.
+ *
+ * @param gradient The standard gradient vector
+ * @param metric The Fubini-Study metric tensor
+ * @param natural_gradient Output: the natural gradient
+ * @param dimension Dimension of the gradient/metric
+ * @param singular_cutoff Cutoff for small singular values
+ * @return true if successful, false otherwise
+ */
+bool compute_pseudoinverse_natural_gradient(
+    const ComplexFloat* gradient,
+    const ComplexFloat* metric,
+    ComplexFloat* natural_gradient,
+    size_t dimension,
+    float singular_cutoff);
+
 #ifdef __cplusplus
 }
 #endif

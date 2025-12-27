@@ -14,6 +14,7 @@
 #include "quantum_geometric/core/geometric_processor.h"
 #include "quantum_geometric/core/quantum_base_types.h"
 #include "quantum_geometric/core/quantum_geometric_compute.h"
+#include "quantum_geometric/core/lapack_wrapper.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -2700,5 +2701,260 @@ bool compute_all_loss_gradients(
     *num_gradients = num_params;
     printf("DEBUG: Successfully computed all %zu loss gradients\n", num_params);
 
+    return true;
+}
+
+// ============================================================================
+// Regularized Natural Gradient Functions
+// ============================================================================
+
+// Local constant for LAPACK layout (row-major = 101)
+#ifndef LAPACK_LAYOUT_ROW_MAJOR
+#define LAPACK_LAYOUT_ROW_MAJOR 101
+#endif
+
+// Get default configuration for regularized natural gradient
+natural_gradient_config_t get_default_natural_gradient_config(void) {
+    natural_gradient_config_t config = {
+        .regularization_param = 1e-4f,
+        .condition_threshold = 1e8f,
+        .use_adaptive_regularization = true,
+        .use_pseudoinverse_fallback = true,
+        .singular_value_cutoff = 1e-10f
+    };
+    return config;
+}
+
+// Compute condition number of a complex matrix using SVD
+bool compute_complex_matrix_condition_number(
+    const ComplexFloat* matrix,
+    size_t dimension,
+    float* condition_number) {
+
+    if (!matrix || !condition_number || dimension == 0) {
+        return false;
+    }
+
+    // Allocate SVD outputs
+    ComplexFloat* u = malloc(dimension * dimension * sizeof(ComplexFloat));
+    float* s = malloc(dimension * sizeof(float));
+    ComplexFloat* vt = malloc(dimension * dimension * sizeof(ComplexFloat));
+
+    if (!u || !s || !vt) {
+        free(u);
+        free(s);
+        free(vt);
+        return false;
+    }
+
+    // Compute SVD
+    if (!lapack_svd(matrix, dimension, dimension, u, s, vt, LAPACK_LAYOUT_ROW_MAJOR)) {
+        free(u);
+        free(s);
+        free(vt);
+        return false;
+    }
+
+    // Find max and min singular values
+    float sigma_max = s[0];
+    float sigma_min = s[0];
+    for (size_t i = 1; i < dimension; i++) {
+        if (s[i] > sigma_max) sigma_max = s[i];
+        if (s[i] < sigma_min && s[i] > 0) sigma_min = s[i];
+    }
+
+    // Condition number = σ_max / σ_min
+    if (sigma_min > 1e-15f) {
+        *condition_number = sigma_max / sigma_min;
+    } else {
+        *condition_number = INFINITY;
+    }
+
+    free(u);
+    free(s);
+    free(vt);
+    return true;
+}
+
+// Apply Tikhonov regularization to a matrix: M_reg = M + λI
+static void apply_tikhonov_regularization(
+    const ComplexFloat* matrix,
+    ComplexFloat* regularized,
+    size_t dimension,
+    float lambda) {
+
+    // Copy matrix
+    memcpy(regularized, matrix, dimension * dimension * sizeof(ComplexFloat));
+
+    // Add λ to diagonal
+    for (size_t i = 0; i < dimension; i++) {
+        regularized[i * dimension + i].real += lambda;
+    }
+}
+
+// Compute natural gradient using SVD pseudo-inverse
+bool compute_pseudoinverse_natural_gradient(
+    const ComplexFloat* gradient,
+    const ComplexFloat* metric,
+    ComplexFloat* natural_gradient,
+    size_t dimension,
+    float singular_cutoff) {
+
+    if (!gradient || !metric || !natural_gradient || dimension == 0) {
+        return false;
+    }
+
+    // Allocate SVD outputs
+    ComplexFloat* u = malloc(dimension * dimension * sizeof(ComplexFloat));
+    float* s = malloc(dimension * sizeof(float));
+    ComplexFloat* vt = malloc(dimension * dimension * sizeof(ComplexFloat));
+    ComplexFloat* temp = malloc(dimension * sizeof(ComplexFloat));
+
+    if (!u || !s || !vt || !temp) {
+        free(u);
+        free(s);
+        free(vt);
+        free(temp);
+        return false;
+    }
+
+    // Compute SVD: metric = U * S * V^†
+    if (!lapack_svd(metric, dimension, dimension, u, s, vt, LAPACK_LAYOUT_ROW_MAJOR)) {
+        free(u);
+        free(s);
+        free(vt);
+        free(temp);
+        return false;
+    }
+
+    // Compute pseudo-inverse: G^+ = V * S^+ * U^†
+    // natural_gradient = G^+ * gradient
+
+    // Step 1: temp = U^† * gradient
+    for (size_t i = 0; i < dimension; i++) {
+        temp[i] = (ComplexFloat){0.0f, 0.0f};
+        for (size_t j = 0; j < dimension; j++) {
+            // U^† means conjugate transpose
+            ComplexFloat u_conj = {u[j * dimension + i].real, -u[j * dimension + i].imag};
+            ComplexFloat prod;
+            prod.real = u_conj.real * gradient[j].real - u_conj.imag * gradient[j].imag;
+            prod.imag = u_conj.real * gradient[j].imag + u_conj.imag * gradient[j].real;
+            temp[i].real += prod.real;
+            temp[i].imag += prod.imag;
+        }
+    }
+
+    // Step 2: temp = S^+ * temp (only invert singular values > cutoff)
+    for (size_t i = 0; i < dimension; i++) {
+        if (s[i] > singular_cutoff) {
+            float s_inv = 1.0f / s[i];
+            temp[i].real *= s_inv;
+            temp[i].imag *= s_inv;
+        } else {
+            // Zero out contribution from small singular values
+            temp[i].real = 0.0f;
+            temp[i].imag = 0.0f;
+        }
+    }
+
+    // Step 3: natural_gradient = V * temp
+    // Note: vt is V^†, so we need V = (vt)^†
+    for (size_t i = 0; i < dimension; i++) {
+        natural_gradient[i] = (ComplexFloat){0.0f, 0.0f};
+        for (size_t j = 0; j < dimension; j++) {
+            // V = (vt)^†, so V[i,j] = conj(vt[j,i])
+            ComplexFloat v_elem = {vt[j * dimension + i].real, -vt[j * dimension + i].imag};
+            ComplexFloat prod;
+            prod.real = v_elem.real * temp[j].real - v_elem.imag * temp[j].imag;
+            prod.imag = v_elem.real * temp[j].imag + v_elem.imag * temp[j].real;
+            natural_gradient[i].real += prod.real;
+            natural_gradient[i].imag += prod.imag;
+        }
+    }
+
+    free(u);
+    free(s);
+    free(vt);
+    free(temp);
+    return true;
+}
+
+// Compute regularized natural gradient with Tikhonov regularization
+bool compute_regularized_natural_gradient(
+    const ComplexFloat* gradient,
+    const ComplexFloat* metric,
+    ComplexFloat* natural_gradient,
+    size_t dimension,
+    const natural_gradient_config_t* config) {
+
+    if (!gradient || !metric || !natural_gradient || !config || dimension == 0) {
+        return false;
+    }
+
+    float lambda = config->regularization_param;
+
+    // Check condition number if adaptive regularization is enabled
+    if (config->use_adaptive_regularization) {
+        float kappa;
+        if (compute_complex_matrix_condition_number(metric, dimension, &kappa)) {
+            if (kappa > config->condition_threshold) {
+                // Increase regularization based on condition number
+                float adaptive_lambda = 1e-6f * sqrtf(kappa);
+                if (adaptive_lambda > lambda) {
+                    lambda = adaptive_lambda;
+                    printf("Warning: Ill-conditioned metric (κ=%.2e). "
+                           "Using adaptive regularization λ=%.2e\n", kappa, lambda);
+                }
+            }
+        }
+    }
+
+    // Apply Tikhonov regularization: M_reg = M + λI
+    ComplexFloat* reg_metric = malloc(dimension * dimension * sizeof(ComplexFloat));
+    if (!reg_metric) {
+        return false;
+    }
+
+    apply_tikhonov_regularization(metric, reg_metric, dimension, lambda);
+
+    // Try to compute inverse of regularized metric
+    ComplexFloat* metric_inverse = malloc(dimension * dimension * sizeof(ComplexFloat));
+    if (!metric_inverse) {
+        free(reg_metric);
+        return false;
+    }
+
+    bool inversion_success = matrix_inverse(reg_metric, metric_inverse, dimension);
+
+    if (!inversion_success) {
+        free(metric_inverse);
+        free(reg_metric);
+
+        // Fallback to SVD pseudo-inverse if enabled
+        if (config->use_pseudoinverse_fallback) {
+            printf("Matrix inversion failed. Falling back to SVD pseudo-inverse.\n");
+            return compute_pseudoinverse_natural_gradient(
+                gradient, metric, natural_gradient, dimension,
+                config->singular_value_cutoff);
+        }
+        return false;
+    }
+
+    // Multiply inverse metric with gradient: natural_grad = G^{-1} * grad
+    for (size_t i = 0; i < dimension; i++) {
+        natural_gradient[i] = (ComplexFloat){0.0f, 0.0f};
+        for (size_t j = 0; j < dimension; j++) {
+            ComplexFloat prod;
+            prod.real = metric_inverse[i * dimension + j].real * gradient[j].real -
+                       metric_inverse[i * dimension + j].imag * gradient[j].imag;
+            prod.imag = metric_inverse[i * dimension + j].real * gradient[j].imag +
+                       metric_inverse[i * dimension + j].imag * gradient[j].real;
+            natural_gradient[i].real += prod.real;
+            natural_gradient[i].imag += prod.imag;
+        }
+    }
+
+    free(metric_inverse);
+    free(reg_metric);
     return true;
 }

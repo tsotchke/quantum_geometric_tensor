@@ -14,9 +14,16 @@
 #define ERROR_SYNDROME ERROR_Z
 
 // Gate type constants for error metrics (maps to error_type_t)
+// Use ifndef guards to avoid redefinition warnings
+#ifndef GATE_X
 #define GATE_X ERROR_X
+#endif
+#ifndef GATE_Y
 #define GATE_Y ERROR_Y
+#endif
+#ifndef GATE_Z
 #define GATE_Z ERROR_Z
+#endif
 
 // Forward declarations for helper functions
 static void measure_pauli_x_with_confidence(const SurfaceCode* state,
@@ -168,61 +175,92 @@ size_t measure_surface_code_stabilizers(SurfaceCode* state, StabilizerResult* re
 
     // Fallback to CPU implementation
     size_t measurements = 0;
-    
+
     // Measure each stabilizer
     for (size_t i = 0; i < state->num_stabilizers; i++) {
         Stabilizer* stabilizer = &state->stabilizers[i];
-        
-        // Perform measurement
-        double measurement_value = 0.0;
-        double confidence = 1.0;
-        
-        // Accumulate contributions from each qubit
+
+        // Stabilizer measurement computes the product of Pauli eigenvalues
+        // Each qubit contributes ±1, and the stabilizer eigenvalue is their product
+        // CRITICAL: Initialize to 1 (identity for multiplication), NOT 0!
+        int measurement_eigenvalue = 1;  // Product of ±1 eigenvalues
+        double min_confidence = 1.0;     // Track minimum confidence (weakest link)
+        double total_error_prob = 0.0;   // Errors ADD for independent qubits
+
+        // Accumulate contributions from each qubit in the stabilizer
         for (size_t j = 0; j < stabilizer->num_qubits; j++) {
             size_t qubit_idx = stabilizer->qubits[j];
-            
+
+            // Each qubit measurement returns ±1 eigenvalue with some confidence
+            int qubit_eigenvalue = 1;
+            double qubit_confidence = 1.0;
+
             // Apply appropriate Pauli operator based on stabilizer type
             switch (stabilizer->type) {
                 case STAB_TYPE_X: {
-                    // Apply X measurement with error tracking
-                    double x_value = 0.0;
+                    // X stabilizer: measure in X basis, get ±1 eigenvalue
+                    double x_expectation = 0.0;
                     double x_conf = 0.0;
-                    measure_pauli_x_with_confidence(state, qubit_idx, &x_value, &x_conf);
-                    measurement_value *= x_value;
-                    confidence *= x_conf * (1.0 - state->config.measurement_error_rate);
+                    measure_pauli_x_with_confidence(state, qubit_idx, &x_expectation, &x_conf);
+                    // Convert expectation value to eigenvalue: sign determines ±1
+                    qubit_eigenvalue = (x_expectation >= 0.0) ? 1 : -1;
+                    qubit_confidence = x_conf;
                     break;
                 }
 
                 case STAB_TYPE_Z: {
-                    // Apply Z measurement with error tracking
-                    double z_value = 0.0;
+                    // Z stabilizer: measure in Z basis, get ±1 eigenvalue
+                    double z_expectation = 0.0;
                     double z_conf = 0.0;
-                    measure_pauli_z_with_confidence(state, qubit_idx, &z_value, &z_conf);
-                    measurement_value *= z_value;
-                    confidence *= z_conf * (1.0 - state->config.measurement_error_rate);
+                    measure_pauli_z_with_confidence(state, qubit_idx, &z_expectation, &z_conf);
+                    qubit_eigenvalue = (z_expectation >= 0.0) ? 1 : -1;
+                    qubit_confidence = z_conf;
                     break;
                 }
 
                 case STAB_TYPE_Y: {
-                    // Apply Y measurement (composite X and Z)
-                    double x_value = 0.0, z_value = 0.0;
+                    // Y stabilizer: Y = iXZ, so measure both and combine
+                    // Y eigenvalue = X_eigenvalue * Z_eigenvalue (ignoring phase)
+                    double x_exp = 0.0, z_exp = 0.0;
                     double x_conf = 0.0, z_conf = 0.0;
-                    measure_pauli_x_with_confidence(state, qubit_idx, &x_value, &x_conf);
-                    measure_pauli_z_with_confidence(state, qubit_idx, &z_value, &z_conf);
-                    measurement_value *= x_value * z_value;
-                    confidence *= x_conf * z_conf * (1.0 - state->config.measurement_error_rate);
+                    measure_pauli_x_with_confidence(state, qubit_idx, &x_exp, &x_conf);
+                    measure_pauli_z_with_confidence(state, qubit_idx, &z_exp, &z_conf);
+                    int x_eig = (x_exp >= 0.0) ? 1 : -1;
+                    int z_eig = (z_exp >= 0.0) ? 1 : -1;
+                    qubit_eigenvalue = x_eig * z_eig;
+                    qubit_confidence = fmin(x_conf, z_conf);  // Limited by weaker measurement
                     break;
                 }
 
                 default:
                     break;
             }
+
+            // Stabilizer eigenvalue is PRODUCT of individual qubit eigenvalues
+            measurement_eigenvalue *= qubit_eigenvalue;
+
+            // Track minimum confidence (chain is as strong as weakest link)
+            if (qubit_confidence < min_confidence) {
+                min_confidence = qubit_confidence;
+            }
+
+            // Error probabilities ADD for independent errors (union bound)
+            // P(any error) ≤ Σ P(error_i) for small probabilities
+            total_error_prob += state->config.measurement_error_rate;
         }
 
+        // Clamp total error probability to [0, 1]
+        if (total_error_prob > 1.0) total_error_prob = 1.0;
+
+        // Overall confidence: min qubit confidence * (1 - total error probability)
+        double confidence = min_confidence * (1.0 - total_error_prob);
+
         // Record measurement result
-        results[measurements].value = (measurement_value > 0) ? 1 : -1;
+        // Stabilizer eigenvalue is exactly ±1
+        results[measurements].value = measurement_eigenvalue;
         results[measurements].confidence = confidence;
-        results[measurements].needs_correction = (measurement_value < 0);
+        // Needs correction if stabilizer eigenvalue is -1 (error detected)
+        results[measurements].needs_correction = (measurement_eigenvalue == -1);
         
         // Update stabilizer state
         stabilizer->result = results[measurements];
@@ -661,7 +699,7 @@ void apply_stabilizer_corrections(SurfaceCode* state, const Stabilizer* stabiliz
                     QGT_LOG_ERROR("Failed to apply Z correction");
                     return;
                 }
-                update_error_metrics(state, qubit_idx, GATE_Z, 1.0 - stabilizer->result.confidence);
+                update_error_metrics(state, qubit_idx, ERROR_Z, 1.0 - stabilizer->result.confidence);
             }
             break;
         }
@@ -680,7 +718,7 @@ void apply_stabilizer_corrections(SurfaceCode* state, const Stabilizer* stabiliz
                     QGT_LOG_ERROR("Failed to apply Z part of Y correction");
                     return;
                 }
-                update_error_metrics(state, qubit_idx, GATE_Y, 1.0 - stabilizer->result.confidence);
+                update_error_metrics(state, qubit_idx, ERROR_Y, 1.0 - stabilizer->result.confidence);
             }
             break;
         }
@@ -1003,11 +1041,18 @@ static void measure_pauli_x_with_confidence(const SurfaceCode* state,
 
     // Calculate lattice position from qubit index
     size_t lattice_width = state->config.width > 0 ? state->config.width : state->config.distance;
+    size_t lattice_height = state->config.height > 0 ? state->config.height : state->config.distance;
     size_t x = qubit_idx % lattice_width;
     size_t y = qubit_idx / lattice_width;
 
-    // Base confidence from configuration
+    // Boundary qubits may have reduced confidence due to edge effects
+    bool is_boundary = (x == 0 || x == lattice_width - 1 || y == 0 || y == lattice_height - 1);
+
+    // Base confidence from configuration, reduced for boundary qubits
     double base_confidence = 1.0 - state->config.measurement_error_rate;
+    if (is_boundary) {
+        base_confidence *= 0.95;  // Slight reduction at boundaries
+    }
 
     // Simulate X measurement by checking adjacent X stabilizers
     double x_expectation = 1.0;

@@ -1,8 +1,10 @@
 #include "quantum_geometric/core/quantum_geometric_metric.h"
 #include "quantum_geometric/core/quantum_geometric_types.h"
 #include "quantum_geometric/core/quantum_geometric_constants.h"
+#include "quantum_geometric/core/quantum_geometric_tensor_network.h"
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 // Create geometric metric
 qgt_error_t geometric_create_metric(quantum_geometric_metric_t** metric,
@@ -323,6 +325,72 @@ qgt_error_t geometric_transform_metric(quantum_geometric_metric_t* result,
             }
         }
     }
-    
+
+    return QGT_SUCCESS;
+}
+
+// Compute a single element of the Fubini-Study metric tensor
+qgt_error_t geometric_compute_fubini_study_element(
+    const quantum_geometric_tensor_network_t* qgtn,
+    size_t param_mu,
+    size_t param_nu,
+    float* result) {
+
+    QGT_CHECK_NULL(qgtn);
+    QGT_CHECK_NULL(result);
+
+    // Use the QGT computation which now includes the projection term
+    double metric_value;
+    if (!compute_quantum_metric(qgtn, param_mu, param_nu, &metric_value)) {
+        return QGT_ERROR_COMPUTATION_FAILED;
+    }
+
+    *result = (float)metric_value;
+    return QGT_SUCCESS;
+}
+
+// Compute the full Fubini-Study metric tensor for a parameterized circuit
+qgt_error_t geometric_compute_fubini_study_metric(
+    quantum_geometric_metric_t* metric,
+    const quantum_geometric_tensor_network_t* qgtn,
+    size_t num_params) {
+
+    QGT_CHECK_NULL(metric);
+    QGT_CHECK_NULL(qgtn);
+    QGT_CHECK_ARGUMENT(num_params > 0);
+
+    // Verify metric is Fubini-Study type and has correct dimension
+    if (metric->type != GEOMETRIC_METRIC_FUBINI_STUDY) {
+        return QGT_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (metric->dimension != num_params) {
+        return QGT_ERROR_DIMENSION_MISMATCH;
+    }
+
+    // Compute each element of the metric tensor
+    // The Fubini-Study metric is symmetric: g_μν = g_νμ
+    // So we only need to compute the upper triangle
+    for (size_t mu = 0; mu < num_params; mu++) {
+        for (size_t nu = mu; nu < num_params; nu++) {
+            double metric_value;
+
+            // Use the corrected QGT computation
+            if (!compute_quantum_metric(qgtn, mu, nu, &metric_value)) {
+                return QGT_ERROR_COMPUTATION_FAILED;
+            }
+
+            // Store in both (mu, nu) and (nu, mu) positions
+            metric->components[mu * num_params + nu].real = (float)metric_value;
+            metric->components[mu * num_params + nu].imag = 0.0f;
+
+            if (nu != mu) {
+                metric->components[nu * num_params + mu].real = (float)metric_value;
+                metric->components[nu * num_params + mu].imag = 0.0f;
+            }
+        }
+    }
+
+    metric->is_symmetric = true;
     return QGT_SUCCESS;
 }

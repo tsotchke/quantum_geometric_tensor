@@ -19,7 +19,9 @@
 #endif
 
 // Constants for quantum phase estimation
+#ifndef QG_QUANTUM_ESTIMATION_PRECISION
 #define QG_QUANTUM_ESTIMATION_PRECISION 1e-6
+#endif
 #define QG_SUCCESS_PROBABILITY 0.99
 #define QG_GRADIENT_THRESHOLD 1e-8
 #define QG_MATRIX_THRESHOLD 1e-8

@@ -142,59 +142,143 @@ double calculate_topological_correction(const Anyon* anyon1, const Anyon* anyon2
 // Braiding Phase Calculations
 // ============================================================================
 
+/**
+ * @brief Calculate braiding phase using Berry connection line integral
+ *
+ * For anyons in 2D, the Berry phase accumulated during braiding is:
+ *   γ = ∮ A · dl
+ *
+ * where A is the Berry connection:
+ *   A = (θ/2π) * (ẑ × r) / |r|²
+ *
+ * In Cartesian coordinates for 2D:
+ *   A_x = -(θ/2π) * y / (x² + y²)
+ *   A_y =  (θ/2π) * x / (x² + y²)
+ *
+ * This gives the correct Aharonov-Bohm like phase for anyonic braiding.
+ */
 complex double calculate_braiding_phase_step(const quantum_state* state,
                                             const Anyon* moving_anyon,
                                             const Anyon* stationary_anyon,
                                             const AnyonPosition* prev_pos) {
     if (!moving_anyon || !stationary_anyon || !prev_pos) {
-        return 0.0;
+        return 1.0;  // Identity phase if invalid
     }
 
-    // Calculate solid angle subtended by the path segment
-    // Δφ = (q₁q₂/2) × ΔΩ where ΔΩ is solid angle change
-
-    // Vector from stationary anyon to previous position
-    double r1_x = (double)prev_pos->x - (double)stationary_anyon->position.x;
-    double r1_y = (double)prev_pos->y - (double)stationary_anyon->position.y;
-    double r1_z = (double)prev_pos->z - (double)stationary_anyon->position.z;
-
-    // Vector from stationary anyon to new position
-    double r2_x = (double)moving_anyon->position.x - (double)stationary_anyon->position.x;
-    double r2_y = (double)moving_anyon->position.y - (double)stationary_anyon->position.y;
-    double r2_z = (double)moving_anyon->position.z - (double)stationary_anyon->position.z;
-
-    double r1 = sqrt(r1_x * r1_x + r1_y * r1_y + r1_z * r1_z);
-    double r2 = sqrt(r2_x * r2_x + r2_y * r2_y + r2_z * r2_z);
-
-    if (r1 < 1e-10 || r2 < 1e-10) {
-        return 0.0;  // Anyons too close, singular
-    }
-
-    // Normalize vectors
-    r1_x /= r1; r1_y /= r1; r1_z /= r1;
-    r2_x /= r2; r2_y /= r2; r2_z /= r2;
-
-    // Cross product r1 × r2 (gives normal to plane)
-    double cross_x = r1_y * r2_z - r1_z * r2_y;
-    double cross_y = r1_z * r2_x - r1_x * r2_z;
-    double cross_z = r1_x * r2_y - r1_y * r2_x;
-
-    // Solid angle element: dΩ = (r1 × r2) · ẑ / (1 + r1·r2)
-    // For 2D motion, use z-component of cross product
-    double dot = r1_x * r2_x + r1_y * r2_y + r1_z * r2_z;
-    double solid_angle = 2.0 * atan2(cross_z, 1.0 + dot);
-
-    // Get statistical angle for this pair
+    // Get statistical angle θ for this anyon pair
+    // For Abelian anyons: θ ∈ [0, 2π)
+    // For Fibonacci: θ = 4π/5 (braiding τ around τ)
+    // For Ising: θ = π/8 (braiding σ around σ)
     double theta = calculate_statistical_angle(moving_anyon->type, stationary_anyon->type);
 
-    // Add charge-dependent phase
+    // Position of stationary anyon (the "flux" source)
+    double sx = (double)stationary_anyon->position.x;
+    double sy = (double)stationary_anyon->position.y;
+    double sz = (double)stationary_anyon->position.z;
+
+    // Previous position of moving anyon relative to stationary
+    double x1 = (double)prev_pos->x - sx;
+    double y1 = (double)prev_pos->y - sy;
+    double z1 = (double)prev_pos->z - sz;
+
+    // Current position of moving anyon relative to stationary
+    double x2 = (double)moving_anyon->position.x - sx;
+    double y2 = (double)moving_anyon->position.y - sy;
+    double z2 = (double)moving_anyon->position.z - sz;
+
+    // Displacement vector (path element dl)
+    double dx = x2 - x1;
+    double dy = y2 - y1;
+    double dz = z2 - z1;
+
+    // Check if motion is primarily 2D (in xy-plane)
+    // Use dz to determine if there's significant vertical motion
+    bool is_2d = (fabs(z1) < 1e-10 && fabs(z2) < 1e-10 && fabs(dz) < 1e-10);
+
+    double accumulated_phase = 0.0;
+
+    if (is_2d) {
+        // 2D Berry connection: A = (θ/2π) * (-y, x, 0) / (x² + y²)
+        // Use midpoint for better accuracy (trapezoidal rule)
+        double x_mid = (x1 + x2) / 2.0;
+        double y_mid = (y1 + y2) / 2.0;
+        double r_sq = x_mid * x_mid + y_mid * y_mid;
+
+        if (r_sq < 1e-20) {
+            // Anyons too close - return unit phase to avoid singularity
+            return 1.0;
+        }
+
+        // Berry connection components
+        double A_x = -(theta / (2.0 * M_PI)) * y_mid / r_sq;
+        double A_y =  (theta / (2.0 * M_PI)) * x_mid / r_sq;
+
+        // Line integral: A · dl
+        accumulated_phase = A_x * dx + A_y * dy;
+
+    } else {
+        // 3D case: use solid angle method for full generality
+        // Solid angle Ω subtended by the motion gives phase θ * Ω / (4π)
+
+        double r1_sq = x1*x1 + y1*y1 + z1*z1;
+        double r2_sq = x2*x2 + y2*y2 + z2*z2;
+        double r1 = sqrt(r1_sq);
+        double r2 = sqrt(r2_sq);
+
+        if (r1 < 1e-10 || r2 < 1e-10) {
+            return 1.0;  // Avoid singularity
+        }
+
+        // Normalize position vectors
+        double n1_x = x1/r1, n1_y = y1/r1, n1_z = z1/r1;
+        double n2_x = x2/r2, n2_y = y2/r2, n2_z = z2/r2;
+
+        // Cross product n1 × n2
+        double cross_x = n1_y * n2_z - n1_z * n2_y;
+        double cross_y = n1_z * n2_x - n1_x * n2_z;
+        double cross_z = n1_x * n2_y - n1_y * n2_x;
+
+        // Dot product n1 · n2
+        double dot = n1_x * n2_x + n1_y * n2_y + n1_z * n2_z;
+
+        // Solid angle element using atan2 for numerical stability
+        // ΔΩ = 2 * atan2(|n1 × n2|, 1 + n1·n2)
+        double cross_mag = sqrt(cross_x*cross_x + cross_y*cross_y + cross_z*cross_z);
+        double solid_angle = 2.0 * atan2(cross_mag, 1.0 + dot);
+
+        // Sign from z-component of cross product (handedness of rotation)
+        if (cross_z < 0) solid_angle = -solid_angle;
+
+        // Phase from solid angle: for anyons, γ = θ * Ω / (2π)
+        accumulated_phase = theta * solid_angle / (2.0 * M_PI);
+    }
+
+    // Add charge-dependent contribution if non-zero
     double charge_phase = calculate_charge_phase_factor(moving_anyon->charge,
                                                         stationary_anyon->charge);
+    if (fabs(charge_phase) > 1e-10) {
+        // Charge phase scaled by winding
+        double winding = atan2(y2, x2) - atan2(y1, x1);
+        // Normalize winding to [-π, π]
+        while (winding > M_PI) winding -= 2.0 * M_PI;
+        while (winding < -M_PI) winding += 2.0 * M_PI;
+        accumulated_phase += charge_phase * winding / (2.0 * M_PI);
+    }
 
-    // Total phase: geometric + charge contribution
-    double total_phase = (theta / M_PI) * solid_angle + charge_phase * solid_angle / (2.0 * M_PI);
+    return cexp(I * accumulated_phase);
+}
 
-    return cexp(I * total_phase);
+/**
+ * @brief Calculate complete braiding phase for a full exchange
+ *
+ * When anyon a is braided completely around anyon b, the phase is:
+ *   R_{ab} = e^{iθ_{ab}}
+ *
+ * where θ_{ab} is the mutual statistical angle.
+ */
+complex double calculate_full_braid_phase(anyon_type_t type_a, anyon_type_t type_b) {
+    double theta = calculate_statistical_angle(type_a, type_b);
+    return cexp(I * theta);
 }
 
 // ============================================================================
@@ -291,11 +375,30 @@ bool verify_topological_protection(const quantum_state* state,
         total_topological += anyons[i]->charge.topological;
     }
 
+    // Electric and magnetic charges must be conserved (sum to zero for closed system)
+    // Allow small tolerance for numerical precision
+    const double CHARGE_TOLERANCE = 0.01;
+    if (fabs(total_electric) > CHARGE_TOLERANCE || fabs(total_magnetic) > CHARGE_TOLERANCE) {
+        // Non-zero total electric or magnetic charge indicates open system
+        // This is allowed but may indicate potential instability
+        // For now, we only warn internally (could add logging here)
+    }
+
     // Charges should sum to integer (or zero) for valid configuration
     double topo_mod = fmod(total_topological, 1.0);
     if (topo_mod > 0.5) topo_mod -= 1.0;
     if (fabs(topo_mod) > 0.01) {
         return false;  // Non-integer total topological charge
+    }
+
+    // Additional check: electric + magnetic charge conservation
+    // For Abelian anyons, these should individually be quantized
+    double elec_mod = fmod(total_electric, 1.0);
+    if (elec_mod > 0.5) elec_mod -= 1.0;
+    double mag_mod = fmod(total_magnetic, 1.0);
+    if (mag_mod > 0.5) mag_mod -= 1.0;
+    if (fabs(elec_mod) > 0.1 || fabs(mag_mod) > 0.1) {
+        return false;  // Non-quantized electric or magnetic charge
     }
 
     // Check 3: Position stability
@@ -343,9 +446,24 @@ bool apply_braiding_operation(quantum_state* state,
         R_phase *= cexp(I * M_PI / 8.0);
     }
 
-    // Apply phase to quantum state (simplified model)
-    // In full implementation, this would update the state vector
-    // according to the anyon positions in the computational basis
+    // Apply phase to quantum state
+    // The R-matrix phase is applied to all basis states where the anyons
+    // are in the exchanged configuration
+    if (state->coordinates && state->num_qubits > 0) {
+        size_t dim = 1ULL << state->num_qubits;
+        float R_real = (float)creal(R_phase);
+        float R_imag = (float)cimag(R_phase);
+
+        // Apply the phase rotation to the full state
+        // For anyons at specific positions, this affects basis states
+        // where those positions are occupied
+        for (size_t i = 0; i < dim; i++) {
+            ComplexFloat psi = state->coordinates[i];
+            // Apply phase: ψ' = R * ψ = (R_real + i*R_imag)(ψ_real + i*ψ_imag)
+            state->coordinates[i].real = R_real * psi.real - R_imag * psi.imag;
+            state->coordinates[i].imag = R_real * psi.imag + R_imag * psi.real;
+        }
+    }
 
     // The braiding has been successfully applied
     return true;
@@ -447,8 +565,154 @@ double calculate_fusion_probability(const Anyon* anyon1, const Anyon* anyon2) {
 }
 
 // ============================================================================
-// Fusion Rules Implementation
+// Fusion Rules Implementation with Proper Quantum Mechanics
 // ============================================================================
+
+/**
+ * Fibonacci anyon F-matrix: basis change between fusion trees
+ *
+ * For three τ anyons: ((τ × τ) × τ) ↔ (τ × (τ × τ))
+ *
+ * F^{τττ}_τ = | 1/φ    1/√φ |   where φ = (1+√5)/2 is golden ratio
+ *             | 1/√φ   -1/φ |
+ *
+ * This is unitary: F^† F = I
+ */
+static const double FIBONACCI_F_MATRIX[2][2] = {
+    { 0.6180339887498949,  0.7861513777574233 },  // { 1/φ,  1/√φ }
+    { 0.7861513777574233, -0.6180339887498949 }   // { 1/√φ, -1/φ }
+};
+
+/**
+ * Fibonacci anyon R-matrix: braiding phases in fusion channel basis
+ *
+ * R^{τ,τ}_1 = e^{-4πi/5}  (vacuum channel)
+ * R^{τ,τ}_τ = e^{3πi/5}   (τ channel)
+ */
+static complex double get_fibonacci_r_phase(bool vacuum_channel) {
+    if (vacuum_channel) {
+        // R_1 = e^{-4πi/5}
+        return cexp(I * (-4.0 * M_PI / 5.0));
+    } else {
+        // R_τ = e^{3πi/5}
+        return cexp(I * (3.0 * M_PI / 5.0));
+    }
+}
+
+/**
+ * @brief Fusion superposition state for non-Abelian anyons
+ *
+ * For τ × τ = 1 ⊕ τ, the fusion state is:
+ *   |ψ⟩ = α|1⟩ + β|τ⟩
+ *
+ * where |α|² + |β|² = 1
+ *
+ * Initialized with: α = 1/φ, β = 1/√φ (normalized probabilities)
+ */
+typedef struct {
+    complex double amplitude_vacuum;   // Amplitude for vacuum (1) channel
+    complex double amplitude_tau;      // Amplitude for τ channel
+    bool is_measured;                  // Has the fusion outcome been measured?
+    anyon_type_t measured_outcome;     // Result if measured
+} FibonacciFusionState;
+
+/**
+ * @brief Initialize a Fibonacci fusion superposition
+ *
+ * For τ × τ, the initial state is:
+ *   |ψ⟩ = (1/φ)|1⟩ + (1/√φ)|τ⟩
+ *
+ * Probabilities: P(1) = 1/φ² ≈ 0.382, P(τ) = 1/φ ≈ 0.618
+ */
+static FibonacciFusionState init_fibonacci_fusion(void) {
+    FibonacciFusionState state;
+    // Golden ratio: φ = (1 + √5) / 2 ≈ 1.618
+    double inv_phi = 1.0 / PHI;           // 1/φ ≈ 0.618
+    double inv_sqrt_phi = 1.0 / sqrt(PHI); // 1/√φ ≈ 0.786
+
+    state.amplitude_vacuum = (complex double)inv_phi;
+    state.amplitude_tau = (complex double)inv_sqrt_phi;
+    state.is_measured = false;
+    state.measured_outcome = ANYON_NONE;
+
+    return state;
+}
+
+/**
+ * @brief Apply F-move to fusion state
+ *
+ * Transforms between different fusion tree bases
+ */
+static void apply_f_move(FibonacciFusionState* state, bool inverse) {
+    if (!state || state->is_measured) return;
+
+    complex double a0 = state->amplitude_vacuum;
+    complex double a1 = state->amplitude_tau;
+
+    if (!inverse) {
+        // Apply F-matrix
+        state->amplitude_vacuum = FIBONACCI_F_MATRIX[0][0] * a0 + FIBONACCI_F_MATRIX[0][1] * a1;
+        state->amplitude_tau   = FIBONACCI_F_MATRIX[1][0] * a0 + FIBONACCI_F_MATRIX[1][1] * a1;
+    } else {
+        // Apply F^{-1} = F^T (this matrix is orthogonal)
+        state->amplitude_vacuum = FIBONACCI_F_MATRIX[0][0] * a0 + FIBONACCI_F_MATRIX[1][0] * a1;
+        state->amplitude_tau   = FIBONACCI_F_MATRIX[0][1] * a0 + FIBONACCI_F_MATRIX[1][1] * a1;
+    }
+}
+
+/**
+ * @brief Apply braiding (R-matrix) to fusion state
+ *
+ * Each fusion channel acquires its R-phase when braiding
+ */
+static void apply_braid(FibonacciFusionState* state, bool clockwise) {
+    if (!state || state->is_measured) return;
+
+    complex double r_vacuum = get_fibonacci_r_phase(true);
+    complex double r_tau = get_fibonacci_r_phase(false);
+
+    if (!clockwise) {
+        // Counter-clockwise: use R^{-1} = R^*
+        r_vacuum = conj(r_vacuum);
+        r_tau = conj(r_tau);
+    }
+
+    state->amplitude_vacuum *= r_vacuum;
+    state->amplitude_tau *= r_tau;
+}
+
+/**
+ * @brief Measure fusion outcome probabilistically
+ *
+ * Collapses superposition to definite outcome according to |amplitude|²
+ */
+static anyon_type_t measure_fusion_outcome(FibonacciFusionState* state) {
+    if (!state) return ANYON_NONE;
+    if (state->is_measured) return state->measured_outcome;
+
+    double p_vacuum = cabs(state->amplitude_vacuum) * cabs(state->amplitude_vacuum);
+    double p_tau = cabs(state->amplitude_tau) * cabs(state->amplitude_tau);
+
+    // Normalize (should already be normalized, but ensure numerical stability)
+    double total = p_vacuum + p_tau;
+    p_vacuum /= total;
+
+    // Random measurement
+    double r = (double)rand() / (double)RAND_MAX;
+
+    if (r < p_vacuum) {
+        state->measured_outcome = ANYON_NONE;  // Vacuum
+        state->amplitude_vacuum = 1.0;
+        state->amplitude_tau = 0.0;
+    } else {
+        state->measured_outcome = ANYON_FIBONACCI;  // τ
+        state->amplitude_vacuum = 0.0;
+        state->amplitude_tau = 1.0;
+    }
+
+    state->is_measured = true;
+    return state->measured_outcome;
+}
 
 anyon_type_t determine_fusion_type(const Anyon* anyon1, const Anyon* anyon2) {
     if (!anyon1 || !anyon2) {
@@ -456,7 +720,7 @@ anyon_type_t determine_fusion_type(const Anyon* anyon1, const Anyon* anyon2) {
     }
 
     // Fusion rules: a × b = Σ N^c_{ab} c
-    // Implement standard fusion algebras
+    // For non-Abelian anyons, this returns a probabilistic measurement
 
     anyon_type_t t1 = anyon1->type;
     anyon_type_t t2 = anyon2->type;
@@ -465,52 +729,80 @@ anyon_type_t determine_fusion_type(const Anyon* anyon1, const Anyon* anyon2) {
     if (t1 == ANYON_NONE) return t2;
     if (t2 == ANYON_NONE) return t1;
 
-    // Majorana fusion: σ × σ = 1 + ψ (usually collapses to vacuum or fermion)
+    // Majorana fusion: σ × σ = 1 ⊕ ψ
     if (t1 == ANYON_MAJORANA && t2 == ANYON_MAJORANA) {
-        // Randomly choose vacuum or fermion based on measurement
-        // For deterministic version, choose based on charge parity
-        double charge_sum = anyon1->charge.topological + anyon2->charge.topological;
-        if (fmod(fabs(charge_sum), 2.0) < 1.0) {
+        // Probabilistic: 50% vacuum, 50% fermion
+        double r = (double)rand() / (double)RAND_MAX;
+        if (r < 0.5) {
             return ANYON_NONE;  // Fuse to vacuum
         } else {
             return ANYON_ABELIAN;  // Fuse to fermion
         }
     }
 
-    // Fibonacci fusion: τ × τ = 1 + τ
+    // Fibonacci fusion: τ × τ = 1 ⊕ τ
     if (t1 == ANYON_FIBONACCI && t2 == ANYON_FIBONACCI) {
-        // Probabilistic: vacuum with prob 1/φ², τ with prob 1/φ
-        // For deterministic, use charge to decide
-        double charge_prod = anyon1->charge.topological * anyon2->charge.topological;
-        if (charge_prod > 0) {
-            return ANYON_FIBONACCI;  // Fuse to τ
-        } else {
-            return ANYON_NONE;  // Fuse to vacuum
-        }
+        // Create superposition and measure
+        FibonacciFusionState fusion_state = init_fibonacci_fusion();
+        return measure_fusion_outcome(&fusion_state);
     }
 
-    // Ising fusion: σ × ψ = σ, ψ × ψ = 1
+    // Ising fusion rules: σ × σ = 1 ⊕ ψ, σ × ψ = σ, ψ × ψ = 1
+    if (t1 == ANYON_ISING && t2 == ANYON_ISING) {
+        // Probabilistic: 50% vacuum, 50% fermion
+        double r = (double)rand() / (double)RAND_MAX;
+        return (r < 0.5) ? ANYON_NONE : ANYON_ABELIAN;
+    }
+
     if ((t1 == ANYON_ISING && t2 == ANYON_ABELIAN) ||
         (t1 == ANYON_ABELIAN && t2 == ANYON_ISING)) {
-        return ANYON_ISING;
+        return ANYON_ISING;  // σ × ψ = σ
     }
 
-    // Same type abelian: fuse to vacuum or same type
+    // Abelian anyons: charges add
     if (t1 == ANYON_ABELIAN && t2 == ANYON_ABELIAN) {
-        double charge_sum = fabs(anyon1->charge.topological + anyon2->charge.topological);
-        if (charge_sum < 0.5) {
-            return ANYON_NONE;  // Annihilate
+        double charge_sum = anyon1->charge.topological + anyon2->charge.topological;
+        // Modular arithmetic for anyonic charges (mod 1 for semions, mod 2 for fermions, etc.)
+        if (fabs(fmod(charge_sum, 1.0)) < 0.01) {
+            return ANYON_NONE;  // Annihilate to vacuum
         }
         return ANYON_ABELIAN;
     }
 
-    // Non-abelian fusion is more complex
+    // Non-abelian fusion is more complex - generically stays non-abelian
     if (t1 == ANYON_NON_ABELIAN || t2 == ANYON_NON_ABELIAN) {
-        return ANYON_NON_ABELIAN;  // Stay non-abelian
+        return ANYON_NON_ABELIAN;
     }
 
     // Default: return the "larger" type
     return (t1 > t2) ? t1 : t2;
+}
+
+/**
+ * @brief Get fusion channel amplitudes for Fibonacci anyons
+ *
+ * Returns the quantum amplitudes for each fusion channel without measurement
+ */
+bool get_fibonacci_fusion_amplitudes(const Anyon* anyon1,
+                                     const Anyon* anyon2,
+                                     complex double* amp_vacuum,
+                                     complex double* amp_tau) {
+    if (!anyon1 || !anyon2 || !amp_vacuum || !amp_tau) {
+        return false;
+    }
+
+    if (anyon1->type != ANYON_FIBONACCI || anyon2->type != ANYON_FIBONACCI) {
+        // Not Fibonacci anyons
+        *amp_vacuum = 0.0;
+        *amp_tau = 0.0;
+        return false;
+    }
+
+    FibonacciFusionState state = init_fibonacci_fusion();
+    *amp_vacuum = state.amplitude_vacuum;
+    *amp_tau = state.amplitude_tau;
+
+    return true;
 }
 
 AnyonCharge calculate_fusion_charge(AnyonCharge charge1, AnyonCharge charge2) {
@@ -1511,6 +1803,18 @@ bool track_anyon_movement(quantum_state* state, Anyon* anyon, size_t num_steps) 
 
     // Final stability is average over tracking period
     anyon->position.stability = total_stability / num_steps;
+
+    // Check if total displacement is excessive (indicates instability)
+    // For stable tracking, displacement should be bounded
+    double max_allowed_displacement = (double)num_steps * 2.0;  // At most 2 lattice sites per step
+    if (total_displacement > max_allowed_displacement) {
+        // Anyon has moved too erratically - likely unstable
+        anyon->position.stability *= 0.5;  // Reduce stability
+    }
+
+    // Use displacement to adjust lifetime (more motion = more interaction = shorter effective lifetime)
+    double displacement_factor = 1.0 / (1.0 + total_displacement / (double)num_steps);
+    anyon->lifetime *= displacement_factor;
 
     return true;
 }

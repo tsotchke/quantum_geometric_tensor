@@ -27,7 +27,6 @@
 // Performance metrics tracking
 static qgt_ai_performance_metrics_t g_performance_metrics = {0};
 static bool g_metrics_enabled = true;
-static double g_start_time = 0.0;
 
 // Distributed training state
 static DistributedConfig g_distributed_config = {0};

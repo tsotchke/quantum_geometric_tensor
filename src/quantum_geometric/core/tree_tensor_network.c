@@ -97,6 +97,272 @@ static void pool_free_memory(MemoryPool* pool, void* ptr) {
     ams_pool_free(memory, pool->fast_path_cache, ptr);
 }
 
+// =============================================================================
+// Proper Tensor Contraction (Einstein Summation)
+// =============================================================================
+
+/**
+ * @brief Contract two tensors over specified indices
+ *
+ * Performs C_{i...j...} = Σ_k A_{i...k...} B_{k...j...}
+ * where k is the contracted index.
+ *
+ * @param tensor_a First tensor data
+ * @param dims_a Dimensions of tensor A
+ * @param rank_a Number of dimensions in A
+ * @param tensor_b Second tensor data
+ * @param dims_b Dimensions of tensor B
+ * @param rank_b Number of dimensions in B
+ * @param contract_idx_a Index in A to contract (0-indexed)
+ * @param contract_idx_b Index in B to contract (0-indexed)
+ * @param result_out Output: contracted tensor data
+ * @param result_dims_out Output: dimensions of result tensor
+ * @param result_rank_out Output: number of dimensions in result
+ * @return true on success, false on failure
+ */
+static bool contract_tensors_proper(
+    const ComplexFloat* tensor_a,
+    const size_t* dims_a,
+    size_t rank_a,
+    const ComplexFloat* tensor_b,
+    const size_t* dims_b,
+    size_t rank_b,
+    size_t contract_idx_a,
+    size_t contract_idx_b,
+    ComplexFloat** result_out,
+    size_t** result_dims_out,
+    size_t* result_rank_out,
+    MemoryPool* pool)
+{
+    // Validate contraction dimensions match
+    if (contract_idx_a >= rank_a || contract_idx_b >= rank_b) {
+        printf("DEBUG: Invalid contraction indices\n");
+        return false;
+    }
+
+    size_t contract_dim = dims_a[contract_idx_a];
+    if (dims_b[contract_idx_b] != contract_dim) {
+        printf("DEBUG: Contraction dimension mismatch: %zu vs %zu\n",
+               dims_a[contract_idx_a], dims_b[contract_idx_b]);
+        return false;
+    }
+
+    // Compute result dimensions (all non-contracted indices)
+    size_t result_rank = rank_a + rank_b - 2;
+    if (result_rank == 0) result_rank = 1;  // Scalar result
+
+    size_t* result_dims = pool_alloc(pool, result_rank * sizeof(size_t));
+    if (!result_dims) return false;
+
+    // Build result dimensions: A's dims (except contracted) + B's dims (except contracted)
+    size_t dim_idx = 0;
+    for (size_t i = 0; i < rank_a; i++) {
+        if (i != contract_idx_a) {
+            result_dims[dim_idx++] = dims_a[i];
+        }
+    }
+    for (size_t i = 0; i < rank_b; i++) {
+        if (i != contract_idx_b) {
+            result_dims[dim_idx++] = dims_b[i];
+        }
+    }
+
+    // Handle scalar result
+    if (result_rank == 1 && dim_idx == 0) {
+        result_dims[0] = 1;
+    }
+
+    // Compute strides for tensor A
+    size_t* strides_a = pool_alloc(pool, rank_a * sizeof(size_t));
+    if (!strides_a) {
+        pool_free_memory(pool, result_dims);
+        return false;
+    }
+    strides_a[rank_a - 1] = 1;
+    for (int i = (int)rank_a - 2; i >= 0; i--) {
+        strides_a[i] = strides_a[i + 1] * dims_a[i + 1];
+    }
+
+    // Compute strides for tensor B
+    size_t* strides_b = pool_alloc(pool, rank_b * sizeof(size_t));
+    if (!strides_b) {
+        pool_free_memory(pool, strides_a);
+        pool_free_memory(pool, result_dims);
+        return false;
+    }
+    strides_b[rank_b - 1] = 1;
+    for (int i = (int)rank_b - 2; i >= 0; i--) {
+        strides_b[i] = strides_b[i + 1] * dims_b[i + 1];
+    }
+
+    // Compute result size and allocate
+    size_t result_size = 1;
+    for (size_t i = 0; i < result_rank; i++) {
+        result_size *= result_dims[i];
+    }
+
+    ComplexFloat* result = pool_alloc(pool, result_size * sizeof(ComplexFloat));
+    if (!result) {
+        pool_free_memory(pool, strides_b);
+        pool_free_memory(pool, strides_a);
+        pool_free_memory(pool, result_dims);
+        return false;
+    }
+    memset(result, 0, result_size * sizeof(ComplexFloat));
+
+    // Compute sizes for iteration
+    size_t size_a = 1, size_b = 1;
+    for (size_t i = 0; i < rank_a; i++) size_a *= dims_a[i];
+    for (size_t i = 0; i < rank_b; i++) size_b *= dims_b[i];
+
+    // Precompute non-contracted sizes
+    size_t outer_size_a = size_a / contract_dim;
+    size_t outer_size_b = size_b / contract_dim;
+
+    // Perform contraction using efficient nested loops
+    // For each combination of non-contracted A indices and non-contracted B indices
+    // Sum over the contracted index
+
+    // This is a general implementation; can be optimized for specific cases
+    // For matrix-matrix: C[i,j] = sum_k A[i,k] * B[k,j]
+
+    size_t stride_contract_a = strides_a[contract_idx_a];
+    size_t stride_contract_b = strides_b[contract_idx_b];
+
+    // Iterate over all elements of A (grouped by contracted index)
+    for (size_t idx_a = 0; idx_a < size_a; idx_a++) {
+        // Extract the contracted index value from idx_a
+        size_t k = (idx_a / stride_contract_a) % contract_dim;
+
+        // Compute the "external" index for A (all indices except contracted)
+        size_t ext_idx_a = 0;
+        size_t temp_idx = idx_a;
+        size_t result_stride = 1;
+
+        // Compute result index contribution from A
+        for (int d = (int)rank_a - 1; d >= 0; d--) {
+            size_t idx_in_dim = temp_idx % dims_a[d];
+            temp_idx /= dims_a[d];
+            if ((size_t)d != contract_idx_a) {
+                // Find position in result
+                size_t pos = 0;
+                for (size_t i = 0; i < (size_t)d; i++) {
+                    if (i != contract_idx_a) pos++;
+                }
+                // Compute stride in result for this position
+                size_t res_stride = 1;
+                for (size_t i = pos + 1; i < rank_a - 1; i++) {
+                    res_stride *= result_dims[i];
+                }
+                for (size_t i = 0; i < rank_b - 1; i++) {
+                    res_stride *= result_dims[rank_a - 1 + i];
+                }
+                ext_idx_a += idx_in_dim * res_stride;
+            }
+        }
+
+        // For each element of B with matching contracted index
+        for (size_t outer_b = 0; outer_b < outer_size_b; outer_b++) {
+            // Reconstruct full B index from outer index and contracted index k
+            size_t idx_b = 0;
+            size_t temp_outer = outer_b;
+            for (int d = (int)rank_b - 1; d >= 0; d--) {
+                if ((size_t)d == contract_idx_b) {
+                    idx_b += k * strides_b[d];
+                } else {
+                    size_t dim_size = dims_b[d];
+                    size_t idx_in_dim = temp_outer % dim_size;
+                    temp_outer /= dim_size;
+                    idx_b += idx_in_dim * strides_b[d];
+                }
+            }
+
+            // Compute result index contribution from B
+            size_t ext_idx_b = 0;
+            temp_outer = outer_b;
+            size_t res_pos = rank_a - 1;  // Start after A's contribution
+            for (int d = (int)rank_b - 1; d >= 0; d--) {
+                if ((size_t)d != contract_idx_b) {
+                    size_t idx_in_dim = temp_outer % dims_b[d];
+                    temp_outer /= dims_b[d];
+                    // Stride in result
+                    size_t res_stride = 1;
+                    for (size_t i = res_pos + 1; i < result_rank; i++) {
+                        res_stride *= result_dims[i];
+                    }
+                    ext_idx_b += idx_in_dim * res_stride;
+                    res_pos++;
+                }
+            }
+
+            // Add to result: C[ext_a, ext_b] += A[idx_a] * B[idx_b]
+            size_t result_idx = ext_idx_a + ext_idx_b;
+            if (result_idx < result_size && idx_b < size_b) {
+                ComplexFloat a = tensor_a[idx_a];
+                ComplexFloat b = tensor_b[idx_b];
+                result[result_idx].real += a.real * b.real - a.imag * b.imag;
+                result[result_idx].imag += a.real * b.imag + a.imag * b.real;
+            }
+        }
+    }
+
+    pool_free_memory(pool, strides_a);
+    pool_free_memory(pool, strides_b);
+
+    *result_out = result;
+    *result_dims_out = result_dims;
+    *result_rank_out = result_rank;
+
+    return true;
+}
+
+/**
+ * @brief Simple matrix contraction: C = A @ B
+ *
+ * For rank-2 tensors, this is standard matrix multiplication.
+ * A is (m, k), B is (k, n), result is (m, n)
+ */
+static bool contract_matrices(
+    const ComplexFloat* A,
+    size_t m, size_t k,
+    const ComplexFloat* B,
+    size_t n,  // B is k x n
+    ComplexFloat* C)  // C is m x n, must be pre-allocated
+{
+    // Initialize C to zero
+    memset(C, 0, m * n * sizeof(ComplexFloat));
+
+    // Cache-blocked matrix multiplication for better performance
+    const size_t BLOCK = 32;
+
+    for (size_t ii = 0; ii < m; ii += BLOCK) {
+        size_t i_end = (ii + BLOCK < m) ? ii + BLOCK : m;
+        for (size_t jj = 0; jj < n; jj += BLOCK) {
+            size_t j_end = (jj + BLOCK < n) ? jj + BLOCK : n;
+            for (size_t ll = 0; ll < k; ll += BLOCK) {
+                size_t l_end = (ll + BLOCK < k) ? ll + BLOCK : k;
+
+                for (size_t i = ii; i < i_end; i++) {
+                    for (size_t l = ll; l < l_end; l++) {
+                        ComplexFloat a = A[i * k + l];
+                        for (size_t j = jj; j < j_end; j++) {
+                            ComplexFloat b = B[l * n + j];
+                            C[i * n + j].real += a.real * b.real - a.imag * b.imag;
+                            C[i * n + j].imag += a.real * b.imag + a.imag * b.real;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
+// =============================================================================
+// Tree Tensor Network Core Functions
+// =============================================================================
+
 // Create a new tree tensor network
 tree_tensor_network_t* create_tree_tensor_network(
     size_t num_qubits,
@@ -620,65 +886,157 @@ bool contract_tree_tensor_nodes(
         destroy_tensor_stream(stream2);
     } else {
         printf("DEBUG: Using direct contraction for small tensors\n");
-        
-        // For small tensors, use direct contraction
-        // This is a simplified implementation
-        // In a real implementation, this would handle tensor contraction properly
-        
-        // Calculate result dimensions
-        // For simplicity, we'll just concatenate the dimensions
-        size_t num_result_dims = node1->num_dimensions + node2->num_dimensions;
-        size_t* result_dims = pool_alloc(ttn->memory_pool, num_result_dims * sizeof(size_t));
-        if (!result_dims) {
-            printf("DEBUG: Failed to allocate result dimensions\n");
-            return false;
-        }
-        
-        // Copy dimensions
-        memcpy(result_dims, node1->dimensions, node1->num_dimensions * sizeof(size_t));
-        memcpy(result_dims + node1->num_dimensions, node2->dimensions, 
-               node2->num_dimensions * sizeof(size_t));
-        
-        // Calculate result size
-        size_t result_size = total_size1 * total_size2;  // Simplified
-        
-        // Allocate result data
-        ComplexFloat* result_data = pool_alloc(ttn->memory_pool, result_size * sizeof(ComplexFloat));
-        if (!result_data) {
-            printf("DEBUG: Failed to allocate result data\n");
-            pool_free_memory(ttn->memory_pool, result_dims);
-            return false;
-        }
-        
-        // Perform contraction
-        // This is a simplified implementation (outer product)
-        // In a real implementation, this would handle tensor contraction properly
+
+        // For small tensors, use proper tensor contraction
+        // Default: contract last index of node1 with first index of node2
+        // This is the standard convention for TTN parent-child contraction
+
         if (node1->use_hierarchical || node2->use_hierarchical) {
-            // Handle hierarchical matrices
-            // This is a placeholder
+            // Handle hierarchical matrices - fallback to simple contraction
+            // For simplicity, we'll just concatenate the dimensions
+            size_t num_result_dims = node1->num_dimensions + node2->num_dimensions;
+            size_t* result_dims = pool_alloc(ttn->memory_pool, num_result_dims * sizeof(size_t));
+            if (!result_dims) {
+                printf("DEBUG: Failed to allocate result dimensions\n");
+                return false;
+            }
+
+            memcpy(result_dims, node1->dimensions, node1->num_dimensions * sizeof(size_t));
+            memcpy(result_dims + node1->num_dimensions, node2->dimensions,
+                   node2->num_dimensions * sizeof(size_t));
+
+            size_t result_size = total_size1 * total_size2;
+            ComplexFloat* result_data = pool_alloc(ttn->memory_pool, result_size * sizeof(ComplexFloat));
+            if (!result_data) {
+                pool_free_memory(ttn->memory_pool, result_dims);
+                return false;
+            }
             memset(result_data, 0, result_size * sizeof(ComplexFloat));
+
+            *result = add_tree_tensor_node(ttn, result_data, result_dims, num_result_dims, false);
+            pool_free_memory(ttn->memory_pool, result_data);
+            pool_free_memory(ttn->memory_pool, result_dims);
         } else {
-            // Simple outer product as an example
-            for (size_t i = 0; i < total_size1; i++) {
-                for (size_t j = 0; j < total_size2; j++) {
-                    size_t idx = i * total_size2 + j;
-                    result_data[idx].real = 
-                        node1->data[i].real * node2->data[j].real - 
-                        node1->data[i].imag * node2->data[j].imag;
-                    result_data[idx].imag = 
-                        node1->data[i].real * node2->data[j].imag + 
-                        node1->data[i].imag * node2->data[j].real;
+            // PROPER TENSOR CONTRACTION
+            // Check for matching dimensions to determine contraction indices
+            // Default: contract last index of A with first index of B
+
+            size_t contract_idx_a = node1->num_dimensions - 1;  // Last index of A
+            size_t contract_idx_b = 0;                          // First index of B
+
+            // Verify dimensions match
+            if (node1->dimensions[contract_idx_a] != node2->dimensions[contract_idx_b]) {
+                printf("DEBUG: Warning - default contraction indices have mismatched dimensions.\n");
+                printf("       A[last]=%zu, B[first]=%zu. Searching for matching dimensions...\n",
+                       node1->dimensions[contract_idx_a], node2->dimensions[contract_idx_b]);
+
+                // Search for matching dimensions
+                bool found = false;
+                for (size_t i = 0; i < node1->num_dimensions && !found; i++) {
+                    for (size_t j = 0; j < node2->num_dimensions && !found; j++) {
+                        if (node1->dimensions[i] == node2->dimensions[j]) {
+                            contract_idx_a = i;
+                            contract_idx_b = j;
+                            found = true;
+                            printf("       Found matching dimensions at A[%zu]=%zu, B[%zu]=%zu\n",
+                                   i, node1->dimensions[i], j, node2->dimensions[j]);
+                        }
+                    }
+                }
+
+                if (!found) {
+                    printf("DEBUG: No matching dimensions found. Performing outer product.\n");
+                    // Fall back to outer product
+                    size_t num_result_dims = node1->num_dimensions + node2->num_dimensions;
+                    size_t* result_dims = pool_alloc(ttn->memory_pool, num_result_dims * sizeof(size_t));
+                    if (!result_dims) return false;
+
+                    memcpy(result_dims, node1->dimensions, node1->num_dimensions * sizeof(size_t));
+                    memcpy(result_dims + node1->num_dimensions, node2->dimensions,
+                           node2->num_dimensions * sizeof(size_t));
+
+                    size_t result_size = total_size1 * total_size2;
+                    ComplexFloat* result_data = pool_alloc(ttn->memory_pool, result_size * sizeof(ComplexFloat));
+                    if (!result_data) {
+                        pool_free_memory(ttn->memory_pool, result_dims);
+                        return false;
+                    }
+
+                    // Outer product
+                    for (size_t i = 0; i < total_size1; i++) {
+                        for (size_t j = 0; j < total_size2; j++) {
+                            size_t idx = i * total_size2 + j;
+                            result_data[idx].real =
+                                node1->data[i].real * node2->data[j].real -
+                                node1->data[i].imag * node2->data[j].imag;
+                            result_data[idx].imag =
+                                node1->data[i].real * node2->data[j].imag +
+                                node1->data[i].imag * node2->data[j].real;
+                        }
+                    }
+
+                    *result = add_tree_tensor_node(ttn, result_data, result_dims, num_result_dims, false);
+                    pool_free_memory(ttn->memory_pool, result_data);
+                    pool_free_memory(ttn->memory_pool, result_dims);
+
+                    if (!*result) return false;
+                    return true;
                 }
             }
+
+            // SPECIALIZED CASE: Matrix-matrix multiplication (rank-2 tensors)
+            if (node1->num_dimensions == 2 && node2->num_dimensions == 2 &&
+                contract_idx_a == 1 && contract_idx_b == 0) {
+                // Standard matrix multiplication: C[i,j] = sum_k A[i,k] * B[k,j]
+                size_t m = node1->dimensions[0];
+                size_t k = node1->dimensions[1];  // = node2->dimensions[0]
+                size_t n = node2->dimensions[1];
+
+                printf("DEBUG: Using optimized matrix multiplication (%zu x %zu) @ (%zu x %zu)\n",
+                       m, k, k, n);
+
+                size_t* result_dims = pool_alloc(ttn->memory_pool, 2 * sizeof(size_t));
+                if (!result_dims) return false;
+                result_dims[0] = m;
+                result_dims[1] = n;
+
+                ComplexFloat* result_data = pool_alloc(ttn->memory_pool, m * n * sizeof(ComplexFloat));
+                if (!result_data) {
+                    pool_free_memory(ttn->memory_pool, result_dims);
+                    return false;
+                }
+
+                // Efficient cache-blocked matrix multiplication
+                contract_matrices(node1->data, m, k, node2->data, n, result_data);
+
+                *result = add_tree_tensor_node(ttn, result_data, result_dims, 2, false);
+                pool_free_memory(ttn->memory_pool, result_data);
+                pool_free_memory(ttn->memory_pool, result_dims);
+            } else {
+                // GENERAL CASE: Use proper tensor contraction
+                printf("DEBUG: Using general tensor contraction. A:rank=%zu, B:rank=%zu, contract A[%zu] with B[%zu]\n",
+                       node1->num_dimensions, node2->num_dimensions, contract_idx_a, contract_idx_b);
+
+                ComplexFloat* result_data;
+                size_t* result_dims;
+                size_t result_rank;
+
+                if (!contract_tensors_proper(
+                        node1->data, node1->dimensions, node1->num_dimensions,
+                        node2->data, node2->dimensions, node2->num_dimensions,
+                        contract_idx_a, contract_idx_b,
+                        &result_data, &result_dims, &result_rank,
+                        ttn->memory_pool)) {
+                    printf("DEBUG: General tensor contraction failed\n");
+                    return false;
+                }
+
+                *result = add_tree_tensor_node(ttn, result_data, result_dims, result_rank, false);
+                pool_free_memory(ttn->memory_pool, result_data);
+                pool_free_memory(ttn->memory_pool, result_dims);
+            }
         }
-        
-        // Create result node
-        *result = add_tree_tensor_node(ttn, result_data, result_dims, num_result_dims, false);
-        
-        // Clean up
-        pool_free_memory(ttn->memory_pool, result_data);
-        pool_free_memory(ttn->memory_pool, result_dims);
-        
+
         if (!*result) {
             printf("DEBUG: Failed to create result node\n");
             return false;

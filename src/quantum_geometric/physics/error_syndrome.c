@@ -13,7 +13,10 @@
 #include <string.h>
 #include <math.h>
 
+// Use the HISTORY_SIZE from error_syndrome.h if not already defined
+#ifndef HISTORY_SIZE
 #define HISTORY_SIZE 16
+#endif
 
 void cleanup_test_state(quantum_state_t* state) {
     if (state) {
@@ -513,6 +516,118 @@ static size_t get_base(BlossomState* state, size_t v) {
     return v;
 }
 
+// Find lowest common ancestor in alternating tree
+static size_t find_lca(BlossomState* state, size_t u, size_t v) {
+    // Mark path from u to root
+    bool* visited = calloc(state->num_vertices, sizeof(bool));
+    if (!visited) return SIZE_MAX;
+
+    size_t curr = u;
+    while (curr != SIZE_MAX) {
+        size_t base = get_base(state, curr);
+        visited[base] = true;
+        if (state->match[curr] == SIZE_MAX) break;
+        curr = state->parent[state->match[curr]];
+    }
+
+    // Find first marked vertex on path from v
+    curr = v;
+    while (curr != SIZE_MAX) {
+        size_t base = get_base(state, curr);
+        if (visited[base]) {
+            free(visited);
+            return base;
+        }
+        if (state->match[curr] == SIZE_MAX) break;
+        curr = state->parent[state->match[curr]];
+    }
+
+    free(visited);
+    return SIZE_MAX;
+}
+
+// Contract an odd cycle (blossom) into a pseudo-vertex
+// Returns the blossom ID (base vertex)
+static size_t contract_blossom(BlossomState* state, size_t u, size_t v, size_t lca, int blossom_id) {
+    // Contract all vertices on the path from u to lca and v to lca
+    // into a single pseudo-vertex represented by lca
+
+    // Mark path from u to lca
+    size_t curr = u;
+    while (get_base(state, curr) != lca) {
+        size_t base = get_base(state, curr);
+        state->blossom_id[base] = blossom_id;
+        state->blossom_base[base] = lca;
+
+        // Add matched vertex to queue if not already there
+        size_t matched = state->match[curr];
+        if (matched != SIZE_MAX) {
+            size_t matched_base = get_base(state, matched);
+            state->blossom_id[matched_base] = blossom_id;
+            state->blossom_base[matched_base] = lca;
+
+            if (!state->in_queue[matched]) {
+                state->queue[state->queue_tail++] = matched;
+                state->in_queue[matched] = true;
+            }
+            curr = state->parent[matched];
+        } else {
+            break;
+        }
+    }
+
+    // Mark path from v to lca
+    curr = v;
+    while (get_base(state, curr) != lca) {
+        size_t base = get_base(state, curr);
+        state->blossom_id[base] = blossom_id;
+        state->blossom_base[base] = lca;
+
+        size_t matched = state->match[curr];
+        if (matched != SIZE_MAX) {
+            size_t matched_base = get_base(state, matched);
+            state->blossom_id[matched_base] = blossom_id;
+            state->blossom_base[matched_base] = lca;
+
+            if (!state->in_queue[matched]) {
+                state->queue[state->queue_tail++] = matched;
+                state->in_queue[matched] = true;
+            }
+            curr = state->parent[matched];
+        } else {
+            break;
+        }
+    }
+
+    return lca;
+}
+
+// Expand all blossoms after augmentation (restore original structure)
+static void expand_all_blossoms(BlossomState* state) {
+    for (size_t i = 0; i < state->num_vertices; i++) {
+        state->blossom_id[i] = -1;
+        state->blossom_base[i] = i;
+    }
+}
+
+// Augment matching along the path from root to vertex
+static void augment_path(BlossomState* state, size_t u, size_t v) {
+    // u and v are endpoints of augmenting path edge
+    // Trace back from v to root, flipping matched/unmatched edges
+
+    while (v != SIZE_MAX) {
+        size_t prev = state->parent[v];
+        size_t next = (prev != SIZE_MAX) ? state->match[prev] : SIZE_MAX;
+
+        state->match[v] = prev;
+        if (prev != SIZE_MAX) {
+            state->match[prev] = v;
+        }
+
+        v = next;
+    }
+}
+
 // Find augmenting path and augment matching
 static bool find_augmenting_path(MatchingGraph* graph, BlossomState* state, size_t start) {
     // Reset search state
@@ -552,37 +667,80 @@ static bool find_augmenting_path(MatchingGraph* graph, BlossomState* state, size
             if (slack > 1e-9) continue;  // Edge not tight
 
             if (state->match[w] == SIZE_MAX) {
-                // Found augmenting path - augment matching
+                // Found augmenting path to unmatched vertex w
+                // Augment: trace back through tree flipping matched/unmatched
+                state->parent[w] = v;
+
+                // Trace path from w back to root, flipping matching
                 size_t curr = w;
-                size_t prev = v;
-                while (prev != SIZE_MAX) {
-                    size_t next = (state->match[prev] != SIZE_MAX) ?
-                                  state->parent[state->match[prev]] : SIZE_MAX;
-                    state->match[curr] = prev;
-                    state->match[prev] = curr;
-                    curr = (state->match[prev] != SIZE_MAX && next != SIZE_MAX) ?
-                           state->match[next] : SIZE_MAX;
-                    prev = next;
+                while (curr != SIZE_MAX) {
+                    size_t prev = state->parent[curr];
+                    size_t pprev = (prev != SIZE_MAX && state->match[prev] != SIZE_MAX) ?
+                                   state->parent[state->match[prev]] : SIZE_MAX;
+
+                    // Flip: edge (prev, curr) becomes matched
+                    if (prev != SIZE_MAX) {
+                        size_t old_match = state->match[prev];
+                        state->match[prev] = curr;
+                        state->match[curr] = prev;
+
+                        // Move to the vertex that was previously matched to prev
+                        curr = old_match;
+                        if (curr != SIZE_MAX && pprev != SIZE_MAX) {
+                            curr = state->match[pprev];
+                        } else {
+                            curr = SIZE_MAX;
+                        }
+                    } else {
+                        break;
+                    }
                 }
+
+                // Expand blossoms to restore original graph structure
+                expand_all_blossoms(state);
                 return true;
+
             } else if (state->root[w] == SIZE_MAX) {
-                // Grow tree through matched edge
+                // w is matched but not in any tree
+                // Grow alternating tree through the matched edge
                 size_t matched = state->match[w];
                 state->parent[w] = v;
                 state->parent[matched] = w;
                 state->root[w] = state->root[v];
                 state->root[matched] = state->root[v];
 
+                // Add the S-vertex (matched) to queue for further exploration
                 if (!state->in_queue[matched]) {
                     state->queue[state->queue_tail++] = matched;
                     state->in_queue[matched] = true;
                 }
+
+            } else if (state->root[w] == state->root[v]) {
+                // Both v and w are in the same tree - this forms an odd cycle (blossom)
+                // Find the lowest common ancestor and contract the blossom
+                size_t lca = find_lca(state, v, w);
+                if (lca != SIZE_MAX) {
+                    // Generate unique blossom ID
+                    static int next_blossom_id = 0;
+                    int blossom_id = next_blossom_id++;
+
+                    // Contract the blossom
+                    contract_blossom(state, v, w, lca, blossom_id);
+
+                    // Set parent relationship for the edge that created the blossom
+                    if (get_base(state, v) == lca && state->parent[w] == SIZE_MAX) {
+                        state->parent[w] = v;
+                    }
+                    if (get_base(state, w) == lca && state->parent[v] == SIZE_MAX) {
+                        state->parent[v] = w;
+                    }
+                }
             }
-            // else: blossom case - simplified handling (contract)
+            // else: w is in a different tree - no action needed in this phase
         }
     }
 
-    return false;  // No augmenting path found
+    return false;  // No augmenting path found from this root
 }
 
 // Update dual variables

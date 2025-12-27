@@ -164,7 +164,7 @@ qgt_error_t z_measurement_compare(bool* equal,
         return QGT_ERROR_INVALID_ARGUMENT;
     }
 
-    *equal = (fabs(measurement1->value - measurement2->value) < tolerance);
+    *equal = (abs(measurement1->value - measurement2->value) < (int)tolerance);
     return QGT_SUCCESS;
 }
 
@@ -507,8 +507,9 @@ bool apply_hardware_z_optimizations(
     if (hardware->dynamic_phase_correction) {
         // Implement dynamic phase tracking
         for (size_t i = 0; i < state->config.repetition_count * state->config.repetition_count; i++) {
-            double current_phase = state->phase_correlations[i];
-            state->phase_correlations[i] *= exp(COMPLEX_FLOAT_I.imag * hardware->phase_calibration);
+            // Apply phase calibration correction to current phase value
+            double phase_correction = exp(COMPLEX_FLOAT_I.imag * hardware->phase_calibration);
+            state->phase_correlations[i] *= phase_correction;
         }
     }
 

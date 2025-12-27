@@ -388,6 +388,7 @@ typedef enum {
     GEOMETRIC_CURVATURE_RICCI,      // Ricci curvature
     GEOMETRIC_CURVATURE_SCALAR,     // Scalar curvature
     GEOMETRIC_CURVATURE_WEYL,       // Weyl curvature
+    GEOMETRIC_CURVATURE_BERRY,      // Berry curvature (quantum geometric)
     GEOMETRIC_CURVATURE_CUSTOM      // Custom curvature
 } geometric_curvature_type_t;
 

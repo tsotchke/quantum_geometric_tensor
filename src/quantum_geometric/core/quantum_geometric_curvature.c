@@ -1,6 +1,8 @@
 #include "quantum_geometric/core/quantum_geometric_curvature.h"
 #include "quantum_geometric/core/quantum_geometric_types.h"
 #include "quantum_geometric/core/quantum_geometric_constants.h"
+#include "quantum_geometric/core/quantum_geometric_tensor_network.h"
+#include "quantum_geometric/core/quantum_geometric_metric.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -10,26 +12,34 @@ qgt_error_t geometric_create_curvature(quantum_geometric_curvature_t** curvature
                                      size_t dimension) {
     QGT_CHECK_NULL(curvature);
     QGT_CHECK_ARGUMENT(dimension > 0 && dimension <= QGT_MAX_DIMENSIONS);
-    
+
     *curvature = (quantum_geometric_curvature_t*)calloc(1, sizeof(quantum_geometric_curvature_t));
     if (!*curvature) {
         return QGT_ERROR_ALLOCATION_FAILED;
     }
-    
+
     // Allocate curvature tensor components
-    size_t size = dimension * dimension * dimension * dimension * sizeof(ComplexFloat);
+    // Berry curvature is a rank-2 antisymmetric tensor (dimension x dimension)
+    // Riemann curvature is a rank-4 tensor (dimension^4 components)
+    size_t size;
+    if (type == GEOMETRIC_CURVATURE_BERRY) {
+        size = dimension * dimension * sizeof(ComplexFloat);
+    } else {
+        size = dimension * dimension * dimension * dimension * sizeof(ComplexFloat);
+    }
+
     (*curvature)->components = (ComplexFloat*)malloc(size);
     if (!(*curvature)->components) {
         free(*curvature);
         return QGT_ERROR_ALLOCATION_FAILED;
     }
-    
+
     (*curvature)->type = type;
     (*curvature)->dimension = dimension;
-    
+
     // Initialize to zero
     memset((*curvature)->components, 0, size);
-    
+
     return QGT_SUCCESS;
 }
 
@@ -46,15 +56,21 @@ qgt_error_t geometric_clone_curvature(quantum_geometric_curvature_t** dest,
                                     const quantum_geometric_curvature_t* src) {
     QGT_CHECK_NULL(dest);
     QGT_CHECK_NULL(src);
-    
+
     qgt_error_t err = geometric_create_curvature(dest, src->type, src->dimension);
     if (err != QGT_SUCCESS) {
         return err;
     }
-    
-    size_t size = src->dimension * src->dimension * src->dimension * src->dimension * sizeof(ComplexFloat);
+
+    // Calculate size based on curvature type
+    size_t size;
+    if (src->type == GEOMETRIC_CURVATURE_BERRY) {
+        size = src->dimension * src->dimension * sizeof(ComplexFloat);
+    } else {
+        size = src->dimension * src->dimension * src->dimension * src->dimension * sizeof(ComplexFloat);
+    }
     memcpy((*dest)->components, src->components, size);
-    
+
     return QGT_SUCCESS;
 }
 
@@ -157,6 +173,148 @@ qgt_error_t geometric_transform_curvature(quantum_geometric_curvature_t* result,
             }
         }
     }
-    
+
+    return QGT_SUCCESS;
+}
+
+// Compute a single element of the Berry curvature tensor
+qgt_error_t geometric_compute_berry_curvature_element(
+    const quantum_geometric_tensor_network_t* qgtn,
+    size_t param_mu,
+    size_t param_nu,
+    float* result) {
+
+    QGT_CHECK_NULL(qgtn);
+    QGT_CHECK_NULL(result);
+
+    // Use the QGT computation which now includes the projection term
+    double curvature_value;
+    if (!compute_berry_curvature(qgtn, param_mu, param_nu, &curvature_value)) {
+        return QGT_ERROR_COMPUTATION_FAILED;
+    }
+
+    *result = (float)curvature_value;
+    return QGT_SUCCESS;
+}
+
+// Compute the full Berry curvature tensor for a parameterized circuit
+qgt_error_t geometric_compute_berry_curvature(
+    quantum_geometric_curvature_t* curvature,
+    const quantum_geometric_tensor_network_t* qgtn,
+    size_t num_params) {
+
+    QGT_CHECK_NULL(curvature);
+    QGT_CHECK_NULL(qgtn);
+    QGT_CHECK_ARGUMENT(num_params > 0);
+
+    // Verify curvature is Berry type and has correct dimension
+    if (curvature->type != GEOMETRIC_CURVATURE_BERRY) {
+        return QGT_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (curvature->dimension != num_params) {
+        return QGT_ERROR_DIMENSION_MISMATCH;
+    }
+
+    // Compute each element of the Berry curvature tensor
+    // Berry curvature is antisymmetric: Ω_μν = -Ω_νμ
+    // Diagonal elements are zero: Ω_μμ = 0
+    for (size_t mu = 0; mu < num_params; mu++) {
+        // Diagonal is zero
+        curvature->components[mu * num_params + mu].real = 0.0f;
+        curvature->components[mu * num_params + mu].imag = 0.0f;
+
+        for (size_t nu = mu + 1; nu < num_params; nu++) {
+            double curvature_value;
+
+            // Use the corrected QGT computation to get Berry curvature
+            if (!compute_berry_curvature(qgtn, mu, nu, &curvature_value)) {
+                return QGT_ERROR_COMPUTATION_FAILED;
+            }
+
+            // Store Ω_μν (stored in real part as it's a real quantity)
+            curvature->components[mu * num_params + nu].real = (float)curvature_value;
+            curvature->components[mu * num_params + nu].imag = 0.0f;
+
+            // Antisymmetry: Ω_νμ = -Ω_μν
+            curvature->components[nu * num_params + mu].real = -(float)curvature_value;
+            curvature->components[nu * num_params + mu].imag = 0.0f;
+        }
+    }
+
+    curvature->is_flat = false;  // Berry curvature is generally non-zero
+    return QGT_SUCCESS;
+}
+
+// Compose the full QGT from metric and Berry curvature
+qgt_error_t geometric_compose_qgt(
+    ComplexFloat* qgt,
+    const quantum_geometric_metric_t* metric,
+    const quantum_geometric_curvature_t* curvature,
+    size_t dimension) {
+
+    QGT_CHECK_NULL(qgt);
+    QGT_CHECK_NULL(metric);
+    QGT_CHECK_NULL(curvature);
+
+    // Verify dimensions match
+    if (metric->dimension != dimension || curvature->dimension != dimension) {
+        return QGT_ERROR_DIMENSION_MISMATCH;
+    }
+
+    // Verify types
+    if (metric->type != GEOMETRIC_METRIC_FUBINI_STUDY) {
+        return QGT_ERROR_INVALID_ARGUMENT;
+    }
+    if (curvature->type != GEOMETRIC_CURVATURE_BERRY) {
+        return QGT_ERROR_INVALID_ARGUMENT;
+    }
+
+    // Compose QGT: Q_μν = g_μν + i*Ω_μν
+    // The metric is symmetric (real part), Berry curvature is antisymmetric (imaginary part)
+    for (size_t mu = 0; mu < dimension; mu++) {
+        for (size_t nu = 0; nu < dimension; nu++) {
+            size_t idx = mu * dimension + nu;
+            // Real part from Fubini-Study metric
+            qgt[idx].real = metric->components[idx].real;
+            // Imaginary part from Berry curvature (stored in real component of curvature)
+            qgt[idx].imag = curvature->components[idx].real;
+        }
+    }
+
+    return QGT_SUCCESS;
+}
+
+// Compute the full QGT directly from a parameterized circuit
+qgt_error_t geometric_compute_full_qgt(
+    ComplexFloat* qgt,
+    const quantum_geometric_tensor_network_t* qgtn,
+    size_t num_params) {
+
+    QGT_CHECK_NULL(qgt);
+    QGT_CHECK_NULL(qgtn);
+    QGT_CHECK_ARGUMENT(num_params > 0);
+
+    // Compute each element of the QGT directly
+    // Q_μν = g_μν + i*Ω_μν
+    for (size_t mu = 0; mu < num_params; mu++) {
+        for (size_t nu = mu; nu < num_params; nu++) {
+            // Use the QGT computation from tensor_network which computes both parts
+            ComplexFloat qgt_element;
+            if (!compute_quantum_geometric_tensor(qgtn, mu, nu, &qgt_element)) {
+                return QGT_ERROR_COMPUTATION_FAILED;
+            }
+
+            // Store Q_μν
+            qgt[mu * num_params + nu] = qgt_element;
+
+            // For off-diagonal elements, use Hermitian symmetry: Q_νμ = Q_μν*
+            if (nu != mu) {
+                qgt[nu * num_params + mu].real = qgt_element.real;
+                qgt[nu * num_params + mu].imag = -qgt_element.imag;  // Complex conjugate
+            }
+        }
+    }
+
     return QGT_SUCCESS;
 }

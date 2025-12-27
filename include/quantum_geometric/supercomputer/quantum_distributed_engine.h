@@ -25,11 +25,13 @@ extern "C" {
 #define HAS_NCCL 0
 #endif
 
-// MPI detection
+// MPI detection - only define if not already set via command line
+#ifndef HAS_MPI
 #if defined(USE_MPI)
 #define HAS_MPI 1
 #else
 #define HAS_MPI 0
+#endif
 #endif
 
 // Metal detection (Apple platforms)
