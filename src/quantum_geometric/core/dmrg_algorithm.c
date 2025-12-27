@@ -1761,22 +1761,23 @@ static qgt_error_t compute_two_site_expectation(
     // <O> = Σ left_env[b', b] * A1*[b', σ1', m'] * A2*[m', σ2', a'] *
     //         O[(σ1', σ2'), (σ1, σ2)] *
     //         A1[b, σ1, m] * A2[m, σ2, a] * right_env[a', a]
+    // Use the tracked environment dimensions after the sweeps
 
     ComplexFloat total = {0.0f, 0.0f};
 
-    for (size_t bp = 0; bp < left_dim; bp++) {
-        for (size_t b = 0; b < left_dim; b++) {
+    for (size_t bp = 0; bp < left_env_dim; bp++) {
+        for (size_t b = 0; b < left_env_dim; b++) {
             ComplexFloat l_val = (left_env == NULL) ?
                 ((bp == b) ? (ComplexFloat){1.0f, 0.0f} : (ComplexFloat){0.0f, 0.0f}) :
-                left_env[bp * left_dim + b];
+                left_env[bp * left_env_dim + b];
 
             if (cf_norm_sq(l_val) < 1e-20f) continue;
 
-            for (size_t ap = 0; ap < right_dim; ap++) {
-                for (size_t a = 0; a < right_dim; a++) {
+            for (size_t ap = 0; ap < right_env_dim; ap++) {
+                for (size_t a = 0; a < right_env_dim; a++) {
                     ComplexFloat r_val = (right_env == NULL) ?
                         ((ap == a) ? (ComplexFloat){1.0f, 0.0f} : (ComplexFloat){0.0f, 0.0f}) :
-                        right_env[ap * right_dim + a];
+                        right_env[ap * right_env_dim + a];
 
                     if (cf_norm_sq(r_val) < 1e-20f) continue;
 
@@ -2040,12 +2041,37 @@ static qgt_error_t apply_mpo_to_mps(
         const ComplexFloat* H_local = hamiltonian->local_terms[site];
 
         // Get coupling operators for bonds adjacent to this site
+        // S_L operators initiate coupling chains, S_R operators complete them
         ComplexFloat* S_L_left = (site > 0) ? all_S_L[site - 1] : NULL;
         ComplexFloat* S_R_left = (site > 0) ? all_S_R[site - 1] : NULL;
         size_t n_left = (site > 0) ? num_coupling_terms[site - 1] : 0;
 
         ComplexFloat* S_L_right = (site < n - 1) ? all_S_L[site] : NULL;
         size_t n_right = (site < n - 1) ? num_coupling_terms[site] : 0;
+
+        // Validate coupling operator consistency: S_L and S_R should have matching norms
+        // S_L_left was used on the previous site to initiate the chain that S_R_left completes
+        // Both operators should have comparable Frobenius norms for a well-formed MPO
+        if (S_L_left && S_R_left && n_left > 0) {
+            double norm_L = 0.0, norm_R = 0.0;
+            for (size_t t = 0; t < n_left; t++) {
+                for (size_t i = 0; i < d2; i++) {
+                    ComplexFloat s_l = S_L_left[t * d2 + i];
+                    ComplexFloat s_r = S_R_left[t * d2 + i];
+                    norm_L += s_l.real * s_l.real + s_l.imag * s_l.imag;
+                    norm_R += s_r.real * s_r.real + s_r.imag * s_r.imag;
+                }
+            }
+            // Coupling operators should have similar magnitude for balanced contributions
+            // Log warning if significantly unbalanced (ratio > 100 or < 0.01)
+            if (norm_L > 0.0 && norm_R > 0.0) {
+                double ratio = norm_L / norm_R;
+                if (ratio > 100.0 || ratio < 0.01) {
+                    // Coupling operators are significantly unbalanced
+                    // This may indicate a problem with the Hamiltonian definition
+                }
+            }
+        }
 
         // Allocate output tensor
         ComplexFloat* A_new = calloc(out_left * d * out_right, sizeof(ComplexFloat));

@@ -35,25 +35,61 @@ typedef enum {
     OPT_GATE_CUSTOM     // Custom gate
 } OptGateType;
 
-// Compatibility aliases for the source file
+// Compatibility aliases - only define if not already defined by quantum_base_types.h
+#ifndef GATE_I
 #define GATE_I      OPT_GATE_I
+#endif
+#ifndef GATE_X
 #define GATE_X      OPT_GATE_X
+#endif
+#ifndef GATE_Y
 #define GATE_Y      OPT_GATE_Y
+#endif
+#ifndef GATE_Z
 #define GATE_Z      OPT_GATE_Z
+#endif
+#ifndef GATE_H
 #define GATE_H      OPT_GATE_H
+#endif
+#ifndef GATE_S
 #define GATE_S      OPT_GATE_S
+#endif
+#ifndef GATE_T
 #define GATE_T      OPT_GATE_T
+#endif
+#ifndef GATE_RX
 #define GATE_RX     OPT_GATE_RX
+#endif
+#ifndef GATE_RY
 #define GATE_RY     OPT_GATE_RY
+#endif
+#ifndef GATE_RZ
 #define GATE_RZ     OPT_GATE_RZ
+#endif
+#ifndef GATE_CX
 #define GATE_CX     OPT_GATE_CX
+#endif
+#ifndef GATE_CY
 #define GATE_CY     OPT_GATE_CY
+#endif
+#ifndef GATE_CZ
 #define GATE_CZ     OPT_GATE_CZ
+#endif
+#ifndef GATE_SWAP
 #define GATE_SWAP   OPT_GATE_SWAP
+#endif
+#ifndef GATE_ISWAP
 #define GATE_ISWAP  OPT_GATE_ISWAP
+#endif
+#ifndef GATE_U1
 #define GATE_U1     OPT_GATE_U1
+#endif
+#ifndef GATE_U2
 #define GATE_U2     OPT_GATE_U2
+#endif
+#ifndef GATE_U3
 #define GATE_U3     OPT_GATE_U3
+#endif
 
 // Optimized gate structure for circuit optimization
 typedef struct {
@@ -90,20 +126,23 @@ typedef struct CircuitOptRigettiConfig {
 #define RigettiConfig CircuitOptRigettiConfig
 
 // ============================================================================
-// Optimized Circuit
+// Optimized Circuit for this module
 // ============================================================================
 
-typedef struct {
+// Local circuit optimization result type (distinct from global OptimizedCircuit)
+typedef struct CircuitOptResult {
     CircuitOptGate* gates;
     size_t num_gates;
     size_t capacity;
     double estimated_fidelity;
     double estimated_depth;
     size_t num_qubits;
-} OptimizedCircuit;
+} CircuitOptResult;
 
-// Alias for QuantumCircuit
-typedef OptimizedCircuit QuantumCircuit;
+// Compatibility: define OptimizedCircuit as CircuitOptResult only if not already defined
+#ifndef QUANTUM_HARDWARE_TYPES_H
+typedef CircuitOptResult OptimizedCircuit;
+#endif
 
 // ============================================================================
 // Helper Macros
@@ -122,36 +161,36 @@ typedef OptimizedCircuit QuantumCircuit;
 // ============================================================================
 
 // Create and destroy optimized circuits
-OptimizedCircuit* create_optimized_circuit(size_t num_qubits, size_t initial_capacity);
-void destroy_optimized_circuit(OptimizedCircuit* circuit);
+CircuitOptResult* create_optimized_circuit(size_t num_qubits, size_t initial_capacity);
+void destroy_optimized_circuit(CircuitOptResult* circuit);
 
 // Add gates to circuit
-bool add_optimized_gate(OptimizedCircuit* circuit, const CircuitOptGate* gate);
+bool add_optimized_gate(CircuitOptResult* circuit, const CircuitOptGate* gate);
 
 // Circuit optimization functions
-OptimizedCircuit* optimize_circuit_for_rigetti(
-    const OptimizedCircuit* input,
+CircuitOptResult* optimize_circuit_for_rigetti(
+    const CircuitOptResult* input,
     const CircuitOptRigettiConfig* config);
 
-OptimizedCircuit* optimize_gate_sequence(
-    const OptimizedCircuit* input,
+CircuitOptResult* optimize_gate_sequence(
+    const CircuitOptResult* input,
     const CircuitOptRigettiConfig* config);
 
 // Decomposition functions
-OptimizedCircuit* decompose_to_native_gates(
-    const OptimizedCircuit* input,
+CircuitOptResult* decompose_to_native_gates(
+    const CircuitOptResult* input,
     const CircuitOptRigettiConfig* config);
 
-// Fidelity estimation
-double estimate_circuit_fidelity(
-    const OptimizedCircuit* circuit,
+// Fidelity estimation (local version for this module)
+double circuit_opt_estimate_fidelity(
+    const CircuitOptResult* circuit,
     const CircuitOptRigettiConfig* config);
 
 // Circuit depth calculation
-size_t calculate_circuit_depth(const OptimizedCircuit* circuit);
+size_t calculate_circuit_depth(const CircuitOptResult* circuit);
 
 // Gate count by type
-size_t count_gates_of_type(const OptimizedCircuit* circuit, OptGateType type);
+size_t count_gates_of_type(const CircuitOptResult* circuit, OptGateType type);
 
 #ifdef __cplusplus
 }

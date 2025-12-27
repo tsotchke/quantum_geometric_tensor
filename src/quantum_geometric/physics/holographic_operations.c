@@ -1606,6 +1606,13 @@ void compute_modular_hamiltonian(double complex* modular_h,
 
     size_t region_size = region_end - region_start;
 
+    // Validate region size is meaningful for modular flow computation
+    if (region_size < 2) {
+        // Single-site region has trivial modular Hamiltonian
+        modular_h[0] = 0.0;
+        return;
+    }
+
     compute_modular_flow_generator(modular_h, state, region_start, region_end, n);
 }
 

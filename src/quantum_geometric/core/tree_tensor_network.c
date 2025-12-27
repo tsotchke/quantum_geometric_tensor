@@ -229,80 +229,56 @@ static bool contract_tensors_proper(
     size_t stride_contract_a = strides_a[contract_idx_a];
     size_t stride_contract_b = strides_b[contract_idx_b];
 
-    // Iterate over all elements of A (grouped by contracted index)
-    for (size_t idx_a = 0; idx_a < size_a; idx_a++) {
-        // Extract the contracted index value from idx_a
-        size_t k = (idx_a / stride_contract_a) % contract_dim;
-
-        // Compute the "external" index for A (all indices except contracted)
-        size_t ext_idx_a = 0;
-        size_t temp_idx = idx_a;
-        size_t result_stride = 1;
-
-        // Compute result index contribution from A
-        for (int d = (int)rank_a - 1; d >= 0; d--) {
-            size_t idx_in_dim = temp_idx % dims_a[d];
-            temp_idx /= dims_a[d];
-            if ((size_t)d != contract_idx_a) {
-                // Find position in result
-                size_t pos = 0;
-                for (size_t i = 0; i < (size_t)d; i++) {
-                    if (i != contract_idx_a) pos++;
-                }
-                // Compute stride in result for this position
-                size_t res_stride = 1;
-                for (size_t i = pos + 1; i < rank_a - 1; i++) {
-                    res_stride *= result_dims[i];
-                }
-                for (size_t i = 0; i < rank_b - 1; i++) {
-                    res_stride *= result_dims[rank_a - 1 + i];
-                }
-                ext_idx_a += idx_in_dim * res_stride;
-            }
-        }
-
-        // For each element of B with matching contracted index
+    // Iterate using outer indices for better cache locality
+    // For each combination of non-contracted A indices
+    for (size_t outer_a = 0; outer_a < outer_size_a; outer_a++) {
+        // For each combination of non-contracted B indices
         for (size_t outer_b = 0; outer_b < outer_size_b; outer_b++) {
-            // Reconstruct full B index from outer index and contracted index k
-            size_t idx_b = 0;
-            size_t temp_outer = outer_b;
-            for (int d = (int)rank_b - 1; d >= 0; d--) {
-                if ((size_t)d == contract_idx_b) {
-                    idx_b += k * strides_b[d];
-                } else {
-                    size_t dim_size = dims_b[d];
-                    size_t idx_in_dim = temp_outer % dim_size;
-                    temp_outer /= dim_size;
-                    idx_b += idx_in_dim * strides_b[d];
-                }
-            }
+            // Compute result index from outer indices
+            size_t result_idx = outer_a * outer_size_b + outer_b;
 
-            // Compute result index contribution from B
-            size_t ext_idx_b = 0;
-            temp_outer = outer_b;
-            size_t res_pos = rank_a - 1;  // Start after A's contribution
-            for (int d = (int)rank_b - 1; d >= 0; d--) {
-                if ((size_t)d != contract_idx_b) {
-                    size_t idx_in_dim = temp_outer % dims_b[d];
-                    temp_outer /= dims_b[d];
-                    // Stride in result
-                    size_t res_stride = 1;
-                    for (size_t i = res_pos + 1; i < result_rank; i++) {
-                        res_stride *= result_dims[i];
+            if (result_idx >= result_size) continue;
+
+            // Sum over the contracted dimension
+            ComplexFloat sum = {0.0f, 0.0f};
+            for (size_t k = 0; k < contract_dim; k++) {
+                // Compute A index: combine outer_a with contracted index k
+                size_t idx_a = 0;
+                size_t temp_outer = outer_a;
+                for (int d = (int)rank_a - 1; d >= 0; d--) {
+                    if ((size_t)d == contract_idx_a) {
+                        idx_a += k * stride_contract_a;
+                    } else {
+                        size_t dim_size = dims_a[d];
+                        size_t idx_in_dim = temp_outer % dim_size;
+                        temp_outer /= dim_size;
+                        idx_a += idx_in_dim * strides_a[d];
                     }
-                    ext_idx_b += idx_in_dim * res_stride;
-                    res_pos++;
+                }
+
+                // Compute B index: combine outer_b with contracted index k
+                size_t idx_b = 0;
+                temp_outer = outer_b;
+                for (int d = (int)rank_b - 1; d >= 0; d--) {
+                    if ((size_t)d == contract_idx_b) {
+                        idx_b += k * stride_contract_b;
+                    } else {
+                        size_t dim_size = dims_b[d];
+                        size_t idx_in_dim = temp_outer % dim_size;
+                        temp_outer /= dim_size;
+                        idx_b += idx_in_dim * strides_b[d];
+                    }
+                }
+
+                // Accumulate product
+                if (idx_a < size_a && idx_b < size_b) {
+                    ComplexFloat a = tensor_a[idx_a];
+                    ComplexFloat b = tensor_b[idx_b];
+                    sum.real += a.real * b.real - a.imag * b.imag;
+                    sum.imag += a.real * b.imag + a.imag * b.real;
                 }
             }
-
-            // Add to result: C[ext_a, ext_b] += A[idx_a] * B[idx_b]
-            size_t result_idx = ext_idx_a + ext_idx_b;
-            if (result_idx < result_size && idx_b < size_b) {
-                ComplexFloat a = tensor_a[idx_a];
-                ComplexFloat b = tensor_b[idx_b];
-                result[result_idx].real += a.real * b.real - a.imag * b.imag;
-                result[result_idx].imag += a.real * b.imag + a.imag * b.real;
-            }
+            result[result_idx] = sum;
         }
     }
 
@@ -2217,12 +2193,12 @@ static size_t extract_order_recursive(contraction_dp_t* dp, size_t i, size_t j,
     // Finally, record this contraction
     if (order_idx < dp->num_contractions) {
         // Left operand: either original node i (if k == i) or intermediate result
-        size_t left_id = (k == i) ? i : (*next_result_id - 1);
+        size_t left_id = (k == i) ? i : dp->num_nodes + order_idx - 1;
         // Right operand: either original node j (if k+1 == j) or intermediate result
-        size_t right_id = (k + 1 == j) ? j : (*next_result_id - 1);
+        size_t right_id = (k + 1 == j) ? (k + 1) : dp->num_nodes + order_idx;
 
-        dp->optimal_order[order_idx].node1_id = (k == i) ? i : dp->num_nodes + order_idx - 1;
-        dp->optimal_order[order_idx].node2_id = (k + 1 == j) ? (k + 1) : dp->num_nodes + order_idx;
+        dp->optimal_order[order_idx].node1_id = left_id;
+        dp->optimal_order[order_idx].node2_id = right_id;
         dp->optimal_order[order_idx].result_id = *next_result_id;
         dp->optimal_order[order_idx].cost = dp->cost_table[i][j];
 

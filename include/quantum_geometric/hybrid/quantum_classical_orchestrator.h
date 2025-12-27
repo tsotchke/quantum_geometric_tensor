@@ -124,9 +124,9 @@ QuantumCircuit* hw_circuit_optimize_for_hardware(const QuantumCircuit* circuit,
 void hw_circuit_cleanup(QuantumCircuit* circuit);
 
 // Hardware submission
-int submit_quantum_circuit(QuantumHardware* hardware,
-                          const QuantumCircuit* circuit,
-                          QuantumResult* result);
+int submit_quantum_circuit(struct QuantumHardware* hardware,
+                          const struct QuantumCircuit* circuit,
+                          struct ExecutionResult* result);
 
 // Classical computation
 int classical_computation(const QuantumTask* task,

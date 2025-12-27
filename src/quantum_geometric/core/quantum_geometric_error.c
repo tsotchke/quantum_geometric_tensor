@@ -83,6 +83,9 @@ void geometric_format_error(char* buffer,
         case QGT_ERROR_VALIDATION_FAILED:
             error_string = "Validation failed";
             break;
+        default:
+            // Use the default "Unknown error" string set above
+            break;
     }
     
     if (error->file && error->function) {

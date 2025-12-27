@@ -103,12 +103,12 @@ qgt_error_t quantum_operator_validate_resources(const quantum_operator_t* operat
 // Error correction
 qgt_error_t quantum_operator_encode(quantum_operator_t* encoded,
                                    const quantum_operator_t* operator,
-                                   quantum_error_code_t code);
+                                   error_correction_code_t code);
 qgt_error_t quantum_operator_decode(quantum_operator_t* decoded,
                                    const quantum_operator_t* operator,
-                                   quantum_error_code_t code);
+                                   error_correction_code_t code);
 qgt_error_t quantum_operator_correct(quantum_operator_t* operator,
-                                    quantum_error_code_t code);
+                                    error_correction_code_t code);
 
 // Utility functions
 qgt_error_t quantum_operator_print(const quantum_operator_t* operator);

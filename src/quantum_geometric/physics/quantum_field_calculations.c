@@ -178,6 +178,11 @@ complex double* calculate_covariant_derivatives(
     size_t nz = field->field_tensor->dims[3];
     size_t ng = field->gauge_group_dim;
 
+    // Bounds check for spacetime coordinates
+    if (t >= nt || x >= nx || y >= ny || z >= nz) {
+        return partial;  // Out of bounds
+    }
+
     size_t idx = ((t * nx + x) * ny + y) * nz + z;
     complex double g = I * field->field_strength;
 
@@ -534,10 +539,16 @@ void transform_field_components(
 void transform_gauge_field(
     Tensor* gauge_field,
     const Tensor* transformation) {
-    
+
     size_t num_components = gauge_field->dims[5];
     size_t num_generators = gauge_field->dims[4];
-    
+
+    // Validate transformation tensor has matching structure
+    if (transformation->dims[0] < num_generators ||
+        transformation->dims[1] < num_components) {
+        return;  // Incompatible transformation
+    }
+
     #pragma omp parallel for collapse(4)
     for (size_t t = 0; t < gauge_field->dims[0]; t++) {
         for (size_t x = 0; x < gauge_field->dims[1]; x++) {
@@ -757,10 +768,14 @@ double calculate_potential_energy(const QuantumField* field) {
 
 double calculate_gauge_energy(const QuantumField* field) {
     if (!field->gauge_field) return 0.0;
-    
+
     double energy = 0.0;
+    // n is the number of field components (color indices for gauge fields)
     size_t n = field->gauge_field->dims[5];
-    
+
+    // Energy normalization factor based on field components
+    double norm_factor = (n > 0) ? 1.0 / (double)n : 1.0;
+
     #pragma omp parallel for collapse(4) reduction(+:energy)
     for (size_t t = 0; t < field->gauge_field->dims[0]; t++) {
         for (size_t x = 0; x < field->gauge_field->dims[1]; x++) {
@@ -771,15 +786,17 @@ double calculate_gauge_energy(const QuantumField* field) {
                         field,
                         t, x, y, z
                     );
-                    
-                    // Calculate energy density
+
+                    // Calculate energy density: E = Tr(F_μν F^μν) / 4
+                    double local_energy = 0.0;
                     for (size_t mu = 0; mu < QG_SPACETIME_DIMS; mu++) {
                         for (size_t nu = 0; nu < QG_SPACETIME_DIMS; nu++) {
-                            energy += creal(F_munu[mu * QG_SPACETIME_DIMS + nu] *
+                            local_energy += creal(F_munu[mu * QG_SPACETIME_DIMS + nu] *
                                          conj(F_munu[mu * QG_SPACETIME_DIMS + nu]));
                         }
                     }
-                    
+                    energy += local_energy * norm_factor;
+
                     free(F_munu);
                 }
             }

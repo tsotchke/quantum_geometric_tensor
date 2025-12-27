@@ -10,8 +10,9 @@
 #include <string.h>
 #include <math.h>
 
-// Internal state for IBM backend
-static IBMBackendState* state = NULL;
+// Global singleton state for IBM backend (for future singleton pattern support)
+// Currently unused as all functions take explicit state parameters
+static IBMBackendState* g_ibm_backend_state __attribute__((unused)) = NULL;
 
 // Forward declarations
 static bool initialize_backend(IBMBackendState* state,
@@ -21,9 +22,9 @@ static bool optimize_circuit(IBMBackendState* state,
                            ibm_quantum_circuit* circuit);
 static bool execute_optimized(IBMBackendState* state,
                             ibm_quantum_circuit* circuit,
-                            quantum_result* result);
+                            IBMJobResult* result);
 static bool apply_error_mitigation(IBMBackendState* state,
-                                 quantum_result* result);
+                                 IBMJobResult* result);
 
 // Backend property retrieval
 static bool get_backend_properties(const char* backend_name,
@@ -81,7 +82,7 @@ static bool setup_feedback_channels(const char* backend_name,
 
 static bool execute_parallel_ops(const char* backend_name,
                                ibm_quantum_circuit* circuit,
-                               quantum_result* result,
+                               IBMJobResult* result,
                                const parallel_config* config) {
     if (!backend_name || !circuit || !result || !config) {
         return false;
@@ -436,7 +437,7 @@ static void optimized_cleanup_ibm_backend(IBMBackendState* state) {
 // Renamed to avoid conflict with quantum_ibm_backend.c
 bool execute_ibm_circuit_optimized(IBMBackendState* state,
                                    ibm_quantum_circuit* circuit,
-                                   quantum_result* result) {
+                                   IBMJobResult* result) {
     if (!state || !state->initialized || !circuit || !result) {
         return false;
     }
@@ -564,7 +565,7 @@ static bool optimize_circuit(IBMBackendState* state,
 
 static bool execute_optimized(IBMBackendState* state,
                             ibm_quantum_circuit* circuit,
-                            quantum_result* result) {
+                            IBMJobResult* result) {
     if (!state || !circuit || !result) {
         return false;
     }
@@ -593,7 +594,7 @@ static bool execute_optimized(IBMBackendState* state,
 }
 
 static bool apply_error_mitigation(IBMBackendState* state,
-                                 quantum_result* result) {
+                                 IBMJobResult* result) {
     if (!state || !result) {
         return false;
     }

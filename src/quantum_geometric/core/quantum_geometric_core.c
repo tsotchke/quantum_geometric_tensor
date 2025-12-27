@@ -1402,8 +1402,15 @@ qgt_error_t geometric_core_tensor_contract(void* result,
     }
 
     // Calculate output dimensions
+    // Result rank = input ranks - 2 * contracted dimensions (each contraction removes one dim from each tensor)
     size_t result_rank = rank_a + rank_b - 2 * num_contractions;
     size_t result_size = 1;
+
+    // Validate result rank - check for underflow due to too many contractions
+    // A scalar result (rank 0) is valid when all dimensions are contracted
+    if (result_rank > rank_a + rank_b) {  // Underflow detection (size_t wraparound)
+        return QGT_ERROR_INVALID_ARGUMENT;
+    }
 
     // Compute strides for tensor A
     size_t* strides_a = (size_t*)geometric_allocate(rank_a * sizeof(size_t));

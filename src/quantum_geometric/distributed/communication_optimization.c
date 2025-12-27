@@ -229,7 +229,7 @@ int send_optimized(CommunicationManager* manager,
             size,
             manager->buffer_size);
         
-        if (compressed_size > 0 && compressed_size < size) {
+        if (compressed_size > 0 && (size_t)compressed_size < size) {
             header.compressed_size = compressed_size;
             header.is_compressed = true;
             

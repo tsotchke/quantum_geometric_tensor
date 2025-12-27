@@ -47,7 +47,7 @@ size_t distribute_workload(size_t total_size) {
     size_t remainder = total_size % manager->world_size;
     
     // Distribute remainder across first few ranks
-    if (manager->rank < remainder) {
+    if ((size_t)manager->rank < remainder) {
         chunk_size++;
     }
     
@@ -71,8 +71,8 @@ size_t get_local_offset(void) {
     size_t offset = rank * chunk_size;
     
     // Add extra offset for ranks that got an extra item from remainder
-    if (rank < remainder) {
-        offset += rank;
+    if ((size_t)rank < remainder) {
+        offset += (size_t)rank;
     } else {
         offset += remainder;
     }
@@ -529,10 +529,10 @@ static pthread_mutex_t g_dist_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // Get current local workload size (after distribute_workload called)
 size_t get_local_workload_size(void) {
-    if (tl_current_dist) {
-        return tl_current_dist->local_size;
-    }
-    return g_total_size;  // Fallback if no distribution
+    pthread_mutex_lock(&g_dist_mutex);
+    size_t result = tl_current_dist ? tl_current_dist->local_size : g_total_size;
+    pthread_mutex_unlock(&g_dist_mutex);
+    return result;
 }
 
 // Initialize distribution context
@@ -585,10 +585,14 @@ DistributionContext* init_distribution(size_t n, size_t element_size, Distributi
         case DIST_STRATEGY_CYCLIC: {
             // Cyclic distribution: round-robin element assignment
             // Each node gets every world_size-th element
-            size_t count = (n + ctx->world_size - 1) / ctx->world_size;
+            // max_per_node is the maximum elements any single node will handle
+            size_t max_per_node = (n + ctx->world_size - 1) / ctx->world_size;
             for (int i = 0; i < ctx->world_size; i++) {
                 ctx->node_offsets[i] = i;  // Starting element
-                ctx->node_sizes[i] = (n - i + ctx->world_size - 1) / ctx->world_size;
+                // Each node's actual count may be less than max if near end
+                size_t this_count = (n > (size_t)i) ?
+                    ((n - i - 1) / ctx->world_size + 1) : 0;
+                ctx->node_sizes[i] = (this_count <= max_per_node) ? this_count : max_per_node;
             }
             break;
         }

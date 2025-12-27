@@ -42,28 +42,33 @@ typedef enum {
     GATE_TYPE_RY = 8,      // Rotation around Y axis
     GATE_TYPE_RZ = 9,      // Rotation around Z axis
     GATE_TYPE_CNOT = 10,   // Controlled-NOT gate
-    GATE_TYPE_CZ = 11,     // Controlled-Z gate
-    GATE_TYPE_SWAP = 12,   // SWAP gate
-    GATE_TYPE_CUSTOM = 13, // Custom unitary gate
+    GATE_TYPE_CY = 11,     // Controlled-Y gate
+    GATE_TYPE_CZ = 12,     // Controlled-Z gate
+    GATE_TYPE_SWAP = 13,   // SWAP gate
+    GATE_TYPE_CUSTOM = 14, // Custom unitary gate
     // Extended gates
-    GATE_TYPE_U1 = 14,     // U1 gate (phase rotation)
-    GATE_TYPE_U2 = 15,     // U2 gate
-    GATE_TYPE_U3 = 16,     // U3 gate (general single qubit)
-    GATE_TYPE_CCX = 17,    // Toffoli gate (CCX)
-    GATE_TYPE_PHASE = 18,  // General phase gate
-    GATE_TYPE_CSWAP = 19,  // Fredkin gate (controlled SWAP)
-    GATE_TYPE_ISWAP = 20,  // iSWAP gate
-    GATE_TYPE_CRX = 21,    // Controlled RX
-    GATE_TYPE_CRY = 22,    // Controlled RY
-    GATE_TYPE_CRZ = 23,    // Controlled RZ
-    GATE_TYPE_CH = 24,     // Controlled Hadamard
-    GATE_TYPE_SDG = 25,    // S-dagger gate
-    GATE_TYPE_TDG = 26,    // T-dagger gate
-    GATE_TYPE_ECR = 27,    // Echoed Cross-Resonance gate (IBM native)
-    GATE_TYPE_SX = 28,     // Square root of X gate
-    GATE_TYPE_MEASURE = 29,// Measurement operation (pseudo-gate)
-    GATE_TYPE_RESET = 30,  // Reset operation (pseudo-gate)
-    GATE_TYPE_BARRIER = 31 // Barrier operation (pseudo-gate)
+    GATE_TYPE_U1 = 15,     // U1 gate (phase rotation)
+    GATE_TYPE_U2 = 16,     // U2 gate
+    GATE_TYPE_U3 = 17,     // U3 gate (general single qubit)
+    GATE_TYPE_CCX = 18,    // Toffoli gate (CCX)
+    GATE_TYPE_PHASE = 19,  // General phase gate
+    GATE_TYPE_CSWAP = 20,  // Fredkin gate (controlled SWAP)
+    GATE_TYPE_ISWAP = 21,  // iSWAP gate
+    GATE_TYPE_CRX = 22,    // Controlled RX
+    GATE_TYPE_CRY = 23,    // Controlled RY
+    GATE_TYPE_CRZ = 24,    // Controlled RZ
+    GATE_TYPE_CH = 25,     // Controlled Hadamard
+    GATE_TYPE_SDG = 26,    // S-dagger gate
+    GATE_TYPE_TDG = 27,    // T-dagger gate
+    GATE_TYPE_ECR = 28,    // Echoed Cross-Resonance gate (IBM native)
+    GATE_TYPE_SX = 29,     // Square root of X gate
+    GATE_TYPE_MEASURE = 30,// Measurement operation (pseudo-gate)
+    GATE_TYPE_RESET = 31,  // Reset operation (pseudo-gate)
+    GATE_TYPE_BARRIER = 32,// Barrier operation (pseudo-gate)
+    // Two-qubit rotation gates
+    GATE_TYPE_XX = 33,     // XX (Ising) rotation gate
+    GATE_TYPE_YY = 34,     // YY rotation gate
+    GATE_TYPE_ZZ = 35      // ZZ rotation gate
 } gate_type_t;
 
 // Convenience aliases for backward compatibility
@@ -80,6 +85,8 @@ typedef enum {
 #define GATE_RY     GATE_TYPE_RY
 #define GATE_RZ     GATE_TYPE_RZ
 #define GATE_CNOT   GATE_TYPE_CNOT
+#define GATE_CX     GATE_TYPE_CNOT  // Alias for CNOT (CX = Controlled-X)
+#define GATE_CY     GATE_TYPE_CY
 #define GATE_CZ     GATE_TYPE_CZ
 #define GATE_SWAP   GATE_TYPE_SWAP
 #define GATE_CUSTOM GATE_TYPE_CUSTOM
@@ -102,6 +109,9 @@ typedef enum {
 #define GATE_MEASURE GATE_TYPE_MEASURE
 #define GATE_RESET  GATE_TYPE_RESET
 #define GATE_BARRIER GATE_TYPE_BARRIER
+#define GATE_XX     GATE_TYPE_XX
+#define GATE_YY     GATE_TYPE_YY
+#define GATE_ZZ     GATE_TYPE_ZZ
 #endif
 
 // ============================================================================

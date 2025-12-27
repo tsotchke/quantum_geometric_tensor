@@ -628,13 +628,20 @@ bool measure_pauli_x_with_confidence(const quantum_state_t* state,
                    state->coordinates[i].imag * state->coordinates[i].imag;
     }
 
-    *value = expectation;
+    // Normalize expectation value by state norm (should be ~1 for valid states)
+    if (norm_sq > 1e-10) {
+        *value = expectation / norm_sq;
+    } else {
+        *value = 0.0;  // Degenerate state
+    }
 
     // Confidence is based on how close we are to an X eigenstate
     // |+⟩ = (|0⟩ + |1⟩)/√2 has <X> = +1
     // |-⟩ = (|0⟩ - |1⟩)/√2 has <X> = -1
+    // Also factor in state normalization (unnormalized states reduce confidence)
+    double norm_factor = fabs(norm_sq - 1.0) < 0.01 ? 1.0 : 0.9;
     double abs_value = fabs(*value);
-    *confidence = abs_value;
+    *confidence = abs_value * norm_factor;
 
     // Apply readout error correction if available
     // For X measurement, we effectively measure in the X basis

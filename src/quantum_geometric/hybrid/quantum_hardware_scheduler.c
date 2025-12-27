@@ -21,31 +21,7 @@
 #define MAX_SYNC_POINTS 5
 #define OVERLAP_THRESHOLD 0.1
 
-typedef struct {
-    // Hardware status - IBM is our primary gate-based backend
-    bool ibm_available;
-    bool rigetti_available;
-    bool dwave_available;
-    double ibm_utilization;
-    double rigetti_utilization;
-    double dwave_utilization;
-
-    // IBM-specific capabilities
-    size_t ibm_max_qubits;
-    double ibm_gate_error_rate;
-    double ibm_readout_error_rate;
-    uint32_t ibm_optimization_level;
-
-    // Network status
-    double bandwidth;
-    double latency;
-    size_t buffer_usage;
-
-    // Resource status
-    size_t available_memory;
-    int available_threads;
-    double cpu_utilization;
-} SystemStatus;
+// SystemStatus is defined in the header
 
 // OperationRequirements is forward declared in header
 typedef struct OperationRequirements {

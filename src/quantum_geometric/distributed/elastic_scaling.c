@@ -347,7 +347,7 @@ static void scale_down(ElasticManager* manager, size_t target) {
     // Find nodes to deactivate
     for (size_t i = 0; i < manager->num_nodes && to_remove > 0; i++) {
         if (manager->nodes[i].is_active &&
-            i != manager->world_rank) {  // Don't remove self
+            i != (size_t)manager->world_rank) {  // Don't remove self
             deactivate_node(manager, i);
             to_remove--;
         }
@@ -394,8 +394,17 @@ static double get_gpu_utilization(void) {
     // macOS Metal GPU monitoring via IOKit
     // For now, return estimate based on system load as Metal doesn't expose direct utilization
     io_iterator_t iterator;
+    // Use kIOMainPortDefault (macOS 12+) instead of deprecated kIOMasterPortDefault
+    #if __MAC_OS_X_VERSION_MIN_REQUIRED >= 120000
+    kern_return_t result = IOServiceGetMatchingServices(kIOMainPortDefault,
+        IOServiceMatching("IOAccelerator"), &iterator);
+    #else
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Wdeprecated-declarations"
     kern_return_t result = IOServiceGetMatchingServices(kIOMasterPortDefault,
         IOServiceMatching("IOAccelerator"), &iterator);
+    #pragma clang diagnostic pop
+    #endif
     if (result == KERN_SUCCESS) {
         // GPU is available; estimate utilization from process activity
         io_object_t service;

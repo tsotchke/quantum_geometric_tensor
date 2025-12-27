@@ -53,7 +53,7 @@ static void quantum_smith_cpu(quantum_register_t* reg_factors, quantum_register_
                               quantum_system_t* system, quantum_circuit_t* circuit,
                               const quantum_amplitude_config_t* config);
 
-static void quantum_compute_correlations_internal(double* spin_states, double* parallel_transport,
+static void quantum_compute_correlations_internal(complex double* spin_states, double* parallel_transport,
                                                   double complex* output, QuantumCircuit* circuit,
                                                   QuantumWorkspace* qws, size_t chunk_size, size_t dim);
 
@@ -836,7 +836,7 @@ void quantum_build_simplices(quantum_register_t* reg, simplicial_complex_t* sc,
     }
 }
 
-void quantum_detect_correlations(double* spin_states, QuantumCircuit* circuit,
+void quantum_detect_correlations(complex double* spin_states, QuantumCircuit* circuit,
                                  QuantumWorkspace* qws, size_t chunk_size, size_t dim) {
     if (!spin_states || !circuit || !qws) return;
 
@@ -845,35 +845,36 @@ void quantum_detect_correlations(double* spin_states, QuantumCircuit* circuit,
     if (!scratch) return;
 
     for (size_t i = 0; i < chunk_size && i + dim < chunk_size; i++) {
-        /* Calculate correlation with neighboring spins */
+        /* Calculate correlation with neighboring spins (using real part for classical correlation) */
         double correlation = 0.0;
         for (size_t j = 0; j <= dim && i + j < chunk_size; j++) {
-            correlation += spin_states[i] * spin_states[i + j];
+            // Use |<psi_i|psi_j>|^2 for quantum correlation
+            complex double overlap = conj(spin_states[i]) * spin_states[i + j];
+            correlation += creal(overlap);
         }
         scratch[i] = correlation;
     }
 }
 
-static void quantum_compute_correlations_internal(double* spin_states, double* parallel_transport,
+static void quantum_compute_correlations_internal(complex double* spin_states, double* parallel_transport,
                                                   double complex* output, QuantumCircuit* circuit,
                                                   QuantumWorkspace* qws, size_t chunk_size, size_t dim) {
     if (!spin_states || !output) return;
 
-    /* Compute correlation matrix elements */
+    /* Compute correlation matrix elements using quantum inner products */
     for (size_t i = 0; i < chunk_size; i++) {
         for (size_t j = 0; j < dim; j++) {
-            double re = spin_states[i % dim] * spin_states[j];
-            double im = 0.0;
+            // Compute <psi_i|psi_j> = conj(psi_i) * psi_j
+            complex double corr = conj(spin_states[i % dim]) * spin_states[j];
 
             /* Apply parallel transport if available */
             if (parallel_transport) {
                 double pt = parallel_transport[i * dim + j];
-                double temp = re * cos(pt) - im * sin(pt);
-                im = re * sin(pt) + im * cos(pt);
-                re = temp;
+                // Parallel transport as phase rotation: e^{i*pt}
+                corr *= cos(pt) + I * sin(pt);
             }
 
-            output[i * dim + j] = re + im * I;
+            output[i * dim + j] = corr;
         }
     }
 }

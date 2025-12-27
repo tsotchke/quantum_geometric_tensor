@@ -389,15 +389,25 @@ static dataset_t* load_csv(const char* path, dataset_config_t config) {
 // NumPy dtype to element size mapping
 static size_t numpy_dtype_size(const char* dtype_str) {
     // Parse dtype string like '<f4', '<f8', '<i4', '<c8', etc.
+    // Format: [endian][type][size] where:
+    //   endian: '<' (little), '>' (big), '=' (native), '|' (not applicable)
+    //   type: 'f' (float), 'i' (int), 'u' (uint), 'c' (complex), 'b' (bool)
+    //   size: byte size (4 or 8 typically)
     if (!dtype_str || strlen(dtype_str) < 2) return 0;
 
     char type_char = dtype_str[1];
     int size = atoi(dtype_str + 2);
 
     if (size <= 0) {
-        // Try parsing without endian marker
+        // Try parsing without endian marker (e.g., "f4" instead of "<f4")
         type_char = dtype_str[0];
         size = atoi(dtype_str + 1);
+    }
+
+    // Validate type character
+    if (type_char != 'f' && type_char != 'i' && type_char != 'u' &&
+        type_char != 'c' && type_char != 'b' && type_char != 'S') {
+        return 0;  // Unknown type
     }
 
     return (size_t)size;

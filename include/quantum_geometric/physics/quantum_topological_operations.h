@@ -405,7 +405,7 @@ void quantum_build_simplices(quantum_register_t* reg, simplicial_complex_t* sc,
                              quantum_system_t* system, quantum_circuit_t* circuit,
                              void* config, QuantumWorkspace* qws);
 
-void quantum_detect_correlations(double* spin_states, QuantumCircuit* circuit,
+void quantum_detect_correlations(complex double* spin_states, QuantumCircuit* circuit,
                                  QuantumWorkspace* qws, size_t chunk_size, size_t dim);
 
 // =============================================================================

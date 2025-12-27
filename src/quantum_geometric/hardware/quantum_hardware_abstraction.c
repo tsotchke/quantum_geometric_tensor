@@ -838,7 +838,7 @@ char* load_credentials(HardwareBackendType type, const char* filename) {
 
     while (fgets(line, sizeof(line), file)) {
         if (sscanf(line, "type=%d", &stored_type) == 1) {
-            if (stored_type != type) {
+            if ((HardwareBackendType)stored_type != type) {
                 fclose(file);
                 return NULL;
             }
@@ -1771,7 +1771,7 @@ static void get_crosstalk(struct QuantumHardware* hardware) {
 // Submit quantum circuit with comprehensive optimization
 int submit_quantum_circuit(struct QuantumHardware* hardware,
                          const struct QuantumCircuit* circuit,
-                         struct QuantumResult* result) {
+                         struct ExecutionResult* result) {
     if (!hardware || !circuit || !result) return -1;
     
     // Validate circuit against hardware constraints

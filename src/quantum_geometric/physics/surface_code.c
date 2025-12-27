@@ -685,7 +685,7 @@ void apply_stabilizer_corrections(SurfaceCode* state, const Stabilizer* stabiliz
                     QGT_LOG_ERROR("Failed to apply X correction");
                     return;
                 }
-                update_error_metrics(state, qubit_idx, GATE_X, 1.0 - stabilizer->result.confidence);
+                update_error_metrics(state, qubit_idx, ERROR_X, 1.0 - stabilizer->result.confidence);
             }
             break;
         }

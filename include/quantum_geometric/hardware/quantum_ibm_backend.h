@@ -129,7 +129,7 @@ IBMJobStatus get_ibm_job_status(struct IBMBackendConfig* config, const char* job
 IBMJobResult* get_ibm_job_result(struct IBMBackendConfig* config, const char* job_id);
 
 // Cancel job
-bool cancel_ibm_job(struct IBMBackendConfig* config, const char* job_id);
+bool cancel_ibm_job(struct IBMConfig* config, const char* job_id);
 
 // Get backend capabilities
 IBMCapabilities* get_ibm_capabilities(struct IBMBackendConfig* config);

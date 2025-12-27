@@ -107,12 +107,12 @@ qgt_error_t quantum_state_validate_resources(const quantum_state_t* state);
 // Error correction
 qgt_error_t quantum_state_encode(quantum_state_t* encoded,
                                 const quantum_state_t* state,
-                                quantum_error_code_t code);
+                                error_correction_code_t code);
 qgt_error_t quantum_state_decode(quantum_state_t* decoded,
                                 const quantum_state_t* state,
-                                quantum_error_code_t code);
+                                error_correction_code_t code);
 qgt_error_t quantum_state_correct(quantum_state_t* state,
-                                 quantum_error_code_t code);
+                                 error_correction_code_t code);
 
 // Utility functions
 qgt_error_t quantum_state_print(const quantum_state_t* state);

@@ -87,17 +87,18 @@ typedef struct {
 
 // Performance optimization suggestions
 typedef struct {
-    const char* section;
-    const char* issue;
-    const char* suggestion;
-    double impact;
-    int priority;
+    const char* section;      // Code section/function where issue detected
+    const char* issue;        // Description of performance problem
+    const char* suggestion;   // Recommended optimization
+    const char* context;      // Runtime context (call path, parameters, etc.)
+    double impact;            // Expected improvement (0.0-1.0 scale)
+    int priority;             // Urgency (higher = more urgent)
+    uint64_t timestamp;       // When hint was generated
 } optimization_hint_t;
 
 #define MAX_HINTS 100
 static optimization_hint_t optimization_hints[MAX_HINTS];
 static atomic_int num_hints = 0;
-static long long papi_values[NUM_PAPI_EVENTS];
 
 // Enhanced thread-local storage for performance data
 static __thread struct {
@@ -877,7 +878,7 @@ static void generate_metrics_plots(FILE* file, const performance_section_t* sect
     
     fprintf(file, "  type: 'scatter',\n");
     fprintf(file, "  mode: 'lines+markers',\n");
-    fprintf(file, "  name: 'Cache Miss Rate (%)'\n");
+    fprintf(file, "  name: 'Cache Miss Rate (%%)'\n");
     fprintf(file, "};\n\n");
     
     fprintf(file, "var metricsLayout = {\n");
@@ -995,6 +996,46 @@ const char* qg_performance_get_error_string(performance_error_t error) {
         default:
             return "Unknown error";
     }
+}
+
+// Optimization hint registration
+int qg_register_optimization_hint(const char* section, const char* issue,
+                                  const char* suggestion, const char* context,
+                                  double impact, int priority) {
+    int idx = atomic_fetch_add(&num_hints, 1);
+    if (idx >= MAX_HINTS) {
+        atomic_fetch_sub(&num_hints, 1);
+        return -1;
+    }
+    optimization_hints[idx].section = section;
+    optimization_hints[idx].issue = issue;
+    optimization_hints[idx].suggestion = suggestion;
+    optimization_hints[idx].context = context;
+    optimization_hints[idx].impact = impact;
+    optimization_hints[idx].priority = priority;
+    optimization_hints[idx].timestamp = read_tsc();
+    return idx;
+}
+
+// Get optimization hints for reporting
+int qg_get_optimization_hints(optimization_hint_t* hints, size_t max_hints, size_t* count) {
+    if (!hints || !count) return -1;
+
+    int current_count = atomic_load(&num_hints);
+    *count = (current_count < (int)max_hints) ? (size_t)current_count : max_hints;
+
+    for (size_t i = 0; i < *count; i++) {
+        hints[i] = optimization_hints[i];
+    }
+    return 0;
+}
+
+// Get roofline model parameters
+void qg_get_roofline_model(double* peak_flops, double* peak_bandwidth,
+                           double* arithmetic_intensity) {
+    if (peak_flops) *peak_flops = roofline_data.peak_flops;
+    if (peak_bandwidth) *peak_bandwidth = roofline_data.peak_bandwidth;
+    if (arithmetic_intensity) *arithmetic_intensity = roofline_data.arithmetic_intensity;
 }
 
 // Utility functions

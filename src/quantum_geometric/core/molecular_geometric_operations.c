@@ -153,6 +153,94 @@ void geometric_message_passing(
     free(R_n);
 }
 
+// Compute Wigner small-d matrix element d^l_{m'm}(beta)
+// Uses explicit formula for low l and recursion for higher l
+static double wigner_small_d(size_t l, int m_prime, int m, double beta) {
+    if (l == 0) return 1.0;
+
+    double cos_half = cos(beta / 2.0);
+    double sin_half = sin(beta / 2.0);
+
+    // Use explicit formulas for l <= 2 (common cases in molecular physics)
+    if (l == 1) {
+        double c = cos_half, s = sin_half;
+        double c2 = c * c, s2 = s * s;
+        double cs = c * s;
+
+        // d^1 matrix
+        if (m_prime == 1 && m == 1) return c2;
+        if (m_prime == 1 && m == 0) return -sqrt(2.0) * cs;
+        if (m_prime == 1 && m == -1) return s2;
+        if (m_prime == 0 && m == 1) return sqrt(2.0) * cs;
+        if (m_prime == 0 && m == 0) return c2 - s2;
+        if (m_prime == 0 && m == -1) return -sqrt(2.0) * cs;
+        if (m_prime == -1 && m == 1) return s2;
+        if (m_prime == -1 && m == 0) return sqrt(2.0) * cs;
+        if (m_prime == -1 && m == -1) return c2;
+    }
+
+    // General formula using recursion relation for higher l
+    // d^l_{m'm}(beta) = sum_k (-1)^k * C(l+m, k) * C(l-m, l-m'-k) *
+    //                   cos^(2l+m-m'-2k)(beta/2) * sin^(2k+m'-m)(beta/2)
+    int k_min = (0 > m - m_prime) ? 0 : m - m_prime;
+    int k_max = ((int)l + m < (int)l - m_prime) ? (int)l + m : (int)l - m_prime;
+
+    double sum = 0.0;
+    for (int k = k_min; k <= k_max; k++) {
+        int pow_cos = 2 * (int)l + m - m_prime - 2 * k;
+        int pow_sin = 2 * k + m_prime - m;
+
+        if (pow_cos < 0 || pow_sin < 0) continue;
+
+        // Compute binomial coefficients
+        double binom1 = 1.0, binom2 = 1.0;
+        for (int i = 0; i < k; i++) {
+            binom1 *= (double)((int)l + m - i) / (double)(k - i);
+        }
+        for (int i = 0; i < (int)l - m_prime - k; i++) {
+            binom2 *= (double)((int)l - m - i) / (double)((int)l - m_prime - k - i);
+        }
+
+        double term = pow(cos_half, pow_cos) * pow(sin_half, pow_sin);
+        int sign = (k % 2 == 0) ? 1 : -1;
+        sum += sign * binom1 * binom2 * term;
+    }
+
+    return sum;
+}
+
+// Compute Wigner-D matrix element D^l_{m'm}(R) from rotation matrix R
+static double wigner_D_element(size_t l, int m_prime, int m, const double* R) {
+    // Extract Euler angles (ZYZ convention) from rotation matrix
+    double r33 = R[8];  // R[2,2]
+    double r31 = R[6], r32 = R[7];  // R[2,0], R[2,1]
+    double r13 = R[2], r23 = R[5];  // R[0,2], R[1,2]
+
+    double beta = acos(fmax(-1.0, fmin(1.0, r33)));
+    double alpha = 0.0, gamma = 0.0;
+
+    double sin_beta = sin(beta);
+    if (fabs(sin_beta) > EPSILON) {
+        alpha = atan2(r32, r31);
+        gamma = atan2(r23, -r13);
+    } else if (r33 > 0) {
+        // beta ~ 0: R[0,0] = cos(alpha+gamma), R[0,1] = sin(alpha+gamma)
+        alpha = atan2(R[1], R[0]) / 2.0;
+        gamma = alpha;
+    } else {
+        // beta ~ pi: R[0,0] = -cos(alpha-gamma), R[0,1] = sin(alpha-gamma)
+        alpha = atan2(R[1], -R[0]) / 2.0;
+        gamma = -alpha;
+    }
+
+    // D^l_{m'm}(alpha, beta, gamma) = e^{-i m' alpha} d^l_{m'm}(beta) e^{-i m gamma}
+    double d_elem = wigner_small_d(l, m_prime, m, beta);
+    double phase = -m_prime * alpha - m * gamma;
+
+    // Return real part for real spherical harmonics
+    return d_elem * cos(phase);
+}
+
 void steerable_convolution(
     const double* input_features,
     const double* filter_weights,
@@ -160,31 +248,95 @@ void steerable_convolution(
     const SE3Transform* transform,
     size_t num_channels
 ) {
-    // Implementation of SE(3)-equivariant convolution
-    // This is a simplified version - full implementation would handle all irreps
-    
+    // Full SE(3)-equivariant steerable convolution implementation
+    // Rotates spherical harmonic features using Wigner-D matrices and averages
+
     size_t num_rotations = transform->num_layers;
-    
-    // For each output channel
-    #pragma omp parallel for collapse(2)
-    for (size_t l = 0; l <= MAX_SPHERICAL_DEGREE; l++) {
-        for (size_t m = 0; m <= l; m++) {
-            size_t out_idx = l * l + m;
-            
-            // Apply steerable filters
+    size_t num_irreps = (MAX_SPHERICAL_DEGREE + 1) * (MAX_SPHERICAL_DEGREE + 1);
+
+    if (num_rotations == 0) {
+        // No rotation sampling - just apply filters directly
+        #pragma omp parallel for collapse(2)
+        for (size_t l = 0; l <= MAX_SPHERICAL_DEGREE; l++) {
+            for (int m = -(int)l; m <= (int)l; m++) {
+                size_t out_idx = l * l + l + m;
+                for (size_t c = 0; c < num_channels; c++) {
+                    double sum = 0.0;
+                    for (size_t n = 0; n < NUM_RADIAL_BASES; n++) {
+                        size_t weight_idx = (out_idx * num_channels + c) * NUM_RADIAL_BASES + n;
+                        sum += filter_weights[weight_idx] * input_features[out_idx];
+                    }
+                    output_features[out_idx * num_channels + c] = sum;
+                }
+            }
+        }
+        return;
+    }
+
+    // Initialize output
+    memset(output_features, 0, num_irreps * num_channels * sizeof(double));
+
+    // Allocate buffer for rotated irrep features
+    double* rotated_irreps = malloc(num_irreps * sizeof(double));
+    if (!rotated_irreps) return;
+
+    // Sample rotations and average (Monte Carlo integration over SO(3))
+    for (size_t r = 0; r < num_rotations; r++) {
+        const double* R = &transform->rotation_matrices[r * 9];
+        double weight = transform->weights ? transform->weights[r] : 1.0;
+
+        // Rotate each irrep using Wigner-D matrices
+        for (size_t l = 0; l <= MAX_SPHERICAL_DEGREE; l++) {
+            size_t l_offset = l * l + l;  // Base index for m=0 of this l
+
+            for (int m_prime = -(int)l; m_prime <= (int)l; m_prime++) {
+                double rotated = 0.0;
+
+                // Sum over original m values: Y'^l_{m'} = sum_m D^l_{m'm}(R) Y^l_m
+                for (int m = -(int)l; m <= (int)l; m++) {
+                    double D_elem = wigner_D_element(l, m_prime, m, R);
+                    rotated += D_elem * input_features[l_offset + m];
+                }
+                rotated_irreps[l_offset + m_prime] = rotated;
+            }
+        }
+
+        // Apply steerable filters to rotated features and accumulate
+        #pragma omp parallel for
+        for (size_t idx = 0; idx < num_irreps; idx++) {
             for (size_t c = 0; c < num_channels; c++) {
                 double sum = 0.0;
-                
-                // Convolve with basis functions
+
+                // Radial convolution with filter weights
                 for (size_t n = 0; n < NUM_RADIAL_BASES; n++) {
-                    size_t weight_idx = (out_idx * num_channels + c) * NUM_RADIAL_BASES + n;
-                    sum += filter_weights[weight_idx] * input_features[c];
+                    size_t weight_idx = (idx * num_channels + c) * NUM_RADIAL_BASES + n;
+                    sum += filter_weights[weight_idx] * rotated_irreps[idx];
                 }
-                
-                output_features[out_idx * num_channels + c] = sum;
+
+                #pragma omp atomic
+                output_features[idx * num_channels + c] += sum * weight;
             }
         }
     }
+
+    // Normalize by total weight (or number of samples)
+    double total_weight = 0.0;
+    if (transform->weights) {
+        for (size_t r = 0; r < num_rotations; r++) {
+            total_weight += transform->weights[r];
+        }
+    } else {
+        total_weight = (double)num_rotations;
+    }
+
+    if (total_weight > EPSILON) {
+        double inv_weight = 1.0 / total_weight;
+        for (size_t i = 0; i < num_irreps * num_channels; i++) {
+            output_features[i] *= inv_weight;
+        }
+    }
+
+    free(rotated_irreps);
 }
 
 void spherical_harmonic_transform(

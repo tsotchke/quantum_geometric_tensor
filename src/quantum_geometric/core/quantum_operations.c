@@ -9,16 +9,14 @@
 #include <math.h>
 #include <complex.h>
 
-// LAPACK double complex compatibility for Apple Accelerate framework
+// LAPACK double complex compatibility
+// Both Apple's __LAPACK_double_complex and C99 complex double have the same
+// memory layout (two contiguous doubles for real and imaginary parts).
+// We use complex double* for maximum portability and IDE compatibility.
 #ifdef __APPLE__
     #include <Accelerate/Accelerate.h>
-    // __LAPACK_double_complex is typedef'd to 'double complex' in lapack_types.h
-    // Our ComplexDouble struct has the same memory layout (two contiguous doubles)
-    #define LAPACK_COMPLEX_CAST(ptr) ((__LAPACK_double_complex*)(ptr))
-#else
-    // On Linux/other platforms, use complex double directly
-    #define LAPACK_COMPLEX_CAST(ptr) ((complex double*)(ptr))
 #endif
+#define LAPACK_COMPLEX_CAST(ptr) ((complex double*)(void*)(ptr))
 
 // Platform-specific SIMD includes and compatibility
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
@@ -221,19 +219,12 @@
 #define HARDWARE_CPU HARDWARE_SIMULATOR
 #endif
 
-// Error correction code types
-#ifndef ERROR_CODE_THREE_QUBIT
-#define ERROR_CODE_THREE_QUBIT 3
-#endif
-#ifndef ERROR_CODE_FIVE_QUBIT
-#define ERROR_CODE_FIVE_QUBIT 5
-#endif
-#ifndef ERROR_CODE_SEVEN_QUBIT
-#define ERROR_CODE_SEVEN_QUBIT 7
-#endif
-#ifndef ERROR_CODE_NINE_QUBIT
-#define ERROR_CODE_NINE_QUBIT 9
-#endif
+// Error correction code types are defined in error_codes.h as error_correction_code_t
+// Map old macro names to new enum values for backwards compatibility
+#define ERROR_CODE_THREE_QUBIT ERROR_CORRECTION_THREE_QUBIT
+#define ERROR_CODE_FIVE_QUBIT ERROR_CORRECTION_FIVE_QUBIT
+#define ERROR_CODE_SEVEN_QUBIT ERROR_CORRECTION_SEVEN_QUBIT
+#define ERROR_CODE_NINE_QUBIT ERROR_CORRECTION_NINE_QUBIT
 
 // ============================================================================
 // GPU Backend Integration
@@ -1940,7 +1931,7 @@ qgt_error_t quantum_operator_validate_resources(const quantum_operator_t* operat
 // Error correction functions
 qgt_error_t quantum_operator_encode(quantum_operator_t* encoded,
                                   const quantum_operator_t* operator,
-                                  quantum_error_code_t code) {
+                                  error_correction_code_t code) {
     if (!encoded || !operator) {
         return QGT_ERROR_INVALID_ARGUMENT;
     }
@@ -2178,7 +2169,7 @@ qgt_error_t quantum_operator_encode(quantum_operator_t* encoded,
 
 qgt_error_t quantum_operator_decode(quantum_operator_t* decoded,
                                   const quantum_operator_t* operator,
-                                  quantum_error_code_t code) {
+                                  error_correction_code_t code) {
     if (!decoded || !operator) {
         return QGT_ERROR_INVALID_ARGUMENT;
     }
@@ -2549,7 +2540,7 @@ qgt_error_t quantum_operator_decode(quantum_operator_t* decoded,
 }
 
 qgt_error_t quantum_operator_correct(quantum_operator_t* operator,
-                                   quantum_error_code_t code) {
+                                   error_correction_code_t code) {
     if (!operator) {
         return QGT_ERROR_INVALID_ARGUMENT;
     }

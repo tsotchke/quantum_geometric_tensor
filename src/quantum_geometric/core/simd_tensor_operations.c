@@ -442,6 +442,11 @@ int tensor_conv_avx512(const double* input,
         total_output *= output_dims[i];
     }
 
+    // Validate that input is large enough for convolution
+    if (total_input < total_kernel + total_output - 1) {
+        return false;  // Input too small for requested convolution
+    }
+
     // Process in blocks
     for (size_t out_pos = 0; out_pos < total_output; out_pos += block_size) {
         size_t current_block = min(block_size, total_output - out_pos);

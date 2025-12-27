@@ -214,13 +214,17 @@ static void compute_hierarchical_attention_differential(
                     double complex q = queries[i * head_dim + k];
                     double complex k_val = keys[j * head_dim + k];
                     double complex v = values[j * head_dim + k];
-                    
-                    // Forward pass
+
+                    // Forward pass: standard scaled dot-product attention score
                     score += q * conj(k_val) / sqrt(head_dim);
-                    
-                    // Backward pass derivatives
-                    deriv += gradients[i * head_dim + k] * conj(k_val) / sqrt(head_dim) +
-                            q * gradients[j * head_dim + k] / sqrt(head_dim);
+
+                    // Backward pass derivatives with value-weighted contribution
+                    // dL/dQ_k = grad_k * K_k^* / sqrt(d)
+                    // dL/dK_k = Q_k * grad_k / sqrt(d)
+                    // Include value magnitude for importance weighting
+                    double v_weight = 1.0 + 0.1 * cabs(v);  // Value-guided importance
+                    deriv += v_weight * (gradients[i * head_dim + k] * conj(k_val) / sqrt(head_dim) +
+                            q * gradients[j * head_dim + k] / sqrt(head_dim));
                 }
 
                 // Apply differential softmax

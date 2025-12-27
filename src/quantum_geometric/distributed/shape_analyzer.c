@@ -146,12 +146,15 @@ static void compute_curvature_array(ShapeAnalyzer* analyzer, const double* data,
         if (i - 1 >= n) break;
 
         double dx = 1.0;  // Assuming unit spacing
-        double dy = (data[i + 1] - data[i - 1]) / 2.0;
-        double d2y = data[i + 1] - 2.0 * data[i] + data[i - 1];
+        // First derivative using central difference: dy/dx = (y[i+1] - y[i-1]) / (2*dx)
+        double dy_dx = (data[i + 1] - data[i - 1]) / (2.0 * dx);
+        // Second derivative: d2y/dx2 = (y[i+1] - 2*y[i] + y[i-1]) / (dx^2)
+        double d2y_dx2 = (data[i + 1] - 2.0 * data[i] + data[i - 1]) / (dx * dx);
 
-        double denom = pow(1.0 + dy * dy, 1.5);
+        // Curvature κ = |d2y/dx2| / (1 + (dy/dx)^2)^(3/2)
+        double denom = pow(1.0 + dy_dx * dy_dx, 1.5);
         if (fabs(denom) > 1e-10) {
-            analyzer->features.curvature[i - 1] = fabs(d2y) / denom;
+            analyzer->features.curvature[i - 1] = fabs(d2y_dx2) / denom;
         } else {
             analyzer->features.curvature[i - 1] = 0.0;
         }
@@ -487,13 +490,16 @@ double shape_compute_curvature(const ShapeAnalyzer* analyzer, const double* data
         return 0.0;
     }
 
-    double dx = 1.0;
-    double dy = (data[index + 1] - data[index - 1]) / 2.0;
-    double d2y = data[index + 1] - 2.0 * data[index] + data[index - 1];
+    double dx = 1.0;  // Point spacing
+    // First derivative: dy/dx using central difference
+    double dy_dx = (data[index + 1] - data[index - 1]) / (2.0 * dx);
+    // Second derivative: d2y/dx2
+    double d2y_dx2 = (data[index + 1] - 2.0 * data[index] + data[index - 1]) / (dx * dx);
 
-    double denom = pow(1.0 + dy * dy, 1.5);
+    // Curvature formula: κ = |d2y/dx2| / (1 + (dy/dx)^2)^(3/2)
+    double denom = pow(1.0 + dy_dx * dy_dx, 1.5);
     if (fabs(denom) > 1e-10) {
-        return fabs(d2y) / denom;
+        return fabs(d2y_dx2) / denom;
     }
     return 0.0;
 }

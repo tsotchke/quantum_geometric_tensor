@@ -504,7 +504,7 @@ int record_performance_measurement(int metric_id,
                                  const void* measurement_data,
                                  double timestamp) {
     if (!monitor_state || !monitor_state->initialized ||
-        metric_id < 0 || metric_id >= monitor_state->metrics_count ||
+        metric_id < 0 || (size_t)metric_id >= monitor_state->metrics_count ||
         !measurement_data) {
         return -1;
     }
@@ -546,7 +546,7 @@ int get_performance_statistics(int metric_id,
                              double* average_value,
                              double* peak_value) {
     if (!monitor_state || !monitor_state->initialized ||
-        metric_id < 0 || metric_id >= monitor_state->metrics_count ||
+        metric_id < 0 || (size_t)metric_id >= monitor_state->metrics_count ||
         !current_value || !average_value || !peak_value) {
         return -1;
     }
@@ -563,7 +563,7 @@ int set_performance_threshold(int metric_id,
                             int threshold_type,
                             double threshold_value) {
     if (!monitor_state || !monitor_state->initialized ||
-        metric_id < 0 || metric_id >= monitor_state->metrics_count) {
+        metric_id < 0 || (size_t)metric_id >= monitor_state->metrics_count) {
         return -1;
     }
 
@@ -578,7 +578,7 @@ int register_performance_callback(int metric_id,
                                 int callback_type,
                                 void (*callback_function)(void*)) {
     if (!monitor_state || !monitor_state->initialized ||
-        metric_id < 0 || metric_id >= monitor_state->metrics_count ||
+        metric_id < 0 || (size_t)metric_id >= monitor_state->metrics_count ||
         !callback_function) {
         return -1;
     }
@@ -604,8 +604,8 @@ int generate_performance_report(char* report_buffer, size_t buffer_size) {
                           "Active Metrics: %zu\n\n",
                           monitor_state->metrics_count);
 
-    for (size_t i = 0; i < monitor_state->metrics_count && written < buffer_size; i++) {
-        written += snprintf(report_buffer + written, buffer_size - written,
+    for (size_t i = 0; i < monitor_state->metrics_count && written >= 0 && (size_t)written < buffer_size; i++) {
+        written += snprintf(report_buffer + written, buffer_size - (size_t)written,
                           "Metric: %s\n"
                           "Current Value: %.2f\n"
                           "Average Value: %.2f\n"

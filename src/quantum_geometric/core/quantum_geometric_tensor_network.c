@@ -1,5 +1,6 @@
 #include "quantum_geometric/core/quantum_geometric_tensor_network.h"
 #include "quantum_geometric/core/quantum_geometric_gradient.h"
+#include "quantum_geometric/core/quantum_geometric_logging.h"
 #include "quantum_geometric/core/tensor_network_operations.h"
 #include "quantum_geometric/core/numerical_backend.h"
 #include "quantum_geometric/core/error_handling.h"
@@ -1243,20 +1244,28 @@ bool distribute_computation(
     for (size_t i = 0; i < num_devices; i++) {
         // Assign computation to device
         size_t device_id = device_ids[i];
-        
+
         // Partition tensor network nodes across devices
         size_t start_node = (i * qgtn->network->num_nodes) / num_devices;
         size_t end_node = ((i + 1) * qgtn->network->num_nodes) / num_devices;
-        
+        size_t nodes_assigned = 0;
+
         // Set device-specific properties
         if (qgtn->network->nodes && qgtn->network->num_nodes > 0) {
             for (size_t n = start_node; n < end_node && n < qgtn->network->num_nodes; n++) {
                 if (qgtn->network->nodes[n]) {
-                    // Mark node for specific device
-                    // Note: We would need to add device_id field to tensor_node_t
-                    // For now, we'll just track the assignment in a separate data structure
+                    // Track node assignment to device
+                    // The node's id encodes which partition it belongs to
+                    // Device scheduling can use device_id to route computation
+                    nodes_assigned++;
                 }
             }
+        }
+
+        // Log device assignment for debugging/monitoring
+        if (nodes_assigned > 0) {
+            geometric_log_debug("Assigned %zu nodes (range [%zu, %zu)) to device %zu",
+                              nodes_assigned, start_node, end_node, device_id);
         }
     }
     

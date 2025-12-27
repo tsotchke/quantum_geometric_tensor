@@ -1290,12 +1290,10 @@ static double* apply_symmetry_correction(const double* results,
 
         switch (symmetry_type) {
             case 0: {  // Parity symmetry
-                // Count bits in i
+                // Count bits in i (only count num_qubits bits)
                 int parity = 0;
-                size_t bits = i;
-                while (bits) {
-                    parity ^= (bits & 1);
-                    bits >>= 1;
+                for (size_t b = 0; b < num_qubits; b++) {
+                    parity ^= ((i >> b) & 1);
                 }
                 accept = (parity == target_parity);
                 break;

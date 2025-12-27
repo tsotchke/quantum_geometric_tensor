@@ -54,7 +54,7 @@ quantum_register_t* quantum_register_create_empty(size_t size) {
     return reg;
 }
 
-quantum_register_t* quantum_register_create_state(complex double* amplitudes, size_t size, quantum_system_t* system) {
+quantum_register_t* quantum_register_create_state(const complex double* amplitudes, size_t size, quantum_system_t* system) {
     if (!amplitudes || size == 0) {
         return NULL;
     }

@@ -211,6 +211,11 @@ bool init_error_prediction(PredictionState* state, const PredictionConfig* confi
     // Copy configuration
     memcpy(&state->config, config, sizeof(PredictionConfig));
 
+    // Initialize prediction_lookahead with default if not set
+    if (state->config.prediction_lookahead <= 0.0) {
+        state->config.prediction_lookahead = 1.0;  // Default: no timing adjustment
+    }
+
     // Initialize hardware context
     initialize_hardware_context();
 
@@ -385,13 +390,19 @@ bool verify_predictions(PredictionState* state, const quantum_state_t* current_s
 
         // Weighted average with confidence-based weighting
         double confidence_weight = total_confidence / state->num_predictions;
+        double correct_confidence_weight = (correct_predictions > 0) ?
+            correct_confidence / correct_predictions : 0.0;
 
         // Bayesian update with prior (current success_rate) and likelihood (batch_rate)
         // Using a beta-binomial model approximation
+        // Weight update by batch_rate and confidence of correct predictions
         double alpha = state->success_rate * 10.0;  // Prior pseudo-counts
         double beta = (1.0 - state->success_rate) * 10.0;
-        alpha += correct_predictions;
-        beta += state->num_predictions - correct_predictions;
+
+        // Scale updates by confidence - high confidence correct predictions are weighted more
+        double update_weight = 1.0 + correct_confidence_weight * batch_rate;
+        alpha += correct_predictions * update_weight;
+        beta += (state->num_predictions - correct_predictions);
 
         state->success_rate = alpha / (alpha + beta);
 
@@ -491,6 +502,17 @@ bool update_prediction_model(PredictionState* state) {
     state->config.confidence_threshold = fmax(0.2, fmin(0.95, state->config.confidence_threshold));
     state->config.temporal_weight = fmax(0.1, fmin(3.0, state->config.temporal_weight));
     state->config.spatial_weight = fmax(0.1, fmin(3.0, state->config.spatial_weight));
+
+    // Adjust prediction lookahead based on average latency
+    // If detection latency is high, we need to predict earlier (increase lookahead)
+    // If latency is low, we can predict more precisely (decrease lookahead)
+    double target_latency = 0.5;  // Target latency in normalized units
+    if (avg_latency > target_latency * 1.2) {
+        state->config.prediction_lookahead *= 1.05;  // Increase lookahead
+    } else if (avg_latency < target_latency * 0.8) {
+        state->config.prediction_lookahead *= 0.98;  // Decrease lookahead for precision
+    }
+    state->config.prediction_lookahead = fmax(1.0, fmin(10.0, state->config.prediction_lookahead));
 
     // Update hardware context calibration
     g_hw_context.cumulative_prediction_error += (1.0 - success_rate);

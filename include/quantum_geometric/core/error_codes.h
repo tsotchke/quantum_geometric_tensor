@@ -1,7 +1,19 @@
 #ifndef QUANTUM_ERROR_CODES_H
 #define QUANTUM_ERROR_CODES_H
 
-// Error codes
+// Error correction code types (for quantum error correction)
+// These specify the type of error correcting code to use
+typedef enum {
+    ERROR_CORRECTION_NONE = 0,          // No error correction
+    ERROR_CORRECTION_THREE_QUBIT = 3,   // Three-qubit repetition code
+    ERROR_CORRECTION_FIVE_QUBIT = 5,    // Five-qubit perfect code
+    ERROR_CORRECTION_SEVEN_QUBIT = 7,   // Steane [[7,1,3]] code
+    ERROR_CORRECTION_NINE_QUBIT = 9,    // Shor [[9,1,3]] code
+    ERROR_CORRECTION_SURFACE = 10,      // Surface code
+    ERROR_CORRECTION_COLOR = 11         // Color code
+} error_correction_code_t;
+
+// Error return codes (for function return values)
 typedef enum {
     QGT_SUCCESS = 0,
     QGT_ERROR_INVALID_PARAMETER = -1,

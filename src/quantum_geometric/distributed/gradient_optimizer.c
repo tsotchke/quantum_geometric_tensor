@@ -187,6 +187,13 @@ static void apply_optimization(
         case HYBRID_ADAM:
             apply_hybrid_adam(state, gradients, size);
             break;
+
+        case SGD:
+        case LBFGS:
+        case NATURAL_GRADIENT:
+        default:
+            // These optimizers use the default gradient step
+            break;
     }
 }
 

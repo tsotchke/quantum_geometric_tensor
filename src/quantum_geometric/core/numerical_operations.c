@@ -77,17 +77,40 @@ double complex qgt_vector_dot(const double complex* a, const double complex* b, 
         result += a[i] * b[i];
     }
 #elif QGT_USE_NEON
-    // Use NEON for complex dot product
+    // Use NEON for complex dot product (processes 2 complex numbers per iteration)
     float64x2_t sum_re = vdupq_n_f64(0.0);
     float64x2_t sum_im = vdupq_n_f64(0.0);
 
-    for (size_t i = 0; i + 1 < n; i += 1) {
-        double a_re = creal(a[i]);
-        double a_im = cimag(a[i]);
-        double b_re = creal(b[i]);
-        double b_im = cimag(b[i]);
+    for (size_t i = 0; i + 2 <= n; i += 2) {
+        // Load 2 complex numbers from each array
+        float64x2_t a0 = vld1q_f64((double*)&a[i]);       // a[i].re, a[i].im
+        float64x2_t a1 = vld1q_f64((double*)&a[i + 1]);   // a[i+1].re, a[i+1].im
+        float64x2_t b0 = vld1q_f64((double*)&b[i]);       // b[i].re, b[i].im
+        float64x2_t b1 = vld1q_f64((double*)&b[i + 1]);   // b[i+1].re, b[i+1].im
 
-        result += (a_re * b_re - a_im * b_im) + I * (a_re * b_im + a_im * b_re);
+        // Separate real and imaginary parts
+        float64x2_t a_re = vzip1q_f64(a0, a1);  // a[i].re, a[i+1].re
+        float64x2_t a_im = vzip2q_f64(a0, a1);  // a[i].im, a[i+1].im
+        float64x2_t b_re = vzip1q_f64(b0, b1);  // b[i].re, b[i+1].re
+        float64x2_t b_im = vzip2q_f64(b0, b1);  // b[i].im, b[i+1].im
+
+        // Complex multiply: (a_re + i*a_im) * (b_re + i*b_im)
+        // Real part: a_re*b_re - a_im*b_im
+        // Imag part: a_re*b_im + a_im*b_re
+        sum_re = vfmaq_f64(sum_re, a_re, b_re);    // sum_re += a_re * b_re
+        sum_re = vfmsq_f64(sum_re, a_im, b_im);    // sum_re -= a_im * b_im
+        sum_im = vfmaq_f64(sum_im, a_re, b_im);    // sum_im += a_re * b_im
+        sum_im = vfmaq_f64(sum_im, a_im, b_re);    // sum_im += a_im * b_re
+    }
+
+    // Reduce NEON sums to scalar
+    double re_sum = vgetq_lane_f64(sum_re, 0) + vgetq_lane_f64(sum_re, 1);
+    double im_sum = vgetq_lane_f64(sum_im, 0) + vgetq_lane_f64(sum_im, 1);
+    result = re_sum + I * im_sum;
+
+    // Handle remaining element if n is odd
+    for (size_t i = (n / 2) * 2; i < n; i++) {
+        result += a[i] * b[i];
     }
 #else
     // Scalar fallback

@@ -384,12 +384,12 @@ int distributed_manager_get_local_batch(distributed_manager_t* manager,
     size_t samples_per_rank = total_samples / manager->config.world_size;
     size_t remainder = total_samples % manager->config.world_size;
     
-    *start_idx = manager->config.local_rank * samples_per_rank;
-    *start_idx += (manager->config.local_rank < remainder) ? 
-                  manager->config.local_rank : remainder;
-    
+    *start_idx = (size_t)manager->config.local_rank * samples_per_rank;
+    *start_idx += ((size_t)manager->config.local_rank < remainder) ?
+                  (size_t)manager->config.local_rank : remainder;
+
     *end_idx = *start_idx + samples_per_rank;
-    if (manager->config.local_rank < remainder) {
+    if ((size_t)manager->config.local_rank < remainder) {
         (*end_idx)++;
     }
     
@@ -491,12 +491,24 @@ int distributed_manager_handle_failure(distributed_manager_t* manager,
     MPI_Comm_rank(state->world_comm, &rank);
     MPI_Comm_size(state->world_comm, &size);
     
-    // Step 1: Detect process failure
+    // Step 1: Detect process failure using MPI_Iprobe
     int err_code;
     MPI_Status status;
-    
-    // Send heartbeat to failed rank
-    err_code = MPI_Send(&rank, 1, MPI_INT, failed_rank, 0, state->world_comm);
+    int flag = 0;
+
+    // Check if the suspected failed rank can respond
+    // Use MPI_Iprobe to check for any pending messages from the rank
+    err_code = MPI_Iprobe((int)failed_rank, MPI_ANY_TAG, state->world_comm, &flag, &status);
+
+    // Also send heartbeat to failed rank
+    err_code = MPI_Send(&rank, 1, MPI_INT, (int)failed_rank, 0, state->world_comm);
+
+    // If probe found a message, the rank might still be alive - check its source
+    if (flag && status.MPI_SOURCE == (int)failed_rank) {
+        // Rank responded, not actually failed
+        return 0;
+    }
+
     if (err_code != MPI_SUCCESS) {
         // Confirmed failure, proceed with recovery
         
@@ -510,7 +522,7 @@ int distributed_manager_handle_failure(distributed_manager_t* manager,
             
             // Create new world communicator excluding failed rank
             MPI_Comm new_world_comm;
-            int color = (rank != failed_rank) ? 0 : MPI_UNDEFINED;
+            int color = ((size_t)rank != failed_rank) ? 0 : MPI_UNDEFINED;
             err_code = MPI_Comm_split(state->world_comm, color, rank,
                                     &new_world_comm);
             if (err_code != MPI_SUCCESS) {
@@ -565,7 +577,7 @@ int distributed_manager_handle_failure(distributed_manager_t* manager,
             
             // Step 4: Update configuration
             manager->config.world_size--;
-            if (rank > failed_rank) {
+            if ((size_t)rank > failed_rank) {
                 manager->config.local_rank--;
             }
             

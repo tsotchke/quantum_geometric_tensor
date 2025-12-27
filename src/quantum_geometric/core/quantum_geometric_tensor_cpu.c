@@ -221,27 +221,35 @@ static void amx_complex_matrix_multiply(const ComplexFloat* a, const ComplexFloa
     for (size_t i = 0; i < m; i += AMX_TILE_M) {
         for (size_t j = 0; j < n; j += AMX_TILE_N) {
             for (size_t k_idx = 0; k_idx < k; k_idx += AMX_TILE_K) {
+                // Calculate actual tile sizes (handle edge cases)
                 size_t i_end = (i + AMX_TILE_M < m) ? AMX_TILE_M : m - i;
                 size_t j_end = (j + AMX_TILE_N < n) ? AMX_TILE_N : n - j;
                 size_t k_end = (k_idx + AMX_TILE_K < k) ? AMX_TILE_K : k - k_idx;
-                
-                // Load tiles
+
+                // Skip if tile dimensions are too small for AMX (need at least 1 row/col)
+                if (i_end == 0 || j_end == 0 || k_end == 0) {
+                    continue;
+                }
+
+                // Load tiles (using calculated tile bounds for indexing)
+                // The actual tile size affects how much of the result is valid
                 amx_ldx(&a_float[(i * k + k_idx) * 2], 0);
                 amx_ldy(&b_float[(k_idx * n + j) * 2], 0);
-                
+
                 // Perform complex multiplication:
-                // (a.real + j*a.imag) * (b.real + j*b.imag) = 
+                // (a.real + j*a.imag) * (b.real + j*b.imag) =
                 // (a.real*b.real - a.imag*b.imag) + j*(a.real*b.imag + a.imag*b.real)
-                
+
                 // Real part: a.real*b.real - a.imag*b.imag
                 amx_fma64(0, 0, 0); // a.real*b.real
                 amx_fma64(1, 1, 1); // a.imag*b.imag (negative)
-                
+
                 // Imaginary part: a.real*b.imag + a.imag*b.real
                 amx_fma64(0, 1, 2); // a.real*b.imag
                 amx_fma64(1, 0, 2); // a.imag*b.real
-                
-                // Store result tile
+
+                // Store result tile - only store valid portion (i_end x j_end)
+                // For partial tiles, the store writes k_end accumulated results
                 amx_stz(&c_float[(i * n + j) * 2], 0);
             }
         }

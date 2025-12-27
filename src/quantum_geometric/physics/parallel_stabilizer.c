@@ -509,8 +509,17 @@ static double compute_gate_error_variation(size_t qubit_index, bool is_two_qubit
     double gate_time_us = is_two_qubit ?
         gate_time_2q_ns / 1000.0 : gate_time_1q_ns / 1000.0;
 
-    // Coherence-limited error: 1 - exp(-t_gate/T_coherence)
-    double coherence_error = 1.0 - exp(-gate_time_us / t2);
+    // T1 relaxation error: probability of decay during gate
+    // Causes |1⟩ → |0⟩ transitions (amplitude damping)
+    double t1_error = 1.0 - exp(-gate_time_us / t1);
+
+    // T2 dephasing error: loss of phase coherence
+    // Causes randomization of relative phase between |0⟩ and |1⟩
+    double t2_error = 1.0 - exp(-gate_time_us / t2);
+
+    // Combined coherence error (T2 already includes T1 effects, but we model them separately)
+    // Total decoherence is dominated by the faster process
+    double coherence_error = t1_error + t2_error - t1_error * t2_error;
 
     // Control error (irreducible hardware limit)
     double control_error = is_two_qubit ? 0.002 : 0.0002;
@@ -539,7 +548,13 @@ double get_stabilizer_qubit_reliability(size_t qubit_index) {
 
     // Coherence factor: normalized by typical gate sequence length (~100 gates)
     double typical_circuit_time_us = 100 * gate_time_1q_ns / 1000.0;
-    double coherence_reliability = exp(-typical_circuit_time_us / t2);
+
+    // T1 contributes to amplitude damping (energy relaxation to ground state)
+    // T2 contributes to phase damping (loss of superposition coherence)
+    // Combined coherence uses effective T2*: 1/T2* = 1/T2 + 1/(2*T1)
+    // This is the proper NMR-style coherence model
+    double t2_star = 1.0 / (1.0 / t2 + 0.5 / t1);
+    double coherence_reliability = exp(-typical_circuit_time_us / t2_star);
 
     // Gate fidelity contribution
     double gate_error = compute_gate_error_variation(qubit_index, false);

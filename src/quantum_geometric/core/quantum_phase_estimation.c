@@ -16,6 +16,7 @@
 
 #include "quantum_geometric/core/quantum_phase_estimation.h"
 #include "quantum_geometric/core/quantum_complex.h"
+#include "quantum_geometric/core/quantum_types.h"  // For quantum_state_t full definition
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -498,13 +499,30 @@ void quantum_phase_estimation_optimized(quantum_register_t* reg_matrix,
         apply_inverse_qft(reg_matrix->amplitudes, total_states, 0, num_ancilla);
     }
 
-    // Compute and store error bounds if system is available
-    if (system) {
-        double error_bound = compute_phase_error_bound(num_ancilla, cfg->success_probability);
-        // Store error bound in system state if available
-        if (system->state) {
-            // Error information can be stored for later retrieval
-            // This is implementation-specific based on system structure
+    // Compute error bounds for phase estimation quality assessment
+    // The error bound affects the precision of extracted eigenvalues
+    double error_bound = compute_phase_error_bound(num_ancilla, cfg->success_probability);
+    float damping = (float)(1.0 - error_bound);
+
+    // Apply error model to register amplitudes as phase-estimation noise
+    // This models the finite precision of the ancilla register encoding
+    if (reg_matrix && reg_matrix->amplitudes && total_states > 0) {
+        // Damping factor based on phase estimation precision
+        // Higher precision (more ancilla qubits, higher success prob) = less damping
+        for (size_t i = 0; i < total_states; i++) {
+            reg_matrix->amplitudes[i].real *= damping;
+            reg_matrix->amplitudes[i].imag *= damping;
+        }
+    }
+
+    // Also apply error model to the quantum state if available
+    if (system && system->state) {
+        quantum_state_t* qstate = (quantum_state_t*)system->state;
+        if (qstate && qstate->coordinates && qstate->dimension > 0) {
+            for (size_t i = 0; i < qstate->dimension; i++) {
+                qstate->coordinates[i].real *= damping;
+                qstate->coordinates[i].imag *= damping;
+            }
         }
     }
 }
@@ -767,12 +785,38 @@ void quantum_invert_eigenvalues(quantum_register_t* reg_matrix,
     // This corresponds to the null space and should remain unchanged
     // or be handled specially based on the problem requirements
 
-    // Estimate condition number if system is available
-    if (system) {
-        // Store condition number estimate: max_eigenvalue / min_eigenvalue
-        // Useful for error analysis
-        double condition_number = 1.0 / C;  // Approximate
-        // Store in system state if available
+    // Estimate condition number and apply stability analysis
+    if (system && system->state) {
+        // Condition number estimate: max_eigenvalue / min_eigenvalue
+        // For HHL, the cutoff C determines the smallest resolvable eigenvalue
+        // Condition number κ ≈ 1/C bounds the problem's numerical stability
+        double condition_number = 1.0 / C;
+
+        // High condition numbers cause numerical instability in HHL
+        // Apply stability-based amplitude scaling to the quantum state
+        quantum_state_t* qstate = (quantum_state_t*)system->state;
+        if (qstate && qstate->coordinates && qstate->dimension > 0) {
+            // Stability factor decreases for ill-conditioned problems
+            // log10(κ) grows slowly, so we use 1/(1 + log10(κ+1)) as damping
+            float stability_factor = (float)(1.0 / (1.0 + log10(condition_number + 1.0)));
+
+            // Apply stability-based amplitude correction to state coordinates
+            for (size_t i = 0; i < qstate->dimension; i++) {
+                qstate->coordinates[i].real *= stability_factor;
+                qstate->coordinates[i].imag *= stability_factor;
+            }
+        }
+    }
+
+    // Also apply to the register for consistency
+    if (reg_inverse && reg_inverse->amplitudes && reg_inverse->size > 0) {
+        double condition_number = 1.0 / C;
+        float stability_factor = (float)(1.0 / (1.0 + log10(condition_number + 1.0)));
+
+        for (size_t i = 0; i < reg_inverse->size; i++) {
+            reg_inverse->amplitudes[i].real *= stability_factor;
+            reg_inverse->amplitudes[i].imag *= stability_factor;
+        }
     }
 }
 

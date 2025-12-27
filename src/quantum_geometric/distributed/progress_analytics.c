@@ -260,16 +260,16 @@ static void compute_trend_metrics(PerformanceTrend* trend, const ProgressPattern
         trend->slope = (sum_xy - (double)n * mean_x * mean_y) / denominator;
         trend->intercept = mean_y - trend->slope * mean_x;
 
-        // R-squared
-        double ss_res = 0.0, ss_tot = 0.0;
-        for (size_t i = 0; i < n; i++) {
-            double x = (double)i;
-            double y = pattern->values[start + i];
-            double y_pred = trend->slope * x + trend->intercept;
-            ss_res += (y - y_pred) * (y - y_pred);
-            ss_tot += (y - mean_y) * (y - mean_y);
+        // R-squared using efficient formula from sums (avoids second loop)
+        // R^2 = [n * sum_xy - sum_x * sum_y]^2 / [(n * sum_xx - sum_x^2) * (n * sum_yy - sum_y^2)]
+        double ss_xx = (double)n * sum_xx - sum_x * sum_x;
+        double ss_yy = (double)n * sum_yy - sum_y * sum_y;
+        double ss_xy = (double)n * sum_xy - sum_x * sum_y;
+        if (fabs(ss_xx * ss_yy) > 1e-20) {
+            trend->r_squared = (ss_xy * ss_xy) / (ss_xx * ss_yy);
+        } else {
+            trend->r_squared = 0.0;
         }
-        trend->r_squared = (ss_tot > 1e-10) ? 1.0 - (ss_res / ss_tot) : 0.0;
     }
 
     // Check for acceleration (positive second derivative)

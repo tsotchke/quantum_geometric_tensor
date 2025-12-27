@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include "quantum_geometric/hardware/quantum_hardware_abstraction.h"
 #include "quantum_geometric/hybrid/performance_monitoring.h"
 
@@ -10,12 +11,29 @@
 extern "C" {
 #endif
 
-// Forward declarations for internal types
-struct SystemStatus;
-struct OperationQueue;
-struct ExecutionLog;
-struct ResourceManager;
-struct NetworkManager;
+// System status for hardware scheduler
+typedef struct SystemStatus {
+    bool ibm_available;
+    bool rigetti_available;
+    bool dwave_available;
+    double ibm_utilization;
+    double rigetti_utilization;
+    double dwave_utilization;
+    size_t ibm_max_qubits;
+    double ibm_gate_error_rate;
+    double ibm_readout_error_rate;
+    uint32_t ibm_optimization_level;
+    double bandwidth;
+    double latency;
+    size_t buffer_usage;
+    size_t available_memory;
+    int available_threads;
+    double cpu_utilization;
+} SystemStatus;
+typedef struct OperationQueue OperationQueue;
+typedef struct ExecutionLog ExecutionLog;
+typedef struct ResourceManager ResourceManager;
+typedef struct NetworkManager NetworkManager;
 
 // Hardware scheduler configuration
 typedef struct {
@@ -52,12 +70,12 @@ typedef struct {
 
 // Hardware scheduler
 typedef struct HardwareScheduler {
-    struct SystemStatus* status;
+    SystemStatus* status;
     PerformanceMonitor* monitor;
-    struct ResourceManager* resource_mgr;
-    struct NetworkManager* network_mgr;
-    struct OperationQueue* operation_queue;
-    struct ExecutionLog* execution_log;
+    ResourceManager* resource_mgr;
+    NetworkManager* network_mgr;
+    OperationQueue* operation_queue;
+    ExecutionLog* execution_log;
 } HardwareScheduler;
 
 // Initialize hardware scheduler
@@ -72,17 +90,17 @@ int schedule_quantum_operation(HardwareScheduler* scheduler,
 void cleanup_hardware_scheduler(HardwareScheduler* scheduler);
 
 // Helper function declarations (internal use)
-struct SystemStatus* init_system_status(void);
-struct SystemStatus* get_system_status(HardwareScheduler* scheduler);
+SystemStatus* init_system_status(void);
+SystemStatus* get_system_status(HardwareScheduler* scheduler);
 void update_system_status(HardwareScheduler* scheduler, const ExecutionSchedule* schedule);
 
-struct ResourceManager* init_resource_manager(size_t max_memory, int max_threads);
-struct NetworkManager* init_network_manager(double bandwidth, double latency);
-struct OperationQueue* init_operation_queue(size_t max_ops);
-struct ExecutionLog* init_execution_log(void);
+ResourceManager* init_resource_manager(size_t max_memory, int max_threads);
+NetworkManager* init_network_manager(double bandwidth, double latency);
+OperationQueue* init_operation_queue(size_t max_ops);
+ExecutionLog* init_execution_log(void);
 
 struct OperationRequirements* analyze_requirements(const QuantumOperation* op);
-bool check_resources(const struct SystemStatus* status,
+bool check_resources(const SystemStatus* status,
                      const struct OperationRequirements* requirements);
 
 double get_next_start_time(HardwareScheduler* scheduler);

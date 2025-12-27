@@ -6,9 +6,12 @@
 #include "quantum_geometric/core/quantum_circuit_types.h"
 #include "quantum_geometric/core/quantum_state_types.h"
 #include "quantum_geometric/core/error_codes.h"
+#include "quantum_geometric/hardware/quantum_simulator.h"
+#include "quantum_geometric/hardware/quantum_circuit_optimization.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <complex.h>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -115,6 +118,9 @@ static void cleanup_hamiltonian(HamiltonianOperator* hamiltonian) {
 // Circuit Parameter Operations
 // ============================================================================
 
+// Forward declarations
+static void update_circuit_parameters(quantum_circuit_t* circuit, const double* parameters);
+
 // Count parameters in a circuit (parameterized gates)
 static size_t count_parameters(const quantum_circuit_t* circuit) {
     if (!circuit) return 0;
@@ -135,6 +141,287 @@ static size_t count_parameters(const quantum_circuit_t* circuit) {
     }
 
     return count > 0 ? count : 1;  // At least 1 parameter for circuits without explicit params
+}
+
+// Extract current parameters from circuit into array
+static void extract_circuit_parameters(const quantum_circuit_t* circuit, double* parameters) {
+    if (!circuit || !parameters) return;
+
+    size_t param_idx = 0;
+    for (size_t i = 0; i < circuit->num_gates; i++) {
+        if (circuit->gates[i]) {
+            gate_type_t type = circuit->gates[i]->type;
+            if (type == GATE_RX || type == GATE_RY || type == GATE_RZ ||
+                type == GATE_U1 || type == GATE_U2 || type == GATE_U3 ||
+                type == GATE_CRX || type == GATE_CRY || type == GATE_CRZ) {
+                if (circuit->gates[i]->parameters) {
+                    parameters[param_idx] = circuit->gates[i]->parameters[0];
+                } else {
+                    parameters[param_idx] = 0.0;
+                }
+                param_idx++;
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Statevector Simulation Engine
+// ============================================================================
+
+// Apply single-qubit gate to statevector
+// gate_matrix is 2x2 in row-major order
+static void apply_single_qubit_gate(double complex* statevector, size_t num_qubits,
+                                   size_t target, const double complex gate_matrix[4]) {
+    size_t dim = 1ULL << num_qubits;
+    size_t target_mask = 1ULL << target;
+
+    // Process pairs of amplitudes that differ only in the target qubit
+    for (size_t i = 0; i < dim; i++) {
+        if ((i & target_mask) == 0) {
+            size_t j = i | target_mask;  // Partner state with target qubit flipped
+
+            double complex a0 = statevector[i];
+            double complex a1 = statevector[j];
+
+            // Apply 2x2 gate: [a0', a1']^T = G * [a0, a1]^T
+            statevector[i] = gate_matrix[0] * a0 + gate_matrix[1] * a1;
+            statevector[j] = gate_matrix[2] * a0 + gate_matrix[3] * a1;
+        }
+    }
+}
+
+// Apply controlled-NOT gate to statevector
+static void apply_cnot_gate(double complex* statevector, size_t num_qubits,
+                           size_t control, size_t target) {
+    size_t dim = 1ULL << num_qubits;
+    size_t control_mask = 1ULL << control;
+    size_t target_mask = 1ULL << target;
+
+    for (size_t i = 0; i < dim; i++) {
+        // Only apply X to target when control is |1⟩
+        if ((i & control_mask) && !(i & target_mask)) {
+            size_t j = i | target_mask;  // Target qubit flipped
+            double complex temp = statevector[i];
+            statevector[i] = statevector[j];
+            statevector[j] = temp;
+        }
+    }
+}
+
+// Apply controlled-Z gate to statevector
+static void apply_cz_gate(double complex* statevector, size_t num_qubits,
+                         size_t control, size_t target) {
+    size_t dim = 1ULL << num_qubits;
+    size_t control_mask = 1ULL << control;
+    size_t target_mask = 1ULL << target;
+
+    for (size_t i = 0; i < dim; i++) {
+        // Apply phase flip when both qubits are |1⟩
+        if ((i & control_mask) && (i & target_mask)) {
+            statevector[i] *= -1.0;
+        }
+    }
+}
+
+// Standard quantum gates as 2x2 matrices
+static void get_gate_matrix(gate_type_t type, double param, double complex gate_matrix[4]) {
+    switch (type) {
+        case GATE_X:  // Pauli X
+            gate_matrix[0] = 0.0; gate_matrix[1] = 1.0;
+            gate_matrix[2] = 1.0; gate_matrix[3] = 0.0;
+            break;
+        case GATE_Y:  // Pauli Y
+            gate_matrix[0] = 0.0;       gate_matrix[1] = -I;
+            gate_matrix[2] = I;         gate_matrix[3] = 0.0;
+            break;
+        case GATE_Z:  // Pauli Z
+            gate_matrix[0] = 1.0; gate_matrix[1] = 0.0;
+            gate_matrix[2] = 0.0; gate_matrix[3] = -1.0;
+            break;
+        case GATE_H:  // Hadamard
+            gate_matrix[0] = M_SQRT1_2; gate_matrix[1] = M_SQRT1_2;
+            gate_matrix[2] = M_SQRT1_2; gate_matrix[3] = -M_SQRT1_2;
+            break;
+        case GATE_S:  // S gate (sqrt(Z))
+            gate_matrix[0] = 1.0; gate_matrix[1] = 0.0;
+            gate_matrix[2] = 0.0; gate_matrix[3] = I;
+            break;
+        case GATE_T:  // T gate
+            gate_matrix[0] = 1.0; gate_matrix[1] = 0.0;
+            gate_matrix[2] = 0.0; gate_matrix[3] = cexp(I * M_PI / 4.0);
+            break;
+        case GATE_RX:  // Rx(θ) = exp(-iθX/2)
+            gate_matrix[0] = cos(param / 2.0);         gate_matrix[1] = -I * sin(param / 2.0);
+            gate_matrix[2] = -I * sin(param / 2.0);    gate_matrix[3] = cos(param / 2.0);
+            break;
+        case GATE_RY:  // Ry(θ) = exp(-iθY/2)
+            gate_matrix[0] = cos(param / 2.0);  gate_matrix[1] = -sin(param / 2.0);
+            gate_matrix[2] = sin(param / 2.0);  gate_matrix[3] = cos(param / 2.0);
+            break;
+        case GATE_RZ:  // Rz(θ) = exp(-iθZ/2)
+            gate_matrix[0] = cexp(-I * param / 2.0); gate_matrix[1] = 0.0;
+            gate_matrix[2] = 0.0;                    gate_matrix[3] = cexp(I * param / 2.0);
+            break;
+        case GATE_U1:  // U1(λ) = Rz(λ) up to global phase
+            gate_matrix[0] = 1.0;              gate_matrix[1] = 0.0;
+            gate_matrix[2] = 0.0;              gate_matrix[3] = cexp(I * param);
+            break;
+        default:  // Identity
+            gate_matrix[0] = 1.0; gate_matrix[1] = 0.0;
+            gate_matrix[2] = 0.0; gate_matrix[3] = 1.0;
+            break;
+    }
+}
+
+// Execute quantum circuit on statevector
+static bool execute_circuit_on_statevector(const quantum_circuit_t* circuit,
+                                          double complex* statevector) {
+    if (!circuit || !statevector) return false;
+
+    size_t num_qubits = circuit->num_qubits;
+
+    for (size_t g = 0; g < circuit->num_gates; g++) {
+        quantum_gate_t* gate = circuit->gates[g];
+        if (!gate) continue;
+
+        double param = (gate->parameters && gate->num_parameters > 0) ?
+                       gate->parameters[0] : 0.0;
+
+        // Two-qubit gates
+        if (gate->type == GATE_CNOT || gate->type == GATE_CX) {
+            if (gate->num_controls > 0 && gate->num_qubits > 0) {
+                apply_cnot_gate(statevector, num_qubits,
+                               gate->control_qubits[0], gate->target_qubits[0]);
+            }
+        } else if (gate->type == GATE_CZ) {
+            if (gate->num_controls > 0 && gate->num_qubits > 0) {
+                apply_cz_gate(statevector, num_qubits,
+                             gate->control_qubits[0], gate->target_qubits[0]);
+            }
+        } else {
+            // Single-qubit gates
+            double complex gate_matrix[4];
+            get_gate_matrix(gate->type, param, gate_matrix);
+
+            for (size_t q = 0; q < gate->num_qubits; q++) {
+                apply_single_qubit_gate(statevector, num_qubits,
+                                       gate->target_qubits[q], gate_matrix);
+            }
+        }
+    }
+
+    return true;
+}
+
+// Compute expectation value of a Pauli string observable
+// pauli_string is a string like "XZIY" where each character specifies the Pauli
+// operator on that qubit (I=identity, X, Y, Z)
+static double compute_pauli_expectation(const double complex* statevector,
+                                       size_t num_qubits,
+                                       const char* pauli_string) {
+    if (!statevector || !pauli_string) return 0.0;
+
+    size_t dim = 1ULL << num_qubits;
+    size_t len = strlen(pauli_string);
+    if (len != num_qubits) return 0.0;  // Pauli string must match qubit count
+
+    // For Pauli strings, we compute ⟨ψ|P|ψ⟩
+    // We create P|ψ⟩ and compute inner product with |ψ⟩
+    double complex* temp_state = (double complex*)malloc(dim * sizeof(double complex));
+    if (!temp_state) return 0.0;
+
+    // Copy statevector
+    memcpy(temp_state, statevector, dim * sizeof(double complex));
+
+    // Apply Pauli operators from right to left (tensor product order)
+    for (size_t q = 0; q < num_qubits; q++) {
+        char pauli = pauli_string[num_qubits - 1 - q];  // Reverse order for tensor product
+        double complex gate_matrix[4];
+
+        switch (pauli) {
+            case 'I':
+            case 'i':
+                // Identity - no operation needed
+                continue;
+            case 'X':
+            case 'x':
+                gate_matrix[0] = 0.0; gate_matrix[1] = 1.0;
+                gate_matrix[2] = 1.0; gate_matrix[3] = 0.0;
+                break;
+            case 'Y':
+            case 'y':
+                gate_matrix[0] = 0.0;  gate_matrix[1] = -I;
+                gate_matrix[2] = I;    gate_matrix[3] = 0.0;
+                break;
+            case 'Z':
+            case 'z':
+                gate_matrix[0] = 1.0;  gate_matrix[1] = 0.0;
+                gate_matrix[2] = 0.0;  gate_matrix[3] = -1.0;
+                break;
+            default:
+                // Unknown Pauli, treat as identity
+                continue;
+        }
+
+        apply_single_qubit_gate(temp_state, num_qubits, q, gate_matrix);
+    }
+
+    // Compute inner product ⟨ψ|P|ψ⟩ = Σ_i conj(ψ_i) * (Pψ)_i
+    double complex expectation = 0.0;
+    for (size_t i = 0; i < dim; i++) {
+        expectation += conj(statevector[i]) * temp_state[i];
+    }
+
+    free(temp_state);
+
+    // Expectation value must be real for Hermitian operators
+    return creal(expectation);
+}
+
+// Compute expectation value for a specific parameter configuration
+// This is the core quantum computation - full statevector simulation
+static double evaluate_circuit_expectation(quantum_circuit_t* circuit,
+                                          const HamiltonianOperator* hamiltonian,
+                                          const double* parameters) {
+    if (!circuit || !hamiltonian || !parameters) return INFINITY;
+
+    size_t num_qubits = circuit->num_qubits;
+    if (num_qubits == 0 || num_qubits > 24) return INFINITY;  // Limit for classical simulation
+
+    size_t dim = 1ULL << num_qubits;
+
+    // Update circuit with given parameters
+    update_circuit_parameters(circuit, parameters);
+
+    // Allocate statevector initialized to |0...0⟩
+    double complex* statevector = (double complex*)calloc(dim, sizeof(double complex));
+    if (!statevector) return INFINITY;
+    statevector[0] = 1.0;  // Initial state |0...0⟩
+
+    // Execute circuit to prepare the variational state |ψ(θ)⟩
+    if (!execute_circuit_on_statevector(circuit, statevector)) {
+        free(statevector);
+        return INFINITY;
+    }
+
+    // Compute expectation value ⟨ψ(θ)|H|ψ(θ)⟩
+    // H = Σ_i c_i P_i where P_i are Pauli strings
+    double energy = 0.0;
+
+    for (size_t i = 0; i < hamiltonian->num_terms; i++) {
+        double coeff = hamiltonian->coefficients[i];
+        const char* pauli_string = hamiltonian->pauli_strings[i];
+
+        if (pauli_string) {
+            double term_expectation = compute_pauli_expectation(statevector, num_qubits,
+                                                                pauli_string);
+            energy += coeff * term_expectation;
+        }
+    }
+
+    free(statevector);
+    return energy;
 }
 
 // Update circuit parameters (for variational algorithms)
@@ -201,53 +488,148 @@ static qgt_error_t append_parameterized_circuit(quantum_circuit_t* target,
 // Expectation Value Computation
 // ============================================================================
 
-// Compute expectation value of Hamiltonian for VQE
+// Compute expectation value of Hamiltonian for VQE with parameter shift gradients
 static double compute_expectation_value(quantum_circuit_t* circuit,
                                        const HamiltonianOperator* hamiltonian,
                                        double* gradients) {
     if (!circuit || !hamiltonian) return INFINITY;
 
-    double energy = 0.0;
+    // Evaluate the circuit at current parameters
+    double energy = evaluate_circuit_expectation(circuit, hamiltonian, NULL);
 
-    // For each term in the Hamiltonian, compute expectation value
-    // This is a simplified implementation - full version would simulate the circuit
-    for (size_t i = 0; i < hamiltonian->num_terms; i++) {
-        double coeff = hamiltonian->coefficients[i];
-        // Simplified: assume random expectation values for demonstration
-        // Real implementation would prepare state, measure in Pauli basis
-        double term_expectation = coeff * (2.0 * ((double)rand() / RAND_MAX) - 1.0);
-        energy += term_expectation;
-    }
-
-    // Compute gradients using parameter shift rule (simplified)
+    // Compute gradients using parameter shift rule:
+    // ∂⟨H⟩/∂θ = (⟨H⟩_{θ+π/2} - ⟨H⟩_{θ-π/2}) / 2
     if (gradients) {
         size_t num_params = count_parameters(circuit);
         double shift = M_PI / 2.0;
 
-        for (size_t p = 0; p < num_params; p++) {
-            // Simplified gradient: random value for demonstration
-            // Real implementation uses parameter shift rule
-            gradients[p] = (2.0 * ((double)rand() / RAND_MAX) - 1.0) * 0.1;
+        // Extract current parameters
+        double* params = malloc(num_params * sizeof(double));
+        if (!params) return energy;
+
+        size_t param_idx = 0;
+        for (size_t i = 0; i < circuit->num_gates && param_idx < num_params; i++) {
+            if (circuit->gates[i]) {
+                gate_type_t type = circuit->gates[i]->type;
+                if (type == GATE_RX || type == GATE_RY || type == GATE_RZ ||
+                    type == GATE_U1 || type == GATE_U2 || type == GATE_U3 ||
+                    type == GATE_CRX || type == GATE_CRY || type == GATE_CRZ) {
+                    params[param_idx] = circuit->gates[i]->parameters ?
+                                        circuit->gates[i]->parameters[0] : 0.0;
+                    param_idx++;
+                }
+            }
         }
+
+        // Compute gradient for each parameter using parameter shift rule
+        for (size_t p = 0; p < num_params; p++) {
+            double original = params[p];
+
+            // Shift parameter by +π/2
+            params[p] = original + shift;
+            update_circuit_parameters(circuit, params);
+            double e_plus = evaluate_circuit_expectation(circuit, hamiltonian, NULL);
+
+            // Shift parameter by -π/2
+            params[p] = original - shift;
+            update_circuit_parameters(circuit, params);
+            double e_minus = evaluate_circuit_expectation(circuit, hamiltonian, NULL);
+
+            // Parameter shift gradient: (E+ - E-) / 2
+            gradients[p] = (e_plus - e_minus) / 2.0;
+
+            // Restore original parameter
+            params[p] = original;
+        }
+
+        // Restore original circuit parameters
+        update_circuit_parameters(circuit, params);
+        free(params);
     }
 
     return energy;
 }
 
-// Compute QAOA cost function
+// Compute QAOA cost function using statevector simulation
+// QAOA objective: ⟨ψ(γ,β)|C|ψ(γ,β)⟩ where C is the cost Hamiltonian
 static double compute_qaoa_cost(quantum_circuit_t* circuit,
                                double* gradients) {
     if (!circuit) return INFINITY;
 
-    // Simplified cost computation
-    // Real implementation would execute circuit and measure in computational basis
-    double cost = ((double)rand() / RAND_MAX) * 10.0;
+    size_t num_qubits = circuit->num_qubits;
+    size_t dim = 1ULL << num_qubits;
 
+    // Allocate statevector
+    double complex* statevector = calloc(dim, sizeof(double complex));
+    if (!statevector) return INFINITY;
+    statevector[0] = 1.0;  // |0...0⟩
+
+    // Execute QAOA circuit
+    if (!execute_circuit_on_statevector(circuit, statevector)) {
+        free(statevector);
+        return INFINITY;
+    }
+
+    // Compute cost expectation: ⟨ψ|C|ψ⟩
+    // For MaxCut: C = Σ_{(i,j)∈E} (1 - Z_i Z_j)/2
+    // Here we compute a generic diagonal cost
+    double cost = 0.0;
+    for (size_t i = 0; i < dim; i++) {
+        double prob = cabs(statevector[i]) * cabs(statevector[i]);
+        // Cost function based on bitstring: count number of 1s (simple MaxCut-like)
+        int ones = 0;
+        for (size_t b = 0; b < num_qubits; b++) {
+            if (i & (1ULL << b)) ones++;
+        }
+        // Cost contribution: number of pairs with different bits
+        int zeros = (int)num_qubits - ones;
+        cost += prob * (double)(ones * zeros);
+    }
+
+    free(statevector);
+
+    // Compute gradients using parameter shift rule
     if (gradients) {
         size_t num_params = count_parameters(circuit);
-        for (size_t p = 0; p < num_params; p++) {
-            gradients[p] = (2.0 * ((double)rand() / RAND_MAX) - 1.0) * 0.1;
+        double shift = M_PI / 2.0;
+
+        double* params = malloc(num_params * sizeof(double));
+        if (!params) return cost;
+
+        // Extract current parameters
+        size_t param_idx = 0;
+        for (size_t i = 0; i < circuit->num_gates && param_idx < num_params; i++) {
+            if (circuit->gates[i]) {
+                gate_type_t type = circuit->gates[i]->type;
+                if (type == GATE_RX || type == GATE_RY || type == GATE_RZ ||
+                    type == GATE_U1 || type == GATE_U2 || type == GATE_U3) {
+                    params[param_idx] = circuit->gates[i]->parameters ?
+                                        circuit->gates[i]->parameters[0] : 0.0;
+                    param_idx++;
+                }
+            }
         }
+
+        // Parameter shift for each parameter
+        for (size_t p = 0; p < num_params; p++) {
+            double original = params[p];
+
+            // +shift
+            params[p] = original + shift;
+            update_circuit_parameters(circuit, params);
+            double c_plus = compute_qaoa_cost(circuit, NULL);  // Recursive but without gradients
+
+            // -shift
+            params[p] = original - shift;
+            update_circuit_parameters(circuit, params);
+            double c_minus = compute_qaoa_cost(circuit, NULL);
+
+            gradients[p] = (c_plus - c_minus) / 2.0;
+            params[p] = original;
+        }
+
+        update_circuit_parameters(circuit, params);
+        free(params);
     }
 
     return cost;

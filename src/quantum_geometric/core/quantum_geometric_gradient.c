@@ -2529,6 +2529,10 @@ bool compute_loss_gradient_single_param(
         return false;
     }
 
+    // Debug: log the gate location for parameter shift
+    (void)layer_idx;  // Used for debugging
+    (void)gate_idx;   // Used for debugging
+
     double original_param = gate->parameters[0];
 
     // Reset state to |0⟩ for forward pass

@@ -310,16 +310,22 @@ static bool update_error_model(MitigationCache* cache,
 
         // Update error rate
         double old_rate = cache->error_rates[i];
-        double new_rate = total_weight > 0.0 ? 
+        double new_rate = total_weight > 0.0 ?
                          weighted_error_sum / total_weight : 0.0;
-        
-        // Apply exponential moving average
+
+        // Apply exponential moving average with adaptive learning rate
+        // Use more aggressive updates when error_count is high (significant changes)
         double alpha = hw_profile->error_rate_learning_rate;
+        if (error_count > num_results / 4) {
+            // Many errors detected - increase learning rate for faster adaptation
+            alpha = fmin(1.0, alpha * 1.5);
+        }
         cache->error_rates[i] = alpha * new_rate + (1.0 - alpha) * old_rate;
 
-        // Update error variance
+        // Update error variance based on rate change and error frequency
         double diff = new_rate - old_rate;
-        cache->error_variances[i] = sqrt(diff * diff);
+        double error_frequency = total_weight > 0 ? (double)error_count / total_weight : 0;
+        cache->error_variances[i] = sqrt(diff * diff + error_frequency * 0.01);
         
         // Update confidence weight
         cache->confidence_weights[i] = calculate_confidence_weight(&results[0], 

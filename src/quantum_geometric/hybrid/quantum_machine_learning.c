@@ -391,9 +391,15 @@ static quantum_circuit* create_quantum_neural_circuit(
                 add_quantum_dense_layer(circuit,
                     quantum_layers->params[i]);
                 break;
+
+            case LAYER_QUANTUM_GATE:
+            case LAYER_QUANTUM_MEASURE:
+            default:
+                // These layer types are handled elsewhere
+                break;
         }
     }
-    
+
     return circuit;
 }
 

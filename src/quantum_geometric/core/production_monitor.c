@@ -225,9 +225,9 @@ static void log_metrics(const char* component, const char* event, const char* de
     
     // Format log entry
     char log_entry[1024];
-    snprintf(log_entry, sizeof(log_entry), 
+    snprintf(log_entry, sizeof(log_entry),
              "[%s.%06ld] [%s] [%s] %s\n",
-             timestamp, tv.tv_usec, component, event, details);
+             timestamp, (long)tv.tv_usec, component, event, details);
     
     // Write to log file
     pthread_mutex_lock(&monitor_state.log_mutex);

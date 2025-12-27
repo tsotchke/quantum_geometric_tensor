@@ -300,7 +300,7 @@ bool optimize_circuit(IBMBackendState* state, struct quantum_circuit* circuit) {
 
 // Renamed to avoid conflict with other backend implementations
 bool execute_ibm_circuit(IBMBackendState* state,
-                         const struct quantum_circuit* circuit,
+                         const struct QuantumCircuit* circuit,
                          quantum_result* result) {
     if (!state || !circuit || !result) {
         return false;
@@ -769,7 +769,7 @@ static void add_dynamic_decoupling_sequences(struct quantum_circuit* circuit) {
 /**
  * Cancel an IBM Quantum job
  */
-bool cancel_ibm_job(struct IBMBackendConfig* config, const char* job_id) {
+bool cancel_ibm_job(struct IBMConfig* config, const char* job_id) {
     if (!config || !job_id) {
         return false;
     }

@@ -56,6 +56,7 @@ typedef struct PredictionConfig {
     double min_confidence;          // Minimum confidence to report
     bool enable_adaptive;           // Enable adaptive threshold adjustment
     size_t lookahead_steps;         // Number of timesteps to predict ahead
+    double prediction_lookahead;    // Timing multiplier for prediction (adapts to detection latency)
 } PredictionConfig;
 
 // ============================================================================

@@ -13,14 +13,18 @@
 #endif
 
 // Internal logging macro (silent by default, enable for debugging)
+// The do-while ensures arguments are evaluated even when not logging,
+// preventing "unused variable" warnings while optimizing away to nothing
 #ifdef UNIFIED_MEMORY_DEBUG
 #define unified_log(fmt, ...) fprintf(stderr, "[unified_memory] " fmt "\n", ##__VA_ARGS__)
 #else
-#define unified_log(fmt, ...) ((void)0)
+#define unified_log(fmt, ...) do { (void)(fmt); } while(0)
 #endif
 
 // Replace geometric_log_error with our internal logging
-#define geometric_log_error unified_log
+#define geometric_log_error(fmt, ...) do { \
+    if (0) fprintf(stderr, fmt, ##__VA_ARGS__); \
+} while(0)
 
 // Memory pool constants (matching memory_pool.h for compatibility)
 #ifndef QG_POOL_ALIGNMENT

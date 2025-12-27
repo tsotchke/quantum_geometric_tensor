@@ -176,19 +176,19 @@ static bool allocate_attention_buffers(geometric_attention_t* attention) {
         .symmetric = false,
         .positive_definite = false
     };
-    
+
     attention->query_matrix = create_hierarchical_matrix(state_size, state_size);
     attention->key_matrix = create_hierarchical_matrix(state_size, state_size);
     attention->value_matrix = create_hierarchical_matrix(state_size, state_size);
     attention->attention_matrix = create_hierarchical_matrix(state_size, state_size);
-    
+
     attention->metric_tensor = create_hierarchical_matrix(state_size, state_size);
     attention->connection_tensor = create_hierarchical_matrix(state_size, state_size);
     attention->curvature_tensor = create_hierarchical_matrix(state_size, state_size);
     attention->phase_tensor = create_hierarchical_matrix(state_size, 1);
-    
+
     // Set matrix properties and tolerance
-    if (!attention->query_matrix || !attention->key_matrix || 
+    if (!attention->query_matrix || !attention->key_matrix ||
         !attention->value_matrix || !attention->attention_matrix ||
         !attention->metric_tensor || !attention->connection_tensor ||
         !attention->curvature_tensor || !attention->phase_tensor) {
@@ -196,15 +196,16 @@ static bool allocate_attention_buffers(geometric_attention_t* attention) {
         return false;
     }
 
-    // Set tolerance for all matrices
-    attention->query_matrix->tolerance = ATTENTION_TOLERANCE;
-    attention->key_matrix->tolerance = ATTENTION_TOLERANCE;
-    attention->value_matrix->tolerance = ATTENTION_TOLERANCE;
-    attention->attention_matrix->tolerance = ATTENTION_TOLERANCE;
-    attention->metric_tensor->tolerance = ATTENTION_TOLERANCE;
-    attention->connection_tensor->tolerance = ATTENTION_TOLERANCE;
-    attention->curvature_tensor->tolerance = ATTENTION_TOLERANCE;
-    attention->phase_tensor->tolerance = ATTENTION_TOLERANCE;
+    // Use configured tolerance from props (defaults to 1e-10)
+    double tol = (props.tolerance > 0) ? props.tolerance : ATTENTION_TOLERANCE;
+    attention->query_matrix->tolerance = tol;
+    attention->key_matrix->tolerance = tol;
+    attention->value_matrix->tolerance = tol;
+    attention->attention_matrix->tolerance = tol;
+    attention->metric_tensor->tolerance = tol;
+    attention->connection_tensor->tolerance = tol;
+    attention->curvature_tensor->tolerance = tol;
+    attention->phase_tensor->tolerance = tol;
     
     // Initialize numerical backend
     numerical_config_t config = {
@@ -631,11 +632,16 @@ static void extract_head_recursive(HierarchicalMatrix* head, HierarchicalMatrix*
     size_t mid_col = mat->cols / 2;
     
     // Create child nodes if they don't exist
+    // Each child represents a quadrant of the source matrix
+    // The column dimension should match the quadrant, scaled to head_dim
     if (!head->children[0]) {
         for (int i = 0; i < 4; i++) {
             size_t sub_rows = (i < 2) ? mid_row : (mat->rows - mid_row);
             size_t sub_cols = (i % 2 == 0) ? mid_col : (mat->cols - mid_col);
-            head->children[i] = create_hierarchical_matrix(sub_rows, head_dim);
+            // Scale columns proportionally to head_dim while preserving aspect ratio
+            size_t scaled_cols = (sub_cols * head_dim) / mat->cols;
+            if (scaled_cols == 0) scaled_cols = 1;  // Minimum dimension
+            head->children[i] = create_hierarchical_matrix(sub_rows, scaled_cols);
             if (!head->children[i]) return;
             head->children[i]->tolerance = head->tolerance;  // Propagate tolerance
         }

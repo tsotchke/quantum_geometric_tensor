@@ -255,13 +255,15 @@ void geometric_shutdown(void) {
     
     // Prevent new operations during shutdown
     atomic_store(&g_state.initialized, false);
-    
-    qgt_error_t err = QGT_SUCCESS;
-    
+
+    // Track cleanup status for logging
+    qgt_error_t cleanup_status = QGT_SUCCESS;
+
     // First cleanup hardware resources if they exist
     if (g_state.hardware) {
         qgt_error_t hw_err = cleanup_hardware_resources(g_state.hardware);
         if (hw_err != QGT_SUCCESS) {
+            cleanup_status = hw_err;
             geometric_set_error(hw_err, __FILE__, __LINE__, __func__,
                               "Failed to cleanup hardware resources");
         }
@@ -283,6 +285,11 @@ void geometric_shutdown(void) {
     memset(&g_state.config, 0, sizeof(quantum_geometric_config_t));
     g_state.pool = NULL;
     g_state.hardware = NULL;
+
+    // Log cleanup status if there were errors
+    if (cleanup_status != QGT_SUCCESS) {
+        geometric_log_warning("Cleanup completed with errors, status: %d", cleanup_status);
+    }
 
     pthread_mutex_unlock(&g_mutex);
 }

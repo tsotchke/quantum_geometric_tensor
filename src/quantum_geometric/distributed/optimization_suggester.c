@@ -372,10 +372,15 @@ static double predict_impact(OptimizationSuggester* suggester,
                             const BottleneckInfo* bottleneck) {
     double base_impact = suggestion->impact_score;
 
+    // Apply type-specific impact weights from domain knowledge
+    int type_idx = (int)suggestion->type;
+    if (type_idx >= 0 && type_idx < NUM_SUGGESTION_TYPES) {
+        base_impact *= IMPACT_WEIGHTS[type_idx] * 4.0;  // Scale to ~1.0 max
+    }
+
     // Adjust based on historical effectiveness
     if (suggester->history && suggester->config.enable_history_tracking) {
-        int type_idx = (int)suggestion->type;
-        if (type_idx < NUM_SUGGESTION_TYPES) {
+        if (type_idx >= 0 && type_idx < NUM_SUGGESTION_TYPES) {
             double effectiveness = suggester->history->type_effectiveness[type_idx];
             base_impact *= (0.5 + effectiveness);  // Scale 0.5x to 1.5x
         }

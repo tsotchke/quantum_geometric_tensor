@@ -358,15 +358,32 @@ static void detect_polynomial_trends(
         Sx2y += x2 * values[i];
     }
 
-    // Solve 3x3 system (simplified - just check if there's quadratic component)
-    double mean_y = Sy / S0;
-    double ss_tot = 0;
-    for (size_t i = 0; i < length; i++) {
-        ss_tot += (values[i] - mean_y) * (values[i] - mean_y);
+    // Solve 3x3 system using Cramer's rule for quadratic fit coefficients
+    // Normal equations: [S0 S1 S2; S1 S2 S3; S2 S3 S4] * [a; b; c] = [Sy; Sxy; Sx2y]
+    double det = S0 * (S2 * S4 - S3 * S3) - S1 * (S1 * S4 - S2 * S3) + S2 * (S1 * S3 - S2 * S2);
+
+    double a = 0, b = 0, c = 0;
+    if (fabs(det) > 1e-12) {
+        a = (Sy * (S2 * S4 - S3 * S3) - S1 * (Sxy * S4 - Sx2y * S3) + S2 * (Sxy * S3 - Sx2y * S2)) / det;
+        b = (S0 * (Sxy * S4 - Sx2y * S3) - Sy * (S1 * S4 - S2 * S3) + S2 * (S1 * Sx2y - S2 * Sxy)) / det;
+        c = (S0 * (S2 * Sx2y - S3 * Sxy) - S1 * (S1 * Sx2y - S3 * Sy) + Sy * (S1 * S3 - S2 * S2)) / det;
     }
 
-    // Approximate fit quality
-    double fit_quality = (ss_tot > 1e-10) ? 0.8 : 0.0;
+    // Compute R-squared (coefficient of determination)
+    double mean_y = Sy / S0;
+    double ss_tot = 0;
+    double ss_res = 0;
+    for (size_t i = 0; i < length; i++) {
+        double x = (double)i;
+        double y_pred = a + b * x + c * x * x;
+        ss_tot += (values[i] - mean_y) * (values[i] - mean_y);
+        ss_res += (values[i] - y_pred) * (values[i] - y_pred);
+    }
+
+    // R-squared fit quality, with check for quadratic component significance
+    double fit_quality = (ss_tot > 1e-10) ? (1.0 - ss_res / ss_tot) : 0.0;
+    // Quadratic component must be significant
+    if (fabs(c) < 1e-10) fit_quality *= 0.5;
 
     if (fit_quality >= detector->config.min_confidence) {
         struct FeaturePattern* pattern = create_pattern(values, length, 3, fit_quality);

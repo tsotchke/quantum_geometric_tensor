@@ -13,24 +13,23 @@ static void compute_metric_derivatives(ComplexFloat* d_metric,
                                     float epsilon) {
     const size_t metric_size = dim * dim;
     const float inv_2eps = 0.5f / epsilon;
-    
+
     // Use central difference formula for better accuracy
-    for (size_t i = 0; i < dim; i++) {
-        for (size_t j = 0; j < dim; j++) {
-            size_t idx = i * dim + j;
-            ComplexFloat forward = metric[idx];
-            ComplexFloat backward = metric[idx];
-            
-            // Perturb the appropriate coordinate
-            if (i == direction) {
-                forward.real += epsilon;
-                backward.real -= epsilon;
-            }
-            
-            // Compute derivative
-            d_metric[idx].real = (forward.real - backward.real) * inv_2eps;
-            d_metric[idx].imag = (forward.imag - backward.imag) * inv_2eps;
+    // Iterate over all metric elements using flat index
+    for (size_t idx = 0; idx < metric_size; idx++) {
+        size_t i = idx / dim;
+        ComplexFloat forward = metric[idx];
+        ComplexFloat backward = metric[idx];
+
+        // Perturb the appropriate coordinate
+        if (i == direction) {
+            forward.real += epsilon;
+            backward.real -= epsilon;
         }
+
+        // Compute derivative
+        d_metric[idx].real = (forward.real - backward.real) * inv_2eps;
+        d_metric[idx].imag = (forward.imag - backward.imag) * inv_2eps;
     }
 }
 
@@ -134,7 +133,7 @@ static qgt_error_t compute_inverse_metric(ComplexFloat* inv_metric,
     
     // Apply pivots
     for (size_t i = dim - 1; i < dim; i--) {
-        if (pivots[i] != i) {
+        if (pivots[i] != (int)i) {
             for (size_t j = 0; j < dim; j++) {
                 ComplexFloat temp = inv_metric[i * dim + j];
                 inv_metric[i * dim + j] = inv_metric[pivots[i] * dim + j];
@@ -296,22 +295,25 @@ qgt_error_t geometric_compute_connection(quantum_geometric_connection_t* connect
                                     #elif defined(__ARM_NEON)
                                     float32x4_t vsum_real = vdupq_n_f32(0.0f);
                                     float32x4_t vsum_imag = vdupq_n_f32(0.0f);
-                                    
+
                                     for (size_t l = 0; l < dim; l += 4) {
                                         float32x4_t vg_kl = vld1q_f32((float*)&inv_metric[k * dim + l]);
                                         float32x4_t vdg_i = vld1q_f32((float*)&d_metric[j * dim + l]);
                                         float32x4_t vdg_j = vld1q_f32((float*)&d_metric[i * dim + l]);
                                         float32x4_t vdg_l = vdupq_n_f32(metric->components[i * dim + j].real);
-                                        
+                                        float32x4_t vdg_l_imag = vdupq_n_f32(metric->components[i * dim + j].imag);
+
                                         vsum_real = vmlaq_f32(vsum_real,
                                             vaddq_f32(vdg_i, vdg_j),
                                             vg_kl);
                                         vsum_real = vmlsq_f32(vsum_real, vdg_l, vg_kl);
+                                        vsum_imag = vmlsq_f32(vsum_imag, vdg_l_imag, vg_kl);
                                     }
-                                    
+
                                     float32x2_t vsum2_real = vadd_f32(vget_low_f32(vsum_real), vget_high_f32(vsum_real));
+                                    float32x2_t vsum2_imag = vadd_f32(vget_low_f32(vsum_imag), vget_high_f32(vsum_imag));
                                     sum.real = 0.5f * (vget_lane_f32(vsum2_real, 0) + vget_lane_f32(vsum2_real, 1));
-                                    sum.imag = 0.0f;
+                                    sum.imag = 0.5f * (vget_lane_f32(vsum2_imag, 0) + vget_lane_f32(vsum2_imag, 1));
                                     
                                     #else
                                     // Scalar fallback
@@ -413,22 +415,25 @@ qgt_error_t geometric_transform_connection(quantum_geometric_connection_t* resul
                             #elif defined(__ARM_NEON)
                             float32x4_t vsum_real = vdupq_n_f32(0.0f);
                             float32x4_t vsum_imag = vdupq_n_f32(0.0f);
-                            
+
                             for (size_t l = 0; l < dim; l += 4) {
                                 float32x4_t vt_kl = vld1q_f32((float*)&transform->components[k * dim + l]);
-                                
+
                                 for (size_t m = 0; m < dim; m++) {
-                                    float32x4_t vt_mi = vdupq_n_f32(transform->components[m * dim + i].real);
+                                    float32x4_t vt_mi_real = vdupq_n_f32(transform->components[m * dim + i].real);
+                                    float32x4_t vt_mi_imag = vdupq_n_f32(transform->components[m * dim + i].imag);
                                     float32x4_t vconn = vld1q_f32((float*)&connection->coefficients[(l * dim + m) * dim]);
-                                    
-                                    vsum_real = vmlaq_f32(vsum_real, vt_kl, vt_mi);
+
+                                    vsum_real = vmlaq_f32(vsum_real, vt_kl, vt_mi_real);
                                     vsum_real = vmlaq_f32(vsum_real, vconn, vdupq_n_f32(1.0f));
+                                    vsum_imag = vmlaq_f32(vsum_imag, vt_kl, vt_mi_imag);
                                 }
                             }
-                            
+
                             float32x2_t vsum2_real = vadd_f32(vget_low_f32(vsum_real), vget_high_f32(vsum_real));
+                            float32x2_t vsum2_imag = vadd_f32(vget_low_f32(vsum_imag), vget_high_f32(vsum_imag));
                             sum.real = vget_lane_f32(vsum2_real, 0) + vget_lane_f32(vsum2_real, 1);
-                            sum.imag = 0.0f;
+                            sum.imag = vget_lane_f32(vsum2_imag, 0) + vget_lane_f32(vsum2_imag, 1);
                             
                             #else
                             // Scalar fallback

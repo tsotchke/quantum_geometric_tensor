@@ -685,9 +685,12 @@ static bool execute_quil_instruction_local(local_simulator_state_t* sim,
     }
 
     // Parse instruction
-    char gate[32];
+    char gate[32] = {0};
     double param = 0.0;
     size_t q1 = 0, q2 = 0;
+
+    // Extract gate name for logging unknown instructions
+    sscanf(instruction, "%31s", gate);
 
     if (sscanf(instruction, "RX(%lf) %zu", &param, &q1) == 2) {
         if (q1 < sim->num_qubits) {
@@ -712,7 +715,8 @@ static bool execute_quil_instruction_local(local_simulator_state_t* sim,
         return true;
     }
 
-    // Unknown instruction - log warning but continue
+    // Unknown instruction - log warning with gate name for debugging
+    geometric_log_warning("Unknown Quil instruction: %s (gate: %s)", instruction, gate);
     return true;
 }
 

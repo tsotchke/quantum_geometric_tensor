@@ -88,8 +88,8 @@ QuantumGeometricInterface* init_quantum_interface(void) {
 
     // Detect and set hardware type
     interface->hardware_type = detect_quantum_hardware();
-    interface->is_available = (interface->hardware_type != HARDWARE_TYPE_CPU) ||
-                              (interface->hardware_type == HARDWARE_TYPE_CPU);  // CPU always available
+    // Interface is always available - CPU fallback is always supported
+    interface->is_available = true;
 
     // Set default number of qubits based on hardware
     switch (interface->hardware_type) {

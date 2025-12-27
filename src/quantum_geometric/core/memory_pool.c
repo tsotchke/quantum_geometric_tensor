@@ -64,11 +64,13 @@ static void init_lookup_table(void) {
     
     size_t current_class = 0;
     size_t current_size = atomic_load_explicit(&size_class_table[0], memory_order_acquire);
-    
-    for (int i = 0; i < 256; i++) {
-        while (current_class < QG_NUM_SIZE_CLASSES - 1 && 
-               i * 32 >= atomic_load_explicit(&size_class_table[current_class], memory_order_acquire)) {
+
+    for (size_t i = 0; i < 256; i++) {
+        // Use cached current_size instead of repeated atomic loads
+        while (current_class < QG_NUM_SIZE_CLASSES - 1 && i * 32 >= current_size) {
             current_class++;
+            // Update cached size for next class
+            current_size = atomic_load_explicit(&size_class_table[current_class], memory_order_acquire);
         }
         ((uint8_t*)size_class_lookup)[i] = current_class;
     }
@@ -141,11 +143,11 @@ MemoryPool* create_memory_pool(const PoolConfig* config) {
     pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
 
     // Initialize size class mutexes
-    for (int i = 0; i < config->num_size_classes; i++) {
+    for (size_t i = 0; i < config->num_size_classes; i++) {
         if (pthread_mutex_init(&pool->size_classes[i].mutex, &attr) != 0) {
-            geometric_log_error("Failed to initialize mutex for size class %d", i);
+            geometric_log_error("Failed to initialize mutex for size class %zu", i);
             // Clean up previously initialized mutexes
-            for (int j = 0; j < i; j++) {
+            for (size_t j = 0; j < i; j++) {
                 pthread_mutex_destroy(&pool->size_classes[j].mutex);
             }
             pthread_mutexattr_destroy(&attr);
@@ -160,7 +162,7 @@ MemoryPool* create_memory_pool(const PoolConfig* config) {
     // Initialize pool mutex
     if (pthread_mutex_init(&pool->mutex, &attr) != 0) {
         geometric_log_error("Failed to initialize pool mutex");
-        for (int i = 0; i < config->num_size_classes; i++) {
+        for (size_t i = 0; i < config->num_size_classes; i++) {
             pthread_mutex_destroy(&pool->size_classes[i].mutex);
         }
         pthread_mutexattr_destroy(&attr);

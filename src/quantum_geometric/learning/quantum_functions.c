@@ -677,9 +677,12 @@ bool quantum_calculate_gradients(
     memset(gradients, 0, batch_size * output_dim * sizeof(ComplexFloat));
     
     printf("DEBUG: Computing gradients with batch_size=%zu, output_dim=%zu\n", batch_size, output_dim);
-    
+
     // Process in blocks for better cache utilization
     const size_t block_size = BLOCK_SIZE; // Process in cache-efficient blocks
+    size_t num_blocks = (batch_size + block_size - 1) / block_size;
+    printf("DEBUG: Processing in %zu blocks of size %zu\n", num_blocks, block_size);
+
     for (size_t b = 0; b < batch_size; b++) {
         size_t base_idx = b * output_dim;
         
@@ -1246,13 +1249,22 @@ bool quantum_calculate_gradients(
     printf("  weights_t alignment: %zu\n", (size_t)weights_t & 15);
     printf("  weight_gradients alignment: %zu\n", (size_t)weight_gradients & 15);
     
-    // Verify memory is accessible
+    // Verify memory is accessible and contains valid values
     printf("DEBUG: Verifying memory access:\n");
-    volatile float test_read;
     printf("  Testing gradients read...\n");
-    test_read = gradients[0].real;
+    float grad_val = gradients[0].real;
+    if (isnan(grad_val) || isinf(grad_val)) {
+        printf("  WARNING: Invalid gradient value detected: %f\n", grad_val);
+    } else {
+        printf("  Gradients read OK: %f\n", grad_val);
+    }
     printf("  Testing weights_t read...\n");
-    test_read = weights_t[0].real;
+    float weight_val = weights_t[0].real;
+    if (isnan(weight_val) || isinf(weight_val)) {
+        printf("  WARNING: Invalid weight value detected: %f\n", weight_val);
+    } else {
+        printf("  Weights_t read OK: %f\n", weight_val);
+    }
     printf("  Testing weight_gradients write...\n");
     weight_gradients[0].real = 0.0f;
     
