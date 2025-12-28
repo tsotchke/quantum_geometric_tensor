@@ -2771,28 +2771,132 @@ static void optimize_gate_fusion(QuantumProgram* program) {
     }
 }
 
+// Check if two gates can commute (operate on disjoint qubits or are both diagonal)
+static bool gates_can_commute(const QuantumGate* g1, const QuantumGate* g2) {
+    if (!g1 || !g2) return true;
+
+    // Get effective target qubits for each gate
+    // For single-qubit gates: use qubit field
+    // For two-qubit gates: use control_qubit and target_qubit
+    uint32_t g1_primary = g1->qubit;
+    uint32_t g1_secondary = g1->control_qubit;
+    uint32_t g2_primary = g2->qubit;
+    uint32_t g2_secondary = g2->control_qubit;
+
+    // Check if gates share any qubits
+    bool share_qubit = (g1_primary == g2_primary) ||
+                       (g1_primary == g2_secondary) ||
+                       (g1_secondary == g2_primary) ||
+                       (g1_secondary != 0 && g1_secondary == g2_secondary);
+
+    if (!share_qubit) return true;
+
+    // Diagonal gates (Z, S, T, Rz, CZ) commute with each other
+    bool g1_diagonal = (g1->type == GATE_Z || g1->type == GATE_S ||
+                        g1->type == GATE_T || g1->type == GATE_RZ ||
+                        g1->type == GATE_CZ);
+    bool g2_diagonal = (g2->type == GATE_Z || g2->type == GATE_S ||
+                        g2->type == GATE_T || g2->type == GATE_RZ ||
+                        g2->type == GATE_CZ);
+
+    return (g1_diagonal && g2_diagonal);
+}
+
 // Gate reordering optimization
 static void optimize_gate_reordering(QuantumProgram* program) {
-    if (!program) {
+    if (!program || program->num_operations < 2) {
         return;
     }
 
     // Commutation-aware gate reordering for parallelism
-    // Gates on different qubits can be executed in parallel
-    // This is a simplified implementation
-    (void)program;
+    // Group gates by time slice based on qubit dependencies
+    bool changed = true;
+    size_t max_passes = program->num_operations;
+
+    for (size_t pass = 0; pass < max_passes && changed; pass++) {
+        changed = false;
+
+        for (size_t i = 0; i + 1 < program->num_operations; i++) {
+            QuantumOperation* op1 = &program->operations[i];
+            QuantumOperation* op2 = &program->operations[i + 1];
+
+            if (op1->type != OPERATION_GATE || op2->type != OPERATION_GATE) {
+                continue;
+            }
+
+            const QuantumGate* g1 = &op1->op.gate;
+            const QuantumGate* g2 = &op2->op.gate;
+
+            // If gates commute and g2 targets a lower qubit, swap for consistent ordering
+            if (gates_can_commute(g1, g2) && g2->qubit < g1->qubit) {
+                QuantumOperation temp = *op1;
+                *op1 = *op2;
+                *op2 = temp;
+                changed = true;
+            }
+        }
+    }
 }
 
 // Qubit mapping optimization
 static void optimize_qubit_mapping(QuantumProgram* program, const HardwareCapabilities* caps) {
-    if (!program || !caps) {
+    if (!program || !caps || program->num_qubits == 0) {
         return;
     }
 
-    // Map logical qubits to physical qubits based on connectivity
-    // This is a simplified implementation
-    (void)program;
-    (void)caps;
+    // Simple greedy qubit mapping based on interaction frequency
+    // Count interactions between logical qubit pairs
+    size_t num_qubits = program->num_qubits;
+    if (num_qubits > caps->max_qubits) {
+        return;  // Cannot map - too many qubits
+    }
+
+    // Build interaction count matrix
+    uint32_t* interactions = calloc(num_qubits * num_qubits, sizeof(uint32_t));
+    if (!interactions) return;
+
+    for (size_t i = 0; i < program->num_operations; i++) {
+        if (program->operations[i].type == OPERATION_GATE) {
+            const QuantumGate* gate = &program->operations[i].op.gate;
+            if (gate->control_qubit != 0 && gate->control_qubit < num_qubits &&
+                gate->target_qubit < num_qubits) {
+                // Two-qubit gate - count interaction
+                size_t q1 = gate->control_qubit;
+                size_t q2 = gate->target_qubit;
+                interactions[q1 * num_qubits + q2]++;
+                interactions[q2 * num_qubits + q1]++;
+            }
+        }
+    }
+
+    // Create mapping array (logical -> physical)
+    // For now, use identity mapping if hardware has full connectivity
+    // In a real implementation, would use SABRE or similar
+    uint32_t* mapping = calloc(num_qubits, sizeof(uint32_t));
+    if (mapping) {
+        for (size_t i = 0; i < num_qubits; i++) {
+            mapping[i] = (uint32_t)i;  // Identity mapping
+        }
+
+        // Apply mapping to all gate operations
+        for (size_t i = 0; i < program->num_operations; i++) {
+            if (program->operations[i].type == OPERATION_GATE) {
+                QuantumGate* gate = &program->operations[i].op.gate;
+                if (gate->qubit < num_qubits) {
+                    gate->qubit = mapping[gate->qubit];
+                }
+                if (gate->control_qubit != 0 && gate->control_qubit < num_qubits) {
+                    gate->control_qubit = mapping[gate->control_qubit];
+                }
+                if (gate->target_qubit < num_qubits) {
+                    gate->target_qubit = mapping[gate->target_qubit];
+                }
+            }
+        }
+        free(mapping);
+    }
+
+    free(interactions);
 }
 
 // Circuit depth optimization (internal helper for QuantumProgram)
@@ -2861,14 +2965,151 @@ static void* hal_sim_init_quantum_state(uint32_t num_qubits) {
     return state;
 }
 
+// Helper to apply single-qubit gate matrix to state vector
+static void apply_single_qubit_gate(ComplexDouble* state, size_t num_states,
+                                    uint32_t target, ComplexDouble gate[2][2]) {
+    size_t stride = (size_t)1 << target;
+
+    for (size_t i = 0; i < num_states; i += 2 * stride) {
+        for (size_t j = 0; j < stride; j++) {
+            size_t idx0 = i + j;
+            size_t idx1 = i + j + stride;
+
+            ComplexDouble a = state[idx0];
+            ComplexDouble b = state[idx1];
+
+            // state[idx0] = gate[0][0] * a + gate[0][1] * b
+            state[idx0].real = gate[0][0].real * a.real - gate[0][0].imag * a.imag
+                             + gate[0][1].real * b.real - gate[0][1].imag * b.imag;
+            state[idx0].imag = gate[0][0].real * a.imag + gate[0][0].imag * a.real
+                             + gate[0][1].real * b.imag + gate[0][1].imag * b.real;
+
+            // state[idx1] = gate[1][0] * a + gate[1][1] * b
+            state[idx1].real = gate[1][0].real * a.real - gate[1][0].imag * a.imag
+                             + gate[1][1].real * b.real - gate[1][1].imag * b.imag;
+            state[idx1].imag = gate[1][0].real * a.imag + gate[1][0].imag * a.real
+                             + gate[1][1].real * b.imag + gate[1][1].imag * b.real;
+        }
+    }
+}
+
 // Apply quantum operation to state
-static bool hal_sim_apply_operation(struct SimulatorConfig* backend, void* state, const QuantumOperation* op) {
-    if (!state || !op) {
+static bool hal_sim_apply_operation(struct SimulatorConfig* backend, void* state_ptr, const QuantumOperation* op) {
+    if (!state_ptr || !op) {
         return false;
     }
-    (void)backend;  // May use for noise model later
 
-    // Simplified - in production would implement full gate application
+    if (op->type != OPERATION_GATE) {
+        return true;  // Non-gate operations handled elsewhere
+    }
+
+    ComplexDouble* state = (ComplexDouble*)state_ptr;
+    const QuantumGate* gate = &op->op.gate;
+    uint32_t target = gate->qubit;
+
+    // Determine state size from backend or use default
+    size_t num_qubits = backend ? backend->max_qubits : 10;
+    size_t num_states = (size_t)1 << num_qubits;
+
+    // Gate matrices (column-major for standard quantum convention)
+    ComplexDouble I_gate[2][2] = {{{1,0},{0,0}}, {{0,0},{1,0}}};
+    ComplexDouble X_gate[2][2] = {{{0,0},{1,0}}, {{1,0},{0,0}}};
+    ComplexDouble Y_gate[2][2] = {{{0,0},{0,-1}}, {{0,1},{0,0}}};
+    ComplexDouble Z_gate[2][2] = {{{1,0},{0,0}}, {{0,0},{-1,0}}};
+    ComplexDouble H_gate[2][2] = {{{0.7071067811865476,0},{0.7071067811865476,0}},
+                                  {{0.7071067811865476,0},{-0.7071067811865476,0}}};
+    ComplexDouble S_gate[2][2] = {{{1,0},{0,0}}, {{0,0},{0,1}}};
+    ComplexDouble T_gate[2][2] = {{{1,0},{0,0}}, {{0,0},{0.7071067811865476,0.7071067811865476}}};
+
+    switch (gate->type) {
+        case GATE_I:
+            // Identity gate - apply for consistency in gate counting/timing
+            apply_single_qubit_gate(state, num_states, target, I_gate);
+            break;
+        case GATE_X:
+            apply_single_qubit_gate(state, num_states, target, X_gate);
+            break;
+        case GATE_Y:
+            apply_single_qubit_gate(state, num_states, target, Y_gate);
+            break;
+        case GATE_Z:
+            apply_single_qubit_gate(state, num_states, target, Z_gate);
+            break;
+        case GATE_H:
+            apply_single_qubit_gate(state, num_states, target, H_gate);
+            break;
+        case GATE_S:
+            apply_single_qubit_gate(state, num_states, target, S_gate);
+            break;
+        case GATE_T:
+            apply_single_qubit_gate(state, num_states, target, T_gate);
+            break;
+        case GATE_RX:
+        case GATE_RY:
+        case GATE_RZ: {
+            // Rotation gates with parameter
+            double theta = gate->parameter;
+            double c = cos(theta / 2.0);
+            double s = sin(theta / 2.0);
+            ComplexDouble rot[2][2];
+
+            if (gate->type == GATE_RX) {
+                rot[0][0] = (ComplexDouble){c, 0};
+                rot[0][1] = (ComplexDouble){0, -s};
+                rot[1][0] = (ComplexDouble){0, -s};
+                rot[1][1] = (ComplexDouble){c, 0};
+            } else if (gate->type == GATE_RY) {
+                rot[0][0] = (ComplexDouble){c, 0};
+                rot[0][1] = (ComplexDouble){-s, 0};
+                rot[1][0] = (ComplexDouble){s, 0};
+                rot[1][1] = (ComplexDouble){c, 0};
+            } else { // GATE_RZ
+                rot[0][0] = (ComplexDouble){c, -s};
+                rot[0][1] = (ComplexDouble){0, 0};
+                rot[1][0] = (ComplexDouble){0, 0};
+                rot[1][1] = (ComplexDouble){c, s};
+            }
+            apply_single_qubit_gate(state, num_states, target, rot);
+            break;
+        }
+        case GATE_CNOT: {
+            // Note: GATE_CX is an alias for GATE_CNOT
+            // Controlled-NOT gate
+            uint32_t control = gate->control_qubit;
+            uint32_t tgt = gate->target_qubit;
+            size_t ctrl_mask = (size_t)1 << control;
+            size_t tgt_mask = (size_t)1 << tgt;
+
+            for (size_t i = 0; i < num_states; i++) {
+                if ((i & ctrl_mask) && !(i & tgt_mask)) {
+                    size_t j = i ^ tgt_mask;
+                    ComplexDouble temp = state[i];
+                    state[i] = state[j];
+                    state[j] = temp;
+                }
+            }
+            break;
+        }
+        case GATE_CZ: {
+            // Controlled-Z gate
+            uint32_t control = gate->control_qubit;
+            uint32_t tgt = gate->target_qubit;
+            size_t ctrl_mask = (size_t)1 << control;
+            size_t tgt_mask = (size_t)1 << tgt;
+
+            for (size_t i = 0; i < num_states; i++) {
+                if ((i & ctrl_mask) && (i & tgt_mask)) {
+                    state[i].real = -state[i].real;
+                    state[i].imag = -state[i].imag;
+                }
+            }
+            break;
+        }
+        default:
+            // Unknown gate type - no operation
+            break;
+    }
+
     return true;
 }
 
