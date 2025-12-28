@@ -19,6 +19,12 @@
 #include <net/if.h>
 #include <ifaddrs.h>
 #include <net/if_dl.h>
+#include <IOKit/IOKitLib.h>
+#include <CoreFoundation/CoreFoundation.h>
+#endif
+
+#ifdef HAVE_NVML
+#include <nvml.h>
 #endif
 
 #ifdef HAVE_MPI
@@ -129,10 +135,124 @@ static double measure_cpu_utilization(void) {
 #endif
 }
 
-// GPU utilization - placeholder for Metal/CUDA integration
+// GPU utilization measurement - uses IOKit on macOS, NVML on Linux
 static double measure_gpu_utilization(void) {
-    // TODO: Integrate with Metal (macOS) or CUDA (Linux) for real metrics
+#ifdef __APPLE__
+    // macOS: Query GPU utilization via IOKit
+    // We look for the AppleGPUPowerManagement or AGXAccelerator service
+    io_iterator_t iterator;
+    kern_return_t result;
+    double utilization = 0.0;
+
+    // Try AppleGPUPowerManagement first (Intel/AMD)
+    CFMutableDictionaryRef matching = IOServiceMatching("AppleGPUPowerManagement");
+    if (matching) {
+        result = IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator);
+        if (result == KERN_SUCCESS) {
+            io_object_t service;
+            while ((service = IOIteratorNext(iterator)) != 0) {
+                CFTypeRef property = IORegistryEntryCreateCFProperty(
+                    service,
+                    CFSTR("PerformanceStatistics"),
+                    kCFAllocatorDefault,
+                    0
+                );
+                if (property && CFGetTypeID(property) == CFDictionaryGetTypeID()) {
+                    CFDictionaryRef stats = (CFDictionaryRef)property;
+                    CFNumberRef gpuUsage;
+
+                    // Try different keys used by different GPU drivers
+                    gpuUsage = CFDictionaryGetValue(stats, CFSTR("GPU Core Utilization"));
+                    if (!gpuUsage) {
+                        gpuUsage = CFDictionaryGetValue(stats, CFSTR("Device Utilization %"));
+                    }
+                    if (!gpuUsage) {
+                        gpuUsage = CFDictionaryGetValue(stats, CFSTR("GPU Activity(%)"));
+                    }
+
+                    if (gpuUsage && CFGetTypeID(gpuUsage) == CFNumberGetTypeID()) {
+                        int64_t value = 0;
+                        CFNumberGetValue(gpuUsage, kCFNumberSInt64Type, &value);
+                        utilization = (double)value / 100.0;  // Convert to 0.0-1.0 range
+                    }
+                    CFRelease(property);
+                }
+                IOObjectRelease(service);
+            }
+            IOObjectRelease(iterator);
+        }
+    }
+
+    // If no utilization found, try AGXAccelerator (Apple Silicon)
+    if (utilization == 0.0) {
+        matching = IOServiceMatching("AGXAccelerator");
+        if (matching) {
+            result = IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator);
+            if (result == KERN_SUCCESS) {
+                io_object_t service;
+                while ((service = IOIteratorNext(iterator)) != 0) {
+                    CFTypeRef property = IORegistryEntryCreateCFProperty(
+                        service,
+                        CFSTR("PerformanceStatistics"),
+                        kCFAllocatorDefault,
+                        0
+                    );
+                    if (property && CFGetTypeID(property) == CFDictionaryGetTypeID()) {
+                        CFDictionaryRef stats = (CFDictionaryRef)property;
+                        CFNumberRef gpuUsage = CFDictionaryGetValue(stats, CFSTR("Device Utilization %"));
+                        if (!gpuUsage) {
+                            gpuUsage = CFDictionaryGetValue(stats, CFSTR("GPU Active Residency"));
+                        }
+                        if (gpuUsage && CFGetTypeID(gpuUsage) == CFNumberGetTypeID()) {
+                            int64_t value = 0;
+                            CFNumberGetValue(gpuUsage, kCFNumberSInt64Type, &value);
+                            utilization = (double)value / 100.0;
+                        }
+                        CFRelease(property);
+                    }
+                    IOObjectRelease(service);
+                }
+                IOObjectRelease(iterator);
+            }
+        }
+    }
+
+    return utilization;
+
+#elif defined(HAVE_NVML)
+    // Linux with NVIDIA GPU: Use NVML
+    static bool nvml_initialized = false;
+    static bool nvml_available = false;
+
+    if (!nvml_initialized) {
+        nvml_initialized = true;
+        nvmlReturn_t result = nvmlInit_v2();
+        nvml_available = (result == NVML_SUCCESS);
+    }
+
+    if (!nvml_available) {
+        return 0.0;
+    }
+
+    // Get utilization for first GPU (GPU 0)
+    nvmlDevice_t device;
+    nvmlReturn_t result = nvmlDeviceGetHandleByIndex_v2(0, &device);
+    if (result != NVML_SUCCESS) {
+        return 0.0;
+    }
+
+    nvmlUtilization_t utilization;
+    result = nvmlDeviceGetUtilizationRates(device, &utilization);
+    if (result != NVML_SUCCESS) {
+        return 0.0;
+    }
+
+    return (double)utilization.gpu / 100.0;  // Convert to 0.0-1.0 range
+
+#else
+    // No GPU monitoring support available
     return 0.0;
+#endif
 }
 
 // Memory usage measurement - cross-platform

@@ -372,6 +372,7 @@ static qgt_error_t apply_cost_evolution(qaoa_state_t* state, double gamma) {
 }
 
 // Apply exp(-i * beta * H_M) = prod_i RX(2*beta)
+// Optimized in-place implementation - no extra memory allocation needed
 static qgt_error_t apply_mixer_evolution(qaoa_state_t* state, double beta) {
     if (!state || !state->qstate) return QGT_ERROR_INVALID_ARGUMENT;
 
@@ -382,43 +383,33 @@ static qgt_error_t apply_mixer_evolution(qaoa_state_t* state, double beta) {
     // Apply RX(2*beta) to each qubit
     // RX(theta) = cos(theta/2) I - i*sin(theta/2) X
     double theta = 2.0 * beta;
-    double c = cos(theta / 2.0);
-    double s = sin(theta / 2.0);
+    float c = (float)cos(theta / 2.0);
+    float s = (float)sin(theta / 2.0);
 
-    // We need to apply RX to each qubit
-    // This is done by iterating through all pairs of basis states
-    // that differ only in one bit
-
-    ComplexFloat* new_amps = calloc(dim, sizeof(ComplexFloat));
-    if (!new_amps) return QGT_ERROR_MEMORY_ALLOCATION;
-
-    memcpy(new_amps, amps, dim * sizeof(ComplexFloat));
-
+    // Apply RX to each qubit in-place
+    // Since RX only mixes pairs |...0_q...⟩ ↔ |...1_q...⟩,
+    // we can apply it in-place by processing each pair once
     for (size_t q = 0; q < state->num_qubits; q++) {
-        // Apply RX to qubit q
         size_t mask = (size_t)1 << q;
 
         for (size_t z = 0; z < dim; z++) {
+            // Only process when qubit q is 0 (to avoid double-counting pairs)
             if ((z & mask) == 0) {
-                // z has 0 at position q
-                size_t z_flipped = z | mask;  // z with 1 at position q
+                size_t z1 = z | mask;  // Partner state with qubit q = 1
 
-                ComplexFloat a0 = new_amps[z];
-                ComplexFloat a1 = new_amps[z_flipped];
+                ComplexFloat a0 = amps[z];
+                ComplexFloat a1 = amps[z1];
 
-                // RX: |0> -> c|0> - is|1>
-                //     |1> -> -is|0> + c|1>
-                new_amps[z].real = (float)(c * a0.real + s * a1.imag);
-                new_amps[z].imag = (float)(c * a0.imag - s * a1.real);
+                // RX(theta): |0⟩ → cos(θ/2)|0⟩ - i·sin(θ/2)|1⟩
+                //            |1⟩ → -i·sin(θ/2)|0⟩ + cos(θ/2)|1⟩
+                amps[z].real = c * a0.real + s * a1.imag;
+                amps[z].imag = c * a0.imag - s * a1.real;
 
-                new_amps[z_flipped].real = (float)(s * a0.imag + c * a1.real);
-                new_amps[z_flipped].imag = (float)(-s * a0.real + c * a1.imag);
+                amps[z1].real = s * a0.imag + c * a1.real;
+                amps[z1].imag = -s * a0.real + c * a1.imag;
             }
         }
     }
-
-    memcpy(amps, new_amps, dim * sizeof(ComplexFloat));
-    free(new_amps);
 
     return QGT_SUCCESS;
 }

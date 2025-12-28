@@ -141,10 +141,32 @@ qgt_error_t geometric_get_observables(const quantum_geometric_simulation_t* simu
     }
     observables->norm = sqrtf(observables->norm);
     
-    // Compute energy (simplified)
+    // Compute energy as expectation value: E = ⟨ψ|H|ψ⟩
     observables->energy = 0.0f;
-    for (size_t i = 0; i < simulation->dimension; i++) {
-        observables->energy += complex_float_abs_squared(simulation->state[i]) * i;
+    if (simulation->hamiltonian) {
+        // Proper expectation value: E = Σᵢⱼ ψᵢ* Hᵢⱼ ψⱼ
+        size_t n = simulation->dimension;
+        for (size_t i = 0; i < n; i++) {
+            for (size_t j = 0; j < n; j++) {
+                // Get Hamiltonian element (real matrix assumed for now)
+                double h_ij = simulation->hamiltonian[i * n + j];
+
+                // ψᵢ* * Hᵢⱼ * ψⱼ
+                // (a - bi) * h * (c + di) = h * (ac + bd) + h * (ad - bc)i
+                ComplexFloat psi_i = simulation->state[i];
+                ComplexFloat psi_j = simulation->state[j];
+
+                // Only real part contributes to energy (Hermitian Hamiltonian)
+                float real_part = psi_i.real * psi_j.real + psi_i.imag * psi_j.imag;
+                observables->energy += (float)(h_ij * real_part);
+            }
+        }
+    } else {
+        // Fallback: use harmonic oscillator approximation E = Σᵢ ωᵢ|ψᵢ|²
+        // where ωᵢ approximated as proportional to index (ground state = 0)
+        for (size_t i = 0; i < simulation->dimension; i++) {
+            observables->energy += complex_float_abs_squared(simulation->state[i]) * (float)i;
+        }
     }
     
     return QGT_SUCCESS;

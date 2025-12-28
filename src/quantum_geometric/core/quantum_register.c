@@ -1,5 +1,6 @@
 #include "quantum_geometric/core/quantum_register.h"
 #include "quantum_geometric/core/quantum_types.h"
+#include "quantum_geometric/core/quantum_state_types.h"
 #include "quantum_geometric/core/error_codes.h"
 #include <stdlib.h>
 #include <string.h>
@@ -115,20 +116,135 @@ qgt_error_t quantum_register_reset(quantum_register_t* reg) {
 }
 
 qgt_error_t quantum_register_apply_gate(quantum_register_t* reg, const quantum_operator_t* gate, size_t target) {
-    if (!reg || !gate) {
+    if (!reg || !gate || !gate->matrix) {
         return QGT_ERROR_INVALID_ARGUMENT;
     }
-    // Gate application implementation would go here
-    // For now, return success as placeholder
+
+    // Verify gate dimension is 2 (single-qubit gate)
+    if (gate->dimension != 2) {
+        return QGT_ERROR_INVALID_ARGUMENT;
+    }
+
+    // Calculate the number of qubits from register size
+    size_t num_qubits = 0;
+    size_t temp = reg->size;
+    while (temp > 1) {
+        temp >>= 1;
+        num_qubits++;
+    }
+
+    // Verify target qubit is valid
+    if (target >= num_qubits) {
+        return QGT_ERROR_INVALID_ARGUMENT;
+    }
+
+    // Get gate matrix elements (2x2 stored row-major)
+    // G = [[g00, g01], [g10, g11]]
+    ComplexFloat g00 = gate->matrix[0];
+    ComplexFloat g01 = gate->matrix[1];
+    ComplexFloat g10 = gate->matrix[2];
+    ComplexFloat g11 = gate->matrix[3];
+
+    size_t stride = 1ULL << target;
+
+    // Apply gate to each pair of amplitudes where target qubit differs
+    // States with qubit=0 are paired with states with qubit=1
+    for (size_t block = 0; block < reg->size; block += 2 * stride) {
+        for (size_t i = block; i < block + stride; i++) {
+            size_t j = i + stride;  // j has target qubit = 1, i has target qubit = 0
+
+            ComplexFloat a = reg->amplitudes[i];  // |...0...⟩
+            ComplexFloat b = reg->amplitudes[j];  // |...1...⟩
+
+            // Apply gate: [a', b'] = G * [a, b]
+            // a' = g00*a + g01*b
+            // b' = g10*a + g11*b
+            reg->amplitudes[i].real = g00.real * a.real - g00.imag * a.imag
+                                    + g01.real * b.real - g01.imag * b.imag;
+            reg->amplitudes[i].imag = g00.real * a.imag + g00.imag * a.real
+                                    + g01.real * b.imag + g01.imag * b.real;
+
+            reg->amplitudes[j].real = g10.real * a.real - g10.imag * a.imag
+                                    + g11.real * b.real - g11.imag * b.imag;
+            reg->amplitudes[j].imag = g10.real * a.imag + g10.imag * a.real
+                                    + g11.real * b.imag + g11.imag * b.real;
+        }
+    }
+
     return QGT_SUCCESS;
 }
 
 qgt_error_t quantum_register_apply_controlled_gate(quantum_register_t* reg, const quantum_operator_t* gate,
                                                     size_t control, size_t target) {
-    if (!reg || !gate) {
+    if (!reg || !gate || !gate->matrix) {
         return QGT_ERROR_INVALID_ARGUMENT;
     }
-    // Controlled gate application implementation would go here
+
+    // Verify gate dimension is 2 (single-qubit gate to be controlled)
+    if (gate->dimension != 2) {
+        return QGT_ERROR_INVALID_ARGUMENT;
+    }
+
+    // Calculate the number of qubits from register size
+    size_t num_qubits = 0;
+    size_t temp = reg->size;
+    while (temp > 1) {
+        temp >>= 1;
+        num_qubits++;
+    }
+
+    // Verify control and target qubits are valid and different
+    if (control >= num_qubits || target >= num_qubits || control == target) {
+        return QGT_ERROR_INVALID_ARGUMENT;
+    }
+
+    // Get gate matrix elements
+    ComplexFloat g00 = gate->matrix[0];
+    ComplexFloat g01 = gate->matrix[1];
+    ComplexFloat g10 = gate->matrix[2];
+    ComplexFloat g11 = gate->matrix[3];
+
+    size_t control_mask = 1ULL << control;
+    size_t target_stride = 1ULL << target;
+
+    // Apply gate only when control qubit is |1⟩
+    for (size_t block = 0; block < reg->size; block += 2 * target_stride) {
+        for (size_t i = block; i < block + target_stride; i++) {
+            // Only apply if control qubit is 1
+            if (!(i & control_mask)) {
+                continue;  // Control qubit is 0, skip this pair
+            }
+
+            size_t j = i + target_stride;
+
+            // Also check j has control = 1 (it will since we only changed target bit)
+            // Actually we need to reconsider: i has target=0, j has target=1
+            // But i might not have control=1. Let's fix the logic.
+
+            // Skip if this state doesn't have control=1
+            // We iterate over all states, and for each state with target=0,
+            // we pair it with the state with target=1
+            // We only apply gate if BOTH states have control=1
+            if (!(j & control_mask)) {
+                continue;
+            }
+
+            ComplexFloat a = reg->amplitudes[i];  // |...control=1...target=0...⟩
+            ComplexFloat b = reg->amplitudes[j];  // |...control=1...target=1...⟩
+
+            // Apply gate: [a', b'] = G * [a, b]
+            reg->amplitudes[i].real = g00.real * a.real - g00.imag * a.imag
+                                    + g01.real * b.real - g01.imag * b.imag;
+            reg->amplitudes[i].imag = g00.real * a.imag + g00.imag * a.real
+                                    + g01.real * b.imag + g01.imag * b.real;
+
+            reg->amplitudes[j].real = g10.real * a.real - g10.imag * a.imag
+                                    + g11.real * b.real - g11.imag * b.imag;
+            reg->amplitudes[j].imag = g10.real * a.imag + g10.imag * a.real
+                                    + g11.real * b.imag + g11.imag * b.real;
+        }
+    }
+
     return QGT_SUCCESS;
 }
 
@@ -268,11 +384,39 @@ double quantum_register_trace_distance(const quantum_register_t* reg1, const qua
 }
 
 complex double quantum_register_expectation_value(const quantum_register_t* reg, const quantum_operator_t* op) {
-    if (!reg || !op) {
+    if (!reg || !op || !reg->amplitudes || !op->matrix) {
         return 0.0;
     }
-    // Expectation value calculation would go here
-    return 0.0;
+
+    // Check dimension compatibility
+    if (reg->size != op->dimension) {
+        return 0.0;
+    }
+
+    // Compute expectation value: ⟨ψ|O|ψ⟩ = Σᵢⱼ ψᵢ* Oᵢⱼ ψⱼ
+    // First compute O|ψ⟩, then compute ⟨ψ|O|ψ⟩
+    complex double result = 0.0;
+    size_t dim = reg->size;
+
+    for (size_t i = 0; i < dim; i++) {
+        // Compute (O|ψ⟩)ᵢ = Σⱼ Oᵢⱼ ψⱼ
+        complex double op_psi_i = 0.0;
+        for (size_t j = 0; j < dim; j++) {
+            ComplexFloat o_ij = op->matrix[i * dim + j];
+            ComplexFloat psi_j = reg->amplitudes[j];
+            // (a + bi)(c + di) = (ac - bd) + (ad + bc)i
+            op_psi_i += (o_ij.real * psi_j.real - o_ij.imag * psi_j.imag) +
+                        I * (o_ij.real * psi_j.imag + o_ij.imag * psi_j.real);
+        }
+
+        // Add ψᵢ* · (O|ψ⟩)ᵢ to result
+        ComplexFloat psi_i = reg->amplitudes[i];
+        // ψᵢ* = (psi_i.real - i * psi_i.imag)
+        result += (psi_i.real * creal(op_psi_i) + psi_i.imag * cimag(op_psi_i)) +
+                  I * (psi_i.real * cimag(op_psi_i) - psi_i.imag * creal(op_psi_i));
+    }
+
+    return result;
 }
 
 qgt_error_t quantum_register_apply_error_correction(quantum_register_t* reg) {

@@ -1195,18 +1195,29 @@ char* runtime_export_json(runtime_analyzer_t* analyzer) {
     pthread_mutex_lock(&analyzer->mutex);
 
     char* p = json;
-    p += sprintf(p, "{\n  \"operations\": [\n");
+    size_t remaining = buf_size;
+    int written;
+
+    written = snprintf(p, remaining, "{\n  \"operations\": [\n");
+    if (written > 0 && (size_t)written < remaining) {
+        p += written;
+        remaining -= written;
+    }
 
     bool first = true;
-    for (size_t i = 0; i < HASH_TABLE_SIZE; i++) {
+    for (size_t i = 0; i < HASH_TABLE_SIZE && remaining > 1; i++) {
         op_entry_t* entry = analyzer->operations[i];
-        while (entry) {
+        while (entry && remaining > 1) {
             if (!first) {
-                p += sprintf(p, ",\n");
+                written = snprintf(p, remaining, ",\n");
+                if (written > 0 && (size_t)written < remaining) {
+                    p += written;
+                    remaining -= written;
+                }
             }
             first = false;
 
-            p += sprintf(p,
+            written = snprintf(p, remaining,
                 "    {\n"
                 "      \"name\": \"%s\",\n"
                 "      \"category\": \"%s\",\n"
@@ -1225,12 +1236,16 @@ char* runtime_export_json(runtime_analyzer_t* analyzer) {
                 (unsigned long long)entry->data.stats.min_ns,
                 (unsigned long long)entry->data.stats.max_ns,
                 entry->data.stats.std_dev_ns);
+            if (written > 0 && (size_t)written < remaining) {
+                p += written;
+                remaining -= written;
+            }
 
             entry = entry->next;
         }
     }
 
-    p += sprintf(p, "\n  ]\n}\n");
+    snprintf(p, remaining, "\n  ]\n}\n");
 
     pthread_mutex_unlock(&analyzer->mutex);
     return json;
@@ -1266,15 +1281,26 @@ char* runtime_generate_report(runtime_analyzer_t* analyzer) {
     pthread_mutex_lock(&analyzer->mutex);
 
     char* p = report;
-    p += sprintf(p, "=== Runtime Analysis Report ===\n\n");
+    size_t remaining = buf_size;
+    int written;
+
+#define SAFE_APPEND(...) do { \
+    written = snprintf(p, remaining, __VA_ARGS__); \
+    if (written > 0 && (size_t)written < remaining) { \
+        p += written; \
+        remaining -= written; \
+    } \
+} while(0)
+
+    SAFE_APPEND("=== Runtime Analysis Report ===\n\n");
 
     uint64_t elapsed_ns = runtime_get_timestamp_ns() - analyzer->start_time_ns;
-    p += sprintf(p, "Total elapsed time: %.3f ms\n", elapsed_ns / 1000000.0);
-    p += sprintf(p, "Operations tracked: %zu\n\n", analyzer->operation_count);
+    SAFE_APPEND("Total elapsed time: %.3f ms\n", elapsed_ns / 1000000.0);
+    SAFE_APPEND("Operations tracked: %zu\n\n", analyzer->operation_count);
 
-    p += sprintf(p, "Top Operations by Time:\n");
-    p += sprintf(p, "%-40s %12s %12s %12s\n", "Operation", "Count", "Mean (µs)", "Total (ms)");
-    p += sprintf(p, "%-40s %12s %12s %12s\n", "----------------------------------------",
+    SAFE_APPEND("Top Operations by Time:\n");
+    SAFE_APPEND("%-40s %12s %12s %12s\n", "Operation", "Count", "Mean (µs)", "Total (ms)");
+    SAFE_APPEND("%-40s %12s %12s %12s\n", "----------------------------------------",
                  "------------", "------------", "------------");
 
     // Get sorted operations
@@ -1287,8 +1313,8 @@ char* runtime_generate_report(runtime_analyzer_t* analyzer) {
     pthread_mutex_lock(&analyzer->mutex);
 
     if (ops) {
-        for (size_t i = 0; i < count; i++) {
-            p += sprintf(p, "%-40s %12llu %12.2f %12.2f\n",
+        for (size_t i = 0; i < count && remaining > 1; i++) {
+            SAFE_APPEND("%-40s %12llu %12.2f %12.2f\n",
                         ops[i].name,
                         (unsigned long long)ops[i].stats.count,
                         ops[i].stats.mean_ns / 1000.0,
@@ -1296,6 +1322,8 @@ char* runtime_generate_report(runtime_analyzer_t* analyzer) {
         }
         free(ops);
     }
+
+#undef SAFE_APPEND
 
     pthread_mutex_unlock(&analyzer->mutex);
     return report;
@@ -1433,17 +1461,18 @@ const char* runtime_bottleneck_name(runtime_bottleneck_t type) {
 }
 
 char* runtime_format_duration(uint64_t duration_ns) {
-    char* buf = malloc(64);
+    const size_t buf_size = 64;
+    char* buf = malloc(buf_size);
     if (!buf) return NULL;
 
     if (duration_ns < 1000) {
-        sprintf(buf, "%llu ns", (unsigned long long)duration_ns);
+        snprintf(buf, buf_size, "%llu ns", (unsigned long long)duration_ns);
     } else if (duration_ns < 1000000) {
-        sprintf(buf, "%.2f µs", duration_ns / 1000.0);
+        snprintf(buf, buf_size, "%.2f µs", duration_ns / 1000.0);
     } else if (duration_ns < 1000000000) {
-        sprintf(buf, "%.2f ms", duration_ns / 1000000.0);
+        snprintf(buf, buf_size, "%.2f ms", duration_ns / 1000000.0);
     } else {
-        sprintf(buf, "%.2f s", duration_ns / 1000000000.0);
+        snprintf(buf, buf_size, "%.2f s", duration_ns / 1000000000.0);
     }
 
     return buf;

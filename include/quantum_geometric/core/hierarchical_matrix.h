@@ -97,7 +97,7 @@ bool set_block_sizes(HierarchicalMatrix* matrix,
                     const size_t* sizes,
                     size_t num_blocks);
 double complex* get_block(HierarchicalMatrix* matrix,
-                         size_t block_idx);
+                          size_t block_idx);
 size_t get_block_size(const HierarchicalMatrix* matrix,
                       size_t block_idx);
 bool set_block_data(HierarchicalMatrix* matrix,
@@ -161,6 +161,13 @@ bool export_matrix(const HierarchicalMatrix* matrix,
 bool import_matrix(HierarchicalMatrix* matrix,
                   const char* filename);
 void print_matrix(const HierarchicalMatrix* matrix);
+
+// Element access
+bool hierarchical_matrix_set_element(HierarchicalMatrix* matrix,
+                                     size_t index,
+                                     double complex value);
+double complex hierarchical_matrix_get_element(const HierarchicalMatrix* matrix,
+                                               size_t index);
 
 // ============================================================================
 // Legacy API (hmatrix_* naming convention) - Declarations

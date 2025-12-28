@@ -604,16 +604,110 @@ static void detect_contextual_spikes(
     }
 }
 
-// Pattern-based spike detection
+// Pattern-based spike detection using feature matching
 static void detect_pattern_spikes(
     PatternDetector* detector,
     const double* values,
     size_t length) {
 
-    (void)detector;
-    (void)values;
-    (void)length;
-    // Uses ML model for pattern-based detection - placeholder
+    if (!detector || !values || length < 10) return;
+
+    // Window-based pattern detection
+    size_t window_size = 5;
+    double* features = calloc(4, sizeof(double));  // slope, curvature, variance, skewness
+    if (!features) return;
+
+    // Sliding window pattern analysis
+    for (size_t i = window_size; i < length - window_size; i++) {
+        // Extract local features
+        double local_mean = 0.0;
+        for (size_t j = i - window_size; j <= i + window_size; j++) {
+            local_mean += values[j];
+        }
+        local_mean /= (2 * window_size + 1);
+
+        // Compute local variance
+        double local_var = 0.0;
+        for (size_t j = i - window_size; j <= i + window_size; j++) {
+            local_var += (values[j] - local_mean) * (values[j] - local_mean);
+        }
+        local_var /= (2 * window_size + 1);
+
+        // Compute local slope (linear regression)
+        double sum_x = 0, sum_y = 0, sum_xy = 0, sum_xx = 0;
+        for (size_t j = 0; j < 2 * window_size + 1; j++) {
+            double x = (double)j;
+            double y = values[i - window_size + j];
+            sum_x += x;
+            sum_y += y;
+            sum_xy += x * y;
+            sum_xx += x * x;
+        }
+        double n = (double)(2 * window_size + 1);
+        double slope = (n * sum_xy - sum_x * sum_y) / (n * sum_xx - sum_x * sum_x + 1e-10);
+
+        // Compute curvature (second derivative approximation)
+        double curvature = 0.0;
+        if (i > 1 && i < length - 1) {
+            curvature = values[i + 1] - 2.0 * values[i] + values[i - 1];
+        }
+
+        // Store features
+        features[0] = slope;
+        features[1] = curvature;
+        features[2] = sqrt(local_var);
+        features[3] = (values[i] - local_mean) / (sqrt(local_var) + 1e-10);  // local z-score
+
+        // Pattern classification based on feature thresholds
+        // Detect sudden spike patterns (high curvature, high z-score)
+        bool is_spike_pattern = fabs(features[3]) > 2.0 && fabs(features[1]) > 0.1;
+
+        // Detect trend reversal patterns (sign change in curvature with high slope)
+        bool is_reversal_pattern = fabs(features[0]) > 0.5 && fabs(features[1]) > 0.05;
+
+        // Detect oscillation patterns (alternating curvature)
+        bool is_oscillation = false;
+        if (i >= 2 && i < length - 2) {
+            double prev_curv = values[i] - 2.0 * values[i - 1] + values[i - 2];
+            double next_curv = values[i + 2] - 2.0 * values[i + 1] + values[i];
+            is_oscillation = (prev_curv * next_curv < 0) && fabs(features[2]) > 0.3;
+        }
+
+        // Create pattern if detected
+        if (is_spike_pattern || is_reversal_pattern || is_oscillation) {
+            // Determine pattern type: 6=spike, 7=reversal, 8=oscillation
+            int pattern_type = is_spike_pattern ? 6 : (is_reversal_pattern ? 7 : 8);
+
+            // Compute confidence based on feature strength
+            double confidence = 0.0;
+            if (is_spike_pattern) {
+                confidence = 1.0 - exp(-fabs(features[3]) + 1.5);
+            } else if (is_reversal_pattern) {
+                confidence = 1.0 - exp(-fabs(features[0]) * 2.0);
+            } else {
+                confidence = 0.7;  // Base confidence for oscillation
+            }
+            confidence = fmin(fmax(confidence, 0.0), 1.0);
+
+            // Extract pattern values
+            size_t pattern_len = 2 * window_size + 1;
+            double* pattern_values = calloc(pattern_len, sizeof(double));
+            if (pattern_values) {
+                for (size_t j = 0; j < pattern_len; j++) {
+                    pattern_values[j] = values[i - window_size + j];
+                }
+
+                struct FeaturePattern* pattern = create_pattern(pattern_values, pattern_len,
+                                                                 pattern_type, confidence);
+                if (pattern) {
+                    add_pattern(detector, pattern);
+                }
+                free(pattern_values);
+            }
+        }
+    }
+
+    free(features);
 }
 
 // Validate detected spikes

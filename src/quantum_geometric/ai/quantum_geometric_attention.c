@@ -655,30 +655,200 @@ int qg_multihead_attention_forward(const attention_weights_t* weights,
 }
 
 // Backward pass for multi-head attention
+// Computes gradient of loss w.r.t. input given gradient w.r.t. output
 int qg_multihead_attention_backward(const attention_weights_t* weights,
+                                  const float* input,
                                   const float* grad_output,
                                   float* grad_input,
                                   size_t seq_length) {
-    if (!weights || !grad_output || !grad_input || seq_length == 0) {
+    if (!weights || !input || !grad_output || !grad_input || seq_length == 0) {
         return QG_ERROR_INVALID_ARGUMENT;
     }
 
-    // Create differential transformer state
-    DiffTransformerState* state = create_diff_transformer(
-        seq_length, QG_DEFAULT_HEAD_DIM * QG_DEFAULT_NUM_HEADS, QG_DEFAULT_NUM_HEADS, 0.0
-    );
-    if (!state) {
-        return QG_ERROR_OUT_OF_MEMORY;
-    }
+    const size_t head_dim = QG_DEFAULT_HEAD_DIM;
+    const size_t num_heads = QG_DEFAULT_NUM_HEADS;
+    const size_t model_dim = head_dim * num_heads;
 
     // Zero initialize gradients
-    size_t total_size = seq_length * weights->weight_size;
-    memset(grad_input, 0, total_size * sizeof(float));
+    memset(grad_input, 0, seq_length * model_dim * sizeof(float));
 
-    // Compute gradients using differential transformer
-    diff_transformer_forward(state, (const double*)grad_output, (double*)grad_input);
+    // Process each attention head
+    for (size_t h = 0; h < num_heads; h++) {
+        size_t head_offset = h * head_dim;
 
-    free_diff_transformer(state);
+        // Allocate buffers for forward recomputation and gradients
+        float* queries = calloc(seq_length * head_dim, sizeof(float));
+        float* keys = calloc(seq_length * head_dim, sizeof(float));
+        float* values = calloc(seq_length * head_dim, sizeof(float));
+        float* scores = calloc(seq_length * seq_length, sizeof(float));
+        float* attn_probs = calloc(seq_length * seq_length, sizeof(float));
+
+        // Gradient buffers
+        float* grad_context = calloc(seq_length * head_dim, sizeof(float));
+        float* grad_attn = calloc(seq_length * seq_length, sizeof(float));
+        float* grad_scores = calloc(seq_length * seq_length, sizeof(float));
+        float* grad_queries = calloc(seq_length * head_dim, sizeof(float));
+        float* grad_keys = calloc(seq_length * head_dim, sizeof(float));
+        float* grad_values = calloc(seq_length * head_dim, sizeof(float));
+
+        if (!queries || !keys || !values || !scores || !attn_probs ||
+            !grad_context || !grad_attn || !grad_scores ||
+            !grad_queries || !grad_keys || !grad_values) {
+            free(queries); free(keys); free(values); free(scores); free(attn_probs);
+            free(grad_context); free(grad_attn); free(grad_scores);
+            free(grad_queries); free(grad_keys); free(grad_values);
+            return QG_ERROR_OUT_OF_MEMORY;
+        }
+
+        // ---- Forward recomputation ----
+        // Project input to queries, keys, values for this head
+        // Q = input @ W_Q, K = input @ W_K, V = input @ W_V
+        for (size_t i = 0; i < seq_length; i++) {
+            for (size_t d = 0; d < head_dim; d++) {
+                float q_sum = 0.0f, k_sum = 0.0f, v_sum = 0.0f;
+                for (size_t m = 0; m < model_dim; m++) {
+                    float inp = input[i * model_dim + m];
+                    q_sum += inp * weights->query_weights[m * model_dim + head_offset + d];
+                    k_sum += inp * weights->key_weights[m * model_dim + head_offset + d];
+                    v_sum += inp * weights->value_weights[m * model_dim + head_offset + d];
+                }
+                queries[i * head_dim + d] = q_sum;
+                keys[i * head_dim + d] = k_sum;
+                values[i * head_dim + d] = v_sum;
+            }
+        }
+
+        // Compute attention scores: scores = Q @ K^T / sqrt(d)
+        float scale = 1.0f / sqrtf((float)head_dim);
+        for (size_t i = 0; i < seq_length; i++) {
+            for (size_t j = 0; j < seq_length; j++) {
+                float score = 0.0f;
+                for (size_t d = 0; d < head_dim; d++) {
+                    score += queries[i * head_dim + d] * keys[j * head_dim + d];
+                }
+                scores[i * seq_length + j] = score * scale;
+            }
+        }
+
+        // Apply softmax to get attention probabilities
+        for (size_t i = 0; i < seq_length; i++) {
+            // Find max for numerical stability
+            float max_val = scores[i * seq_length];
+            for (size_t j = 1; j < seq_length; j++) {
+                if (scores[i * seq_length + j] > max_val) {
+                    max_val = scores[i * seq_length + j];
+                }
+            }
+            // Compute exp and sum
+            float sum = 0.0f;
+            for (size_t j = 0; j < seq_length; j++) {
+                attn_probs[i * seq_length + j] = expf(scores[i * seq_length + j] - max_val);
+                sum += attn_probs[i * seq_length + j];
+            }
+            // Normalize
+            for (size_t j = 0; j < seq_length; j++) {
+                attn_probs[i * seq_length + j] /= sum;
+            }
+        }
+
+        // ---- Backward pass ----
+        // Extract gradient for this head from grad_output
+        for (size_t i = 0; i < seq_length; i++) {
+            for (size_t d = 0; d < head_dim; d++) {
+                grad_context[i * head_dim + d] =
+                    grad_output[i * model_dim + head_offset + d];
+            }
+        }
+
+        // grad_values = attn_probs^T @ grad_context
+        for (size_t j = 0; j < seq_length; j++) {
+            for (size_t d = 0; d < head_dim; d++) {
+                float sum = 0.0f;
+                for (size_t i = 0; i < seq_length; i++) {
+                    sum += attn_probs[i * seq_length + j] * grad_context[i * head_dim + d];
+                }
+                grad_values[j * head_dim + d] = sum;
+            }
+        }
+
+        // grad_attn = grad_context @ values^T
+        for (size_t i = 0; i < seq_length; i++) {
+            for (size_t j = 0; j < seq_length; j++) {
+                float sum = 0.0f;
+                for (size_t d = 0; d < head_dim; d++) {
+                    sum += grad_context[i * head_dim + d] * values[j * head_dim + d];
+                }
+                grad_attn[i * seq_length + j] = sum;
+            }
+        }
+
+        // Softmax backward: grad_scores = attn_probs * (grad_attn - sum(grad_attn * attn_probs))
+        for (size_t i = 0; i < seq_length; i++) {
+            // Compute dot product sum for this row
+            float dot_sum = 0.0f;
+            for (size_t j = 0; j < seq_length; j++) {
+                dot_sum += grad_attn[i * seq_length + j] * attn_probs[i * seq_length + j];
+            }
+            // Apply softmax gradient
+            for (size_t j = 0; j < seq_length; j++) {
+                grad_scores[i * seq_length + j] =
+                    attn_probs[i * seq_length + j] * (grad_attn[i * seq_length + j] - dot_sum);
+            }
+        }
+
+        // Scale gradient (reverse of forward scaling)
+        for (size_t i = 0; i < seq_length * seq_length; i++) {
+            grad_scores[i] *= scale;
+        }
+
+        // grad_queries = grad_scores @ keys
+        for (size_t i = 0; i < seq_length; i++) {
+            for (size_t d = 0; d < head_dim; d++) {
+                float sum = 0.0f;
+                for (size_t j = 0; j < seq_length; j++) {
+                    sum += grad_scores[i * seq_length + j] * keys[j * head_dim + d];
+                }
+                grad_queries[i * head_dim + d] = sum;
+            }
+        }
+
+        // grad_keys = grad_scores^T @ queries
+        for (size_t j = 0; j < seq_length; j++) {
+            for (size_t d = 0; d < head_dim; d++) {
+                float sum = 0.0f;
+                for (size_t i = 0; i < seq_length; i++) {
+                    sum += grad_scores[i * seq_length + j] * queries[i * head_dim + d];
+                }
+                grad_keys[j * head_dim + d] = sum;
+            }
+        }
+
+        // Backpropagate through projections to get grad_input
+        // grad_input += grad_Q @ W_Q^T + grad_K @ W_K^T + grad_V @ W_V^T
+        for (size_t i = 0; i < seq_length; i++) {
+            for (size_t m = 0; m < model_dim; m++) {
+                float sum = 0.0f;
+                for (size_t d = 0; d < head_dim; d++) {
+                    // W_Q contribution
+                    sum += grad_queries[i * head_dim + d] *
+                           weights->query_weights[m * model_dim + head_offset + d];
+                    // W_K contribution
+                    sum += grad_keys[i * head_dim + d] *
+                           weights->key_weights[m * model_dim + head_offset + d];
+                    // W_V contribution
+                    sum += grad_values[i * head_dim + d] *
+                           weights->value_weights[m * model_dim + head_offset + d];
+                }
+                grad_input[i * model_dim + m] += sum;
+            }
+        }
+
+        // Clean up
+        free(queries); free(keys); free(values); free(scores); free(attn_probs);
+        free(grad_context); free(grad_attn); free(grad_scores);
+        free(grad_queries); free(grad_keys); free(grad_values);
+    }
+
     return QG_SUCCESS;
 }
 

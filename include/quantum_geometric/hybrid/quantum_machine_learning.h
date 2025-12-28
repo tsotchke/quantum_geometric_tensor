@@ -15,6 +15,15 @@ typedef enum {
     QML_AUTOENCODER
 } QMLModelType;
 
+// Activation function types
+typedef enum {
+    ACTIVATION_NONE,        // Linear (no activation)
+    ACTIVATION_RELU,        // Rectified Linear Unit
+    ACTIVATION_SIGMOID,     // Sigmoid function
+    ACTIVATION_TANH,        // Hyperbolic tangent
+    ACTIVATION_SOFTMAX      // Softmax (for output layer)
+} ActivationType;
+
 // Network architecture configuration
 typedef struct {
     size_t input_size;
@@ -33,7 +42,9 @@ typedef struct {
     size_t* layer_sizes;  // Output size for each layer
     double** weights;
     double** biases;
-    void* activation_functions;
+    ActivationType* activation_functions;  // Activation function for each layer
+    double** activations;  // Cached activations from forward pass for backprop
+    double* last_input;    // Cached input for gradient computation
 } ClassicalNetwork;
 
 // Forward declare OptimizationContext from classical_optimization_engine.h

@@ -20,14 +20,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Forward declare complex type for validation
-// Uses the codebase's ComplexDouble struct from quantum_complex.h
-#ifndef COMPLEX_FLOAT_DEFINED
-typedef struct {
-    double real;
-    double imag;
-} ComplexDouble;
-#endif
+// Include complex types from the canonical source
+#include "quantum_geometric/core/quantum_complex.h"
 
 #ifdef __cplusplus
 extern "C" {

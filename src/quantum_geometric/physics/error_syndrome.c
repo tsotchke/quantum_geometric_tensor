@@ -70,6 +70,12 @@ qgt_error_t detect_errors(quantum_state_t* state, ErrorSyndrome* syndrome) {
     }
 
     // Configure syndrome extraction
+    // Determine lattice dimensions - try 3D if dimension is cubic, else 2D
+    size_t dim = state->dimension / 2;  // 2 qubits per site
+    size_t cube_root = (size_t)cbrt((double)dim);
+    size_t sqrt_dim = (size_t)sqrt((double)dim);
+    bool is_3d = (cube_root * cube_root * cube_root == dim) && (cube_root > 1);
+
     SyndromeConfig config = {
         .enable_parallel = true,
         .parallel_group_size = 4,
@@ -80,8 +86,9 @@ qgt_error_t detect_errors(quantum_state_t* state, ErrorSyndrome* syndrome) {
         .max_matching_iterations = 100,
         .pattern_threshold = 0.5,
         .min_pattern_occurrences = 2,
-        .lattice_width = (size_t)sqrt(state->dimension / 2),  // 2 qubits per site
-        .lattice_height = (size_t)sqrt(state->dimension / 2)
+        .lattice_width = is_3d ? cube_root : sqrt_dim,
+        .lattice_height = is_3d ? cube_root : sqrt_dim,
+        .lattice_depth = is_3d ? cube_root : 1
     };
 
     // Extract syndromes
@@ -301,11 +308,22 @@ size_t extract_error_syndromes(quantum_state_t* state,
 
     // Convert syndromes to vertices
     size_t num_syndromes = 0;
+    size_t lattice_slice = config->lattice_width * config->lattice_height;
+    size_t lattice_depth = config->lattice_depth > 0 ? config->lattice_depth : 1;
+
     for (size_t i = 0; i < syndrome.num_errors; i++) {
         size_t idx = syndrome.error_locations[i];
-        size_t x = idx % config->lattice_width;
-        size_t y = idx / config->lattice_width;
-        size_t z = 0; // 2D lattice for now
+
+        // Compute 3D coordinates from flat index
+        size_t z = idx / lattice_slice;
+        size_t remainder = idx % lattice_slice;
+        size_t y = remainder / config->lattice_width;
+        size_t x = remainder % config->lattice_width;
+
+        // Clamp z to valid range for 2D lattices (lattice_depth == 1)
+        if (z >= lattice_depth) {
+            z = lattice_depth - 1;
+        }
 
         // Add vertex to graph
         SyndromeVertex* vertex = add_syndrome_vertex(graph,

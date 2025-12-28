@@ -34,29 +34,29 @@ static void compute_metric_tensor_simd(double complex* tensor,
     // Convert to hierarchical representation
     HierarchicalMatrix* h_state = create_hierarchical_matrix(n, 1e-6);
     HierarchicalMatrix* h_tensor = create_hierarchical_matrix(n, 1e-6);
-    
-    if (!h_state || !h_tensor || 
-        !validate_hierarchical_matrix(h_state) || 
+
+    if (!h_state || !h_tensor ||
+        !validate_hierarchical_matrix(h_state) ||
         !validate_hierarchical_matrix(h_tensor)) {
         if (h_state) destroy_hierarchical_matrix(h_state);
         if (h_tensor) destroy_hierarchical_matrix(h_tensor);
         return;
     }
-    
-    // Copy and validate state data
+
+    // Copy state data (now both use double complex - no conversion needed)
     if (!h_state->data || !state) {
         destroy_hierarchical_matrix(h_state);
         destroy_hierarchical_matrix(h_tensor);
         return;
     }
     memcpy(h_state->data, state, n * sizeof(double complex));
-    
+
     // Compute metric using hierarchical operations
     compute_hierarchical_metric(h_tensor, h_state);
-    
-    // Copy result back
+
+    // Copy result back (no conversion needed - both use double complex)
     memcpy(tensor, h_tensor->data, n * sizeof(double complex));
-    
+
     // Cleanup
     destroy_hierarchical_matrix(h_state);
     destroy_hierarchical_matrix(h_tensor);
@@ -90,6 +90,7 @@ static void compute_leaf_metric(double complex* tensor,
     // This computes |psi|^2 for quantum metric tensor diagonal
     #pragma omp simd
     for (size_t i = 0; i < n; i++) {
+        // |psi|^2 = psi * conj(psi) gives real value
         tensor[i] = state[i] * conj(state[i]);
     }
 }
@@ -134,8 +135,8 @@ static void merge_metric_results(HierarchicalMatrix* tensor) {
                 // Apply boundary conditions between subdivisions
                 size_t boundary_size = tensor->children[i]->rows;
                 for (size_t k = 0; k < boundary_size; k++) {
-                    tensor->data[k] = (tensor->children[i]->data[k] + 
-                                     tensor->children[j]->data[k]) * 0.5;
+                    double complex sum = tensor->children[i]->data[k] + tensor->children[j]->data[k];
+                    tensor->data[k] = sum * 0.5;
                 }
             }
         }

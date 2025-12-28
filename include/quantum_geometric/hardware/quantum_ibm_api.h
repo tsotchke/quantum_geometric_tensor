@@ -248,4 +248,11 @@ void cleanup_ibm_quantum_gate(ibm_quantum_gate* gate);
 void cleanup_ibm_quantum_circuit(ibm_quantum_circuit* circuit);
 // Note: cleanup_quantum_result is defined in quantum_result.h
 
+// Fallback status query functions
+// These functions allow callers to check if local simulation is being used
+// instead of real IBM Quantum hardware, and why.
+bool ibm_api_is_using_fallback(void* api_handle);
+const char* ibm_api_get_fallback_reason(void* api_handle);
+void ibm_api_clear_fallback_status(void* api_handle);
+
 #endif // QUANTUM_IBM_API_H

@@ -433,11 +433,26 @@ void quantum_error_correct(double complex* state, const double complex* syndrome
     }
 
     // CPU fallback: apply Pauli corrections based on syndromes
+    // Syndrome magnitude indicates error type:
+    // - magnitude near 1: bit flip (X error) -> phase correction
+    // - phase of syndrome: indicates Z error -> apply Z correction
     for (size_t i = 0; i < n; i++) {
         double magnitude = cabs(syndromes[i]);
-        if (magnitude > 0.5) {  // Error threshold
-            // Apply X correction (bit flip)
-            state[i] = conj(state[i]);
+        double phase = carg(syndromes[i]);
+
+        if (magnitude > 0.5) {  // Error detected
+            // Determine error type from syndrome phase
+            if (fabs(phase) < M_PI / 4 || fabs(phase) > 3 * M_PI / 4) {
+                // X-type error: apply Z correction (phase flip)
+                state[i] = -state[i];
+            } else if (fabs(fabs(phase) - M_PI / 2) < M_PI / 4) {
+                // Z-type error: need to swap with partner qubit state
+                // For amplitude representation, this inverts the imaginary part
+                state[i] = creal(state[i]) - I * cimag(state[i]);
+            } else {
+                // Y-type error: apply both X and Z corrections
+                state[i] = -creal(state[i]) + I * cimag(state[i]);
+            }
         }
     }
 

@@ -2,39 +2,53 @@
 #include <cublas_v2.h>
 #include <cuda_fp16.h>
 #include <cooperative_groups.h>
+#include <math.h>
 #include "quantum_geometric/hardware/tensor_operations_cuda.h"
 #include "quantum_geometric/hardware/quantum_geometric_cuda.h"
 
 // Optimized block sizes for modern GPUs
-#define BLOCK_SIZE 512  // Increased for better occupancy
-#define TILE_SIZE 64   // Larger tiles for modern GPUs
-#define WARP_SIZE 32   // Warp size is fixed on NVIDIA GPUs
+#define BLOCK_SIZE 256   // Balanced for occupancy
+#define TILE_SIZE 32     // Standard tile size
+#define WARP_SIZE 32     // Warp size is fixed on NVIDIA GPUs
 #define PREFETCH_DISTANCE 2  // Prefetch next tiles
 
-// Shared memory pool for CUDA operations
+// Thread-safe resource management
 static cudaMemPool_t cuda_pool = NULL;
 static cublasHandle_t cublas_handle = NULL;
+static int resources_initialized = 0;
 
 // Initialize CUDA resources with optimized settings
-static void init_cuda_resources() {
-    if (!cuda_pool) {
-        cudaMemPoolCreate(&cuda_pool, 0);
-        cudaMemPoolSetAttribute(cuda_pool, 
-                              cudaMemPoolAttrReleaseThreshold,
-                              UINT64_MAX);
-        // Enable async memory operations
-        cudaMemPoolSetAttribute(cuda_pool,
-                              cudaMemPoolAttrReleaseThreshold,
-                              cudaMemPoolAttrReservedMemCurrent);
+static cudaError_t init_cuda_resources() {
+    if (resources_initialized) return cudaSuccess;
+
+    cudaError_t err;
+
+    // Create memory pool
+    cudaMemPoolProps poolProps = {};
+    poolProps.allocType = cudaMemAllocationTypePinned;
+    poolProps.handleTypes = cudaMemHandleTypeNone;
+    poolProps.location.type = cudaMemLocationTypeDevice;
+    poolProps.location.id = 0;
+
+    err = cudaMemPoolCreate(&cuda_pool, &poolProps);
+    if (err != cudaSuccess) {
+        // Fallback: pool creation might not be supported
+        cuda_pool = NULL;
     }
-    if (!cublas_handle) {
-        cublasCreate(&cublas_handle);
-        // Enable Tensor Cores
-        cublasSetMathMode(cublas_handle, CUBLAS_TENSOR_OP_MATH);
-        // Set matrix layout for better performance
-        cublasSetAtomicsMode(cublas_handle, CUBLAS_ATOMICS_ALLOWED);
-        cublasSetStream(cublas_handle, 0);
+
+    // Create cuBLAS handle
+    cublasStatus_t status = cublasCreate(&cublas_handle);
+    if (status != CUBLAS_STATUS_SUCCESS) {
+        if (cuda_pool) cudaMemPoolDestroy(cuda_pool);
+        return cudaErrorInitializationError;
     }
+
+    // Enable Tensor Cores when available
+    cublasSetMathMode(cublas_handle, CUBLAS_TENSOR_OP_MATH);
+    cublasSetAtomicsMode(cublas_handle, CUBLAS_ATOMICS_ALLOWED);
+
+    resources_initialized = 1;
+    return cudaSuccess;
 }
 
 // Cleanup CUDA resources
@@ -47,138 +61,153 @@ void cleanup_cuda_resources() {
         cublasDestroy(cublas_handle);
         cublas_handle = NULL;
     }
+    resources_initialized = 0;
 }
 
-// Advanced tensor multiplication kernel with optimized memory access
+// Complex matrix multiplication kernel with shared memory tiling
+// Uses standard CUDA operations for correctness across all architectures
 __global__ void tensor_multiply_kernel(const QuantumAmplitude* A,
                                      const QuantumAmplitude* B,
                                      QuantumAmplitude* C,
                                      int M, int N, int K) {
-    using namespace cooperative_groups;
-    thread_block block = this_thread_block();
-    thread_block_tile<WARP_SIZE> warp = tiled_partition<WARP_SIZE>(block);
-    
     // Shared memory with padding to avoid bank conflicts
     __shared__ cuDoubleComplex As[TILE_SIZE][TILE_SIZE + 1];
     __shared__ cuDoubleComplex Bs[TILE_SIZE][TILE_SIZE + 1];
-    
+
     int bx = blockIdx.x * TILE_SIZE;
     int by = blockIdx.y * TILE_SIZE;
     int tx = threadIdx.x;
     int ty = threadIdx.y;
-    
+    int row = bx + tx;
+    int col = by + ty;
+
     cuDoubleComplex sum = make_cuDoubleComplex(0.0, 0.0);
-    
-    // Prefetch first tiles
-    if (bx + tx < M && ty < K)
-        As[ty][tx] = to_cuda_complex(A[(bx + tx) * K + ty].amplitude);
-    if (tx < K && by + ty < N)
-        Bs[ty][tx] = to_cuda_complex(B[tx * N + by + ty].amplitude);
-        
-    block.sync();
-    
-    // Loop over tiles with prefetching
-    for (int i = 0; i < (K + TILE_SIZE - 1) / TILE_SIZE; i++) {
-        // Prefetch next tiles
-        if (i + 1 < (K + TILE_SIZE - 1) / TILE_SIZE) {
-            int next_k = (i + 1) * TILE_SIZE;
-            if (bx + tx < M && next_k + ty < K)
-                __pipeline_memcpy_async(
-                    &As[ty][tx],
-                    &A[(bx + tx) * K + next_k + ty].amplitude,
-                    sizeof(cuDoubleComplex)
-                );
-            if (next_k + tx < K && by + ty < N)
-                __pipeline_memcpy_async(
-                    &Bs[ty][tx],
-                    &B[(next_k + tx) * N + by + ty].amplitude,
-                    sizeof(cuDoubleComplex)
-                );
+
+    // Loop over tiles
+    for (int tile = 0; tile < (K + TILE_SIZE - 1) / TILE_SIZE; tile++) {
+        int k_offset = tile * TILE_SIZE;
+
+        // Load tiles into shared memory
+        if (row < M && k_offset + ty < K) {
+            As[tx][ty] = to_cuda_complex(A[row * K + k_offset + ty].amplitude);
+        } else {
+            As[tx][ty] = make_cuDoubleComplex(0.0, 0.0);
         }
-        
-        // Compute using warp-level primitives and tensor cores
-        #pragma unroll 8
+
+        if (k_offset + tx < K && col < N) {
+            Bs[tx][ty] = to_cuda_complex(B[(k_offset + tx) * N + col].amplitude);
+        } else {
+            Bs[tx][ty] = make_cuDoubleComplex(0.0, 0.0);
+        }
+
+        __syncthreads();
+
+        // Compute partial dot product for this tile
+        #pragma unroll
         for (int k = 0; k < TILE_SIZE; k++) {
-            wmma::fragment<wmma::matrix_a> a;
-            wmma::fragment<wmma::matrix_b> b;
-            wmma::fragment<wmma::accumulator> c;
-            
-            wmma::load_matrix_sync(a, &As[k][tx], TILE_SIZE + 1);
-            wmma::load_matrix_sync(b, &Bs[ty][k], TILE_SIZE + 1);
-            wmma::mma_sync(c, a, b, c);
-            
-            sum = cuCadd(sum, make_cuDoubleComplex(c.x[0], 0.0));
+            cuDoubleComplex a_val = As[tx][k];
+            cuDoubleComplex b_val = Bs[k][ty];
+            // Complex multiplication: (a + bi)(c + di) = (ac - bd) + (ad + bc)i
+            sum.x += a_val.x * b_val.x - a_val.y * b_val.y;
+            sum.y += a_val.x * b_val.y + a_val.y * b_val.x;
         }
-        
-        block.sync();
+
+        __syncthreads();
     }
-    
-    // Store result with vectorized writes
-    if (bx + tx < M && by + ty < N) {
-        C[(bx + tx) * N + by + ty].amplitude = from_cuda_complex(sum);
+
+    // Store result
+    if (row < M && col < N) {
+        C[row * N + col].amplitude = from_cuda_complex(sum);
     }
 }
 
 // Optimized tensor multiplication with automatic algorithm selection
-void cuda_tensor_multiply(QuantumAmplitude* C, const QuantumAmplitude* A, const QuantumAmplitude* B, int size) {
-    init_cuda_resources();
-    
-    // Allocate device memory from pool with prefetching
-    QuantumAmplitude *d_A, *d_B, *d_C;
-    size_t matrix_size = size * size * sizeof(QuantumAmplitude);
-    
-    cudaMemPoolCreate(&cuda_pool, 0);
-    cudaMallocFromPoolAsync(&d_A, matrix_size, cuda_pool, 0);
-    cudaMallocFromPoolAsync(&d_B, matrix_size, cuda_pool, 0);
-    cudaMallocFromPoolAsync(&d_C, matrix_size, cuda_pool, 0);
-    
+cudaError_t cuda_tensor_multiply(QuantumAmplitude* C, const QuantumAmplitude* A, const QuantumAmplitude* B, int size) {
+    cudaError_t err = init_cuda_resources();
+    if (err != cudaSuccess) return err;
+
+    // Allocate device memory
+    QuantumAmplitude *d_A = NULL, *d_B = NULL, *d_C = NULL;
+    size_t matrix_size = (size_t)size * size * sizeof(QuantumAmplitude);
+
+    // Use standard allocation (more portable than memory pools)
+    err = cudaMalloc(&d_A, matrix_size);
+    if (err != cudaSuccess) goto cleanup;
+
+    err = cudaMalloc(&d_B, matrix_size);
+    if (err != cudaSuccess) goto cleanup;
+
+    err = cudaMalloc(&d_C, matrix_size);
+    if (err != cudaSuccess) goto cleanup;
+
     // Create streams for overlapped operations
     cudaStream_t compute_stream, copy_stream;
-    cudaStreamCreateWithFlags(&compute_stream, cudaStreamNonBlocking);
-    cudaStreamCreateWithFlags(&copy_stream, cudaStreamNonBlocking);
-    
+    err = cudaStreamCreateWithFlags(&compute_stream, cudaStreamNonBlocking);
+    if (err != cudaSuccess) goto cleanup;
+
+    err = cudaStreamCreateWithFlags(&copy_stream, cudaStreamNonBlocking);
+    if (err != cudaSuccess) {
+        cudaStreamDestroy(compute_stream);
+        goto cleanup;
+    }
+
     // Copy input data with streams for overlap
-    cudaMemcpyAsync(d_A, A, matrix_size, cudaMemcpyHostToDevice, copy_stream);
-    cudaMemcpyAsync(d_B, B, matrix_size, cudaMemcpyHostToDevice, copy_stream);
-    
+    err = cudaMemcpyAsync(d_A, A, matrix_size, cudaMemcpyHostToDevice, copy_stream);
+    if (err != cudaSuccess) goto cleanup_streams;
+
+    err = cudaMemcpyAsync(d_B, B, matrix_size, cudaMemcpyHostToDevice, copy_stream);
+    if (err != cudaSuccess) goto cleanup_streams;
+
+    // Wait for copies to complete before compute
+    cudaStreamSynchronize(copy_stream);
+
     // Choose optimal algorithm based on size
-    if (size >= 512) { // Lowered threshold for better performance
+    if (size >= 256 && cublas_handle) {
         // Use cuBLAS for large matrices with tensor cores
         const cuDoubleComplex alpha = make_cuDoubleComplex(1.0, 0.0);
         const cuDoubleComplex beta = make_cuDoubleComplex(0.0, 0.0);
-        
-        // Enable tensor cores
-        cublasSetMathMode(cublas_handle, CUBLAS_TENSOR_OP_MATH);
-        
-        cublasZgemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N,
+
+        cublasSetStream(cublas_handle, compute_stream);
+
+        cublasStatus_t status = cublasZgemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N,
                    size, size, size,
                    &alpha,
                    (const cuDoubleComplex*)d_A, size,
                    (const cuDoubleComplex*)d_B, size,
                    &beta,
                    (cuDoubleComplex*)d_C, size);
+
+        if (status != CUBLAS_STATUS_SUCCESS) {
+            err = cudaErrorUnknown;
+            goto cleanup_streams;
+        }
     } else {
         // Use custom kernel for smaller matrices
         dim3 block(TILE_SIZE, TILE_SIZE);
         dim3 grid((size + TILE_SIZE - 1) / TILE_SIZE,
                  (size + TILE_SIZE - 1) / TILE_SIZE);
-        
+
         tensor_multiply_kernel<<<grid, block, 0, compute_stream>>>(
             d_A, d_B, d_C, size, size, size);
+
+        err = cudaGetLastError();
+        if (err != cudaSuccess) goto cleanup_streams;
     }
-    
-    // Copy result back with stream
-    cudaMemcpyAsync(C, d_C, matrix_size, cudaMemcpyDeviceToHost, copy_stream);
-    
-    // Cleanup
+
+    // Wait for compute and copy result back
     cudaStreamSynchronize(compute_stream);
-    cudaStreamSynchronize(copy_stream);
+    err = cudaMemcpy(C, d_C, matrix_size, cudaMemcpyDeviceToHost);
+
+cleanup_streams:
     cudaStreamDestroy(compute_stream);
     cudaStreamDestroy(copy_stream);
-    
-    cudaFreeAsync(d_A, 0);
-    cudaFreeAsync(d_B, 0);
-    cudaFreeAsync(d_C, 0);
+
+cleanup:
+    if (d_A) cudaFree(d_A);
+    if (d_B) cudaFree(d_B);
+    if (d_C) cudaFree(d_C);
+
+    return err;
 }
 
 // Advanced tensor transformation kernel with vectorized access

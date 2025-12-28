@@ -18,6 +18,15 @@ static bool validate_fusion_group(fusion_group_t* group);
 static double calculate_cost_reduction(fusion_group_t* group);
 static bool is_compatible(computation_node_t* node1, computation_node_t* node2);
 
+// Comparison function for qsort (descending order by cost_reduction)
+static int compare_fusion_groups_desc(const void* a, const void* b) {
+    const fusion_group_t* ga = (const fusion_group_t*)a;
+    const fusion_group_t* gb = (const fusion_group_t*)b;
+    if (gb->cost_reduction > ga->cost_reduction) return 1;
+    if (gb->cost_reduction < ga->cost_reduction) return -1;
+    return 0;
+}
+
 // Forward declarations for optimization strategy helpers
 static bool exhaustive_search_optimize(computational_graph_t* graph,
                                        fusion_group_t* groups, size_t num_groups);
@@ -101,6 +110,15 @@ typedef struct {
     bool commutes;
     double fusion_benefit;
 } commutation_info_t;
+
+// Comparison function for qsort (descending order by fusion_benefit)
+static int compare_commutation_desc(const void* a, const void* b) {
+    const commutation_info_t* ca = (const commutation_info_t*)a;
+    const commutation_info_t* cb = (const commutation_info_t*)b;
+    if (cb->fusion_benefit > ca->fusion_benefit) return 1;
+    if (cb->fusion_benefit < ca->fusion_benefit) return -1;
+    return 0;
+}
 
 // Quantum gate fusion candidate
 typedef struct {
@@ -523,17 +541,9 @@ bool optimize_fusion_groups(computational_graph_t* graph,
     
     switch (strategy) {
         case STRATEGY_GREEDY:
-            // Sort groups by cost reduction
-            for (size_t i = 0; i < num_groups - 1; i++) {
-                for (size_t j = 0; j < num_groups - i - 1; j++) {
-                    if (groups[j].cost_reduction < groups[j + 1].cost_reduction) {
-                        fusion_group_t temp = groups[j];
-                        groups[j] = groups[j + 1];
-                        groups[j + 1] = temp;
-                    }
-                }
-            }
-            
+            // Sort groups by cost reduction (O(n log n) using qsort)
+            qsort(groups, num_groups, sizeof(fusion_group_t), compare_fusion_groups_desc);
+
             // Apply fusion to groups in order
             for (size_t i = 0; i < num_groups && success; i++) {
                 if (validate_fusion_group(&groups[i])) {
@@ -1055,16 +1065,8 @@ static bool exhaustive_search_optimize(computational_graph_t* graph,
                                        fusion_group_t* groups, size_t num_groups) {
     if (!graph || !groups || num_groups == 0) return true;
 
-    // Sort groups by cost reduction (descending) for better pruning
-    for (size_t i = 0; i < num_groups - 1; i++) {
-        for (size_t j = 0; j < num_groups - i - 1; j++) {
-            if (groups[j].cost_reduction < groups[j + 1].cost_reduction) {
-                fusion_group_t temp = groups[j];
-                groups[j] = groups[j + 1];
-                groups[j + 1] = temp;
-            }
-        }
-    }
+    // Sort groups by cost reduction (descending) for better pruning - O(n log n)
+    qsort(groups, num_groups, sizeof(fusion_group_t), compare_fusion_groups_desc);
 
     // Initialize branch and bound state
     bb_state_t state = {
@@ -1854,16 +1856,8 @@ static bool find_quantum_fusion_order(commutation_info_t* edges, size_t num_edge
         return false;
     }
 
-    // Sort edges by fusion benefit (descending)
-    for (size_t i = 0; i < num_edges - 1; i++) {
-        for (size_t j = 0; j < num_edges - i - 1; j++) {
-            if (edges[j].fusion_benefit < edges[j + 1].fusion_benefit) {
-                commutation_info_t temp = edges[j];
-                edges[j] = edges[j + 1];
-                edges[j + 1] = temp;
-            }
-        }
-    }
+    // Sort edges by fusion benefit (descending) - O(n log n)
+    qsort(edges, num_edges, sizeof(commutation_info_t), compare_commutation_desc);
 
     *order_size = 0;
 

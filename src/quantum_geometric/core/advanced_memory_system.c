@@ -950,20 +950,76 @@ bool analyze_fragmentation(const advanced_memory_system_t* system,
         sizes[i] = system->pool.layouts[i].total_size;
     }
 
-    // Simple bubble sort by address
-    for (size_t i = 0; i < num_blocks - 1; i++) {
-        for (size_t j = 0; j < num_blocks - i - 1; j++) {
-            if (addresses[j] > addresses[j + 1]) {
-                uintptr_t temp_addr = addresses[j];
-                addresses[j] = addresses[j + 1];
-                addresses[j + 1] = temp_addr;
+    // Quicksort using index array for O(n log n) performance
+    size_t* indices = malloc(num_blocks * sizeof(size_t));
+    if (!indices) {
+        free(addresses);
+        free(sizes);
+        *fragmentation_level = 0.0;
+        return false;
+    }
+    for (size_t i = 0; i < num_blocks; i++) {
+        indices[i] = i;
+    }
 
-                size_t temp_size = sizes[j];
-                sizes[j] = sizes[j + 1];
-                sizes[j + 1] = temp_size;
+    // Simple iterative quicksort on indices
+    size_t* stack = malloc(num_blocks * 2 * sizeof(size_t));
+    if (!stack) {
+        free(indices);
+        free(addresses);
+        free(sizes);
+        *fragmentation_level = 0.0;
+        return false;
+    }
+    int top = -1;
+    stack[++top] = 0;
+    stack[++top] = num_blocks - 1;
+
+    while (top >= 0) {
+        size_t high = stack[top--];
+        size_t low = stack[top--];
+
+        // Partition
+        uintptr_t pivot = addresses[indices[high]];
+        size_t i = low;
+        for (size_t j = low; j < high; j++) {
+            if (addresses[indices[j]] <= pivot) {
+                size_t temp = indices[i];
+                indices[i] = indices[j];
+                indices[j] = temp;
+                i++;
             }
         }
+        size_t temp = indices[i];
+        indices[i] = indices[high];
+        indices[high] = temp;
+        size_t pi = i;
+
+        if (pi > 0 && pi - 1 > low) {
+            stack[++top] = low;
+            stack[++top] = pi - 1;
+        }
+        if (pi + 1 < high) {
+            stack[++top] = pi + 1;
+            stack[++top] = high;
+        }
     }
+    free(stack);
+
+    // Rearrange arrays based on sorted indices
+    uintptr_t* sorted_addr = malloc(num_blocks * sizeof(uintptr_t));
+    size_t* sorted_sizes = malloc(num_blocks * sizeof(size_t));
+    if (sorted_addr && sorted_sizes) {
+        for (size_t i = 0; i < num_blocks; i++) {
+            sorted_addr[i] = addresses[indices[i]];
+            sorted_sizes[i] = sizes[indices[i]];
+        }
+        memcpy(addresses, sorted_addr, num_blocks * sizeof(uintptr_t));
+        memcpy(sizes, sorted_sizes, num_blocks * sizeof(size_t));
+    }
+    free(sorted_addr);
+    free(sorted_sizes);
+    free(indices);
 
     // Calculate gaps
     size_t total_gaps = 0;

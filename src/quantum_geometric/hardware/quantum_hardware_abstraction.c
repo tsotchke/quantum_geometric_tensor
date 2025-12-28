@@ -3177,6 +3177,109 @@ static ValidationResult internal_validate_circuit_full(const struct QuantumCircu
     return result;
 }
 
+// Deep copy a HardwareGate including its parameters array
+static HardwareGate deep_copy_gate(const HardwareGate* src) {
+    HardwareGate dst = *src;  // Copy all scalar fields
+
+    // Deep copy parameters array if present
+    if (src->parameters && src->num_params > 0) {
+        dst.parameters = malloc(src->num_params * sizeof(double));
+        if (dst.parameters) {
+            memcpy(dst.parameters, src->parameters, src->num_params * sizeof(double));
+        } else {
+            dst.num_params = 0;  // Failed to allocate, mark as no params
+        }
+    } else {
+        dst.parameters = NULL;
+        dst.num_params = 0;
+    }
+
+    return dst;
+}
+
+// Deep copy a QuantumCircuit including all gates and arrays
+static QuantumCircuit* deep_copy_circuit(const struct QuantumCircuit* src) {
+    if (!src) {
+        return NULL;
+    }
+
+    QuantumCircuit* dst = malloc(sizeof(QuantumCircuit));
+    if (!dst) {
+        return NULL;
+    }
+
+    // Copy scalar fields
+    dst->num_gates = src->num_gates;
+    dst->capacity = src->capacity;
+    dst->num_qubits = src->num_qubits;
+    dst->num_classical_bits = src->num_classical_bits;
+    dst->depth = src->depth;
+    dst->max_circuit_depth = src->max_circuit_depth;
+
+    // Deep copy gates array
+    if (src->gates && src->num_gates > 0) {
+        dst->gates = malloc(src->capacity * sizeof(HardwareGate));
+        if (!dst->gates) {
+            free(dst);
+            return NULL;
+        }
+        for (size_t i = 0; i < src->num_gates; i++) {
+            dst->gates[i] = deep_copy_gate(&src->gates[i]);
+        }
+        // Zero remaining capacity
+        if (src->capacity > src->num_gates) {
+            memset(&dst->gates[src->num_gates], 0,
+                   (src->capacity - src->num_gates) * sizeof(HardwareGate));
+        }
+    } else {
+        dst->gates = NULL;
+    }
+
+    // Deep copy measured array
+    if (src->measured && src->num_qubits > 0) {
+        dst->measured = malloc(src->num_qubits * sizeof(bool));
+        if (dst->measured) {
+            memcpy(dst->measured, src->measured, src->num_qubits * sizeof(bool));
+        }
+    } else {
+        dst->measured = NULL;
+    }
+
+    // Note: optimization_data and metadata are opaque pointers
+    // We cannot deep copy them without knowing their types
+    // Set to NULL - caller must handle if needed
+    dst->optimization_data = NULL;
+    dst->metadata = NULL;
+
+    return dst;
+}
+
+// Free a deep-copied circuit
+static void free_deep_copied_circuit(QuantumCircuit* circuit) {
+    if (!circuit) {
+        return;
+    }
+
+    // Free each gate's parameters
+    if (circuit->gates) {
+        for (size_t i = 0; i < circuit->num_gates; i++) {
+            if (circuit->gates[i].parameters) {
+                free(circuit->gates[i].parameters);
+            }
+        }
+        free(circuit->gates);
+    }
+
+    if (circuit->measured) {
+        free(circuit->measured);
+    }
+
+    // Note: optimization_data and metadata are NULL from deep copy
+    // If caller set them, caller is responsible for freeing
+
+    free(circuit);
+}
+
 // Optimize circuit for specific hardware
 static OptimizedCircuit* optimize_circuit_for_hardware(const struct QuantumCircuit* circuit,
     const struct QuantumHardware* hardware, const ErrorMitigationStrategy* strategy) {
@@ -3190,8 +3293,13 @@ static OptimizedCircuit* optimize_circuit_for_hardware(const struct QuantumCircu
     }
     memset(optimized, 0, sizeof(OptimizedCircuit));
 
-    // Create a copy of the circuit (simplified - would deep copy in production)
-    optimized->circuit = (QuantumCircuit*)circuit;  // Shallow copy for now
+    // Deep copy the circuit to allow independent modification
+    optimized->circuit = deep_copy_circuit(circuit);
+    if (!optimized->circuit) {
+        free(optimized);
+        return NULL;
+    }
+
     optimized->num_qubits = circuit->num_qubits;
     optimized->optimization_level = 1;
     optimized->estimated_fidelity = 0.95;

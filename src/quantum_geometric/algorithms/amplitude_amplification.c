@@ -338,12 +338,32 @@ qgt_error_t amp_estimate_theta(amp_state_t* state, size_t precision_bits,
     }
 
     // Apply inverse QFT to precision register
-    // (simplified implementation)
+    // Inverse QFT order: controlled rotations FIRST, then Hadamard
     for (size_t i = 0; i < precision_bits; i++) {
         size_t qubit = precision_bits - 1 - i;
         size_t mask = 1ULL << (work_qubits + qubit);
 
-        // Hadamard on this qubit
+        // Controlled rotations FIRST (with negative phases for inverse)
+        // Process from the qubit closest to current one outward
+        for (size_t j = 0; j < i; j++) {
+            size_t control = precision_bits - 1 - j;
+            size_t control_mask = 1ULL << (work_qubits + control);
+            // Negative phase for inverse QFT
+            double phase = -M_PI / (double)(1ULL << (i - j));
+            float cos_p = (float)cos(phase);
+            float sin_p = (float)sin(phase);
+
+            for (size_t idx = 0; idx < total_dim; idx++) {
+                // Apply phase when both control and target are |1⟩
+                if ((idx & control_mask) && (idx & mask)) {
+                    ComplexFloat old = full_state[idx];
+                    full_state[idx].real = cos_p * old.real - sin_p * old.imag;
+                    full_state[idx].imag = sin_p * old.real + cos_p * old.imag;
+                }
+            }
+        }
+
+        // Hadamard on this qubit AFTER the controlled rotations
         float inv_sqrt2 = 0.7071067811865475f;
         for (size_t idx = 0; idx < total_dim; idx++) {
             if ((idx & mask) == 0) {
@@ -355,23 +375,6 @@ qgt_error_t amp_estimate_theta(amp_state_t* state, size_t precision_bits,
                 full_state[idx0].imag = inv_sqrt2 * (a0.imag + a1.imag);
                 full_state[idx1].real = inv_sqrt2 * (a0.real - a1.real);
                 full_state[idx1].imag = inv_sqrt2 * (a0.imag - a1.imag);
-            }
-        }
-
-        // Controlled rotations
-        for (size_t j = 0; j < i; j++) {
-            size_t control = precision_bits - 1 - j;
-            size_t control_mask = 1ULL << (work_qubits + control);
-            double phase = -M_PI / (double)(1ULL << (i - j));
-            float cos_p = (float)cos(phase);
-            float sin_p = (float)sin(phase);
-
-            for (size_t idx = 0; idx < total_dim; idx++) {
-                if ((idx & control_mask) && (idx & mask)) {
-                    ComplexFloat old = full_state[idx];
-                    full_state[idx].real = cos_p * old.real - sin_p * old.imag;
-                    full_state[idx].imag = sin_p * old.real + cos_p * old.imag;
-                }
             }
         }
     }

@@ -166,6 +166,127 @@ static void apply_rotation_x(quantum_state* state, size_t qubit, double theta) {
     }
 }
 
+// Apply rotation around Y axis: RY(theta) = exp(-i * theta/2 * Y)
+// RY(theta) = [[cos(theta/2), -sin(theta/2)], [sin(theta/2), cos(theta/2)]]
+static void apply_rotation_y(quantum_state* state, size_t qubit, double theta) {
+    if (!state || !state->coordinates || qubit >= state->num_qubits) return;
+
+    size_t dim = 1UL << state->num_qubits;
+    size_t mask = 1UL << qubit;
+    float c = cosf((float)(theta / 2.0));
+    float s = sinf((float)(theta / 2.0));
+
+    for (size_t i = 0; i < dim; i++) {
+        if ((i & mask) == 0) {
+            size_t j = i | mask;
+            ComplexFloat a = state->coordinates[i];
+            ComplexFloat b = state->coordinates[j];
+
+            // new_a = cos(theta/2)*a - sin(theta/2)*b
+            // new_b = sin(theta/2)*a + cos(theta/2)*b
+            state->coordinates[i] = (ComplexFloat){
+                c * a.real - s * b.real,
+                c * a.imag - s * b.imag
+            };
+            state->coordinates[j] = (ComplexFloat){
+                s * a.real + c * b.real,
+                s * a.imag + c * b.imag
+            };
+        }
+    }
+}
+
+// Apply rotation around Z axis: RZ(theta) = exp(-i * theta/2 * Z)
+// RZ(theta) = [[exp(-i*theta/2), 0], [0, exp(i*theta/2)]]
+static void apply_rotation_z(quantum_state* state, size_t qubit, double theta) {
+    if (!state || !state->coordinates || qubit >= state->num_qubits) return;
+
+    size_t dim = 1UL << state->num_qubits;
+    size_t mask = 1UL << qubit;
+    float c = cosf((float)(theta / 2.0));
+    float s = sinf((float)(theta / 2.0));
+
+    for (size_t i = 0; i < dim; i++) {
+        ComplexFloat a = state->coordinates[i];
+        if ((i & mask) == 0) {
+            // |0> component: multiply by exp(-i*theta/2)
+            state->coordinates[i] = (ComplexFloat){
+                c * a.real + s * a.imag,
+                c * a.imag - s * a.real
+            };
+        } else {
+            // |1> component: multiply by exp(i*theta/2)
+            state->coordinates[i] = (ComplexFloat){
+                c * a.real - s * a.imag,
+                c * a.imag + s * a.real
+            };
+        }
+    }
+}
+
+// Apply controlled-Z gate: CZ only applies phase when both qubits are |1>
+// CZ|00> = |00>, CZ|01> = |01>, CZ|10> = |10>, CZ|11> = -|11>
+static void apply_controlled_z(quantum_state* state, size_t control, size_t target) {
+    if (!state || !state->coordinates) return;
+    if (control >= state->num_qubits || target >= state->num_qubits) return;
+
+    size_t dim = 1UL << state->num_qubits;
+    size_t control_mask = 1UL << control;
+    size_t target_mask = 1UL << target;
+
+    for (size_t i = 0; i < dim; i++) {
+        // Only apply phase flip when both control and target qubits are |1>
+        if ((i & control_mask) && (i & target_mask)) {
+            state->coordinates[i].real = -state->coordinates[i].real;
+            state->coordinates[i].imag = -state->coordinates[i].imag;
+        }
+    }
+}
+
+// Apply controlled-X (CNOT) gate: flips target qubit when control is |1>
+// CNOT|00> = |00>, CNOT|01> = |01>, CNOT|10> = |11>, CNOT|11> = |10>
+static void apply_controlled_x(quantum_state* state, size_t control, size_t target) {
+    if (!state || !state->coordinates) return;
+    if (control >= state->num_qubits || target >= state->num_qubits) return;
+
+    size_t dim = 1UL << state->num_qubits;
+    size_t control_mask = 1UL << control;
+    size_t target_mask = 1UL << target;
+
+    for (size_t i = 0; i < dim; i++) {
+        // Only swap when control is |1> and we haven't processed this pair
+        if ((i & control_mask) && !(i & target_mask)) {
+            size_t j = i | target_mask;  // Partner with target flipped
+            ComplexFloat temp = state->coordinates[i];
+            state->coordinates[i] = state->coordinates[j];
+            state->coordinates[j] = temp;
+        }
+    }
+}
+
+// Apply SWAP gate: swaps the states of two qubits
+static void apply_swap(quantum_state* state, size_t qubit1, size_t qubit2) {
+    if (!state || !state->coordinates) return;
+    if (qubit1 >= state->num_qubits || qubit2 >= state->num_qubits) return;
+
+    size_t dim = 1UL << state->num_qubits;
+    size_t mask1 = 1UL << qubit1;
+    size_t mask2 = 1UL << qubit2;
+
+    for (size_t i = 0; i < dim; i++) {
+        // Only swap |01> <-> |10> states (where bits differ)
+        bool bit1 = (i & mask1) != 0;
+        bool bit2 = (i & mask2) != 0;
+        if (bit1 && !bit2) {
+            // This is a |10> state, swap with corresponding |01> state
+            size_t j = (i & ~mask1) | mask2;
+            ComplexFloat temp = state->coordinates[i];
+            state->coordinates[i] = state->coordinates[j];
+            state->coordinates[j] = temp;
+        }
+    }
+}
+
 // Quantum wait/delay operation (simulates gate delay for timing)
 static void quantum_wait(quantum_state* state, double delay_ns) {
     // In simulation, this is a no-op but represents physical gate timing
@@ -1031,62 +1152,39 @@ qgt_error_t quantum_circuit_execute(quantum_circuit_t* circuit, quantum_state* s
                 apply_rotation_x(state, gate->qubits[0], M_PI);
                 break;
             case GATE_Y:
-                // Pauli Y is equivalent to rotation around Y by pi
-                apply_rotation_x(state, gate->qubits[0], M_PI);
-                quantum_wait(state, QGT_GATE_DELAY);
-                apply_rotation_x(state, gate->qubits[0], M_PI_2);
+                // Pauli Y: rotation around Y axis by pi
+                apply_rotation_y(state, gate->qubits[0], M_PI);
                 break;
             case GATE_Z:
-                // Pauli Z is equivalent to phase rotation by pi
-                apply_rotation_x(state, gate->qubits[0], 0);
-                quantum_wait(state, QGT_GATE_DELAY);
-                apply_rotation_x(state, gate->qubits[0], M_PI);
+                // Pauli Z: rotation around Z axis by pi (phase flip)
+                apply_rotation_z(state, gate->qubits[0], M_PI);
                 break;
             case GATE_S:
-                // Phase gate
-                apply_rotation_x(state, gate->qubits[0], gate->parameters[0]);
+                // S gate (sqrt(Z)): rotation around Z axis by pi/2
+                apply_rotation_z(state, gate->qubits[0], M_PI_2);
                 break;
             case GATE_RX:
                 apply_rotation_x(state, gate->qubits[0], gate->parameters[0]);
                 break;
             case GATE_RY:
-                // RY = H RX H
-                apply_hadamard_gate(state, gate->qubits[0], 0);
-                apply_rotation_x(state, gate->qubits[0], gate->parameters[0]);
-                apply_hadamard_gate(state, gate->qubits[0], 0);
+                // RY: rotation around Y axis by theta
+                apply_rotation_y(state, gate->qubits[0], gate->parameters[0]);
                 break;
             case GATE_RZ:
-                // RZ = H RY H = H (H RX H) H
-                apply_hadamard_gate(state, gate->qubits[0], 0);
-                apply_hadamard_gate(state, gate->qubits[0], 0);
-                apply_rotation_x(state, gate->qubits[0], gate->parameters[0]);
-                apply_hadamard_gate(state, gate->qubits[0], 0);
-                apply_hadamard_gate(state, gate->qubits[0], 0);
+                // RZ: rotation around Z axis by theta
+                apply_rotation_z(state, gate->qubits[0], gate->parameters[0]);
                 break;
             case GATE_CNOT:
-                // CNOT = H CZ H
-                apply_hadamard_gate(state, gate->qubits[1], 0);
-                // Apply controlled-Z
-                apply_rotation_x(state, gate->qubits[0], 0);
-                quantum_wait(state, QGT_GATE_DELAY);
-                apply_rotation_x(state, gate->qubits[1], M_PI);
-                apply_hadamard_gate(state, gate->qubits[1], 0);
+                // CNOT: controlled-X, flips target when control is |1>
+                apply_controlled_x(state, gate->qubits[0], gate->qubits[1]);
                 break;
             case GATE_CZ:
-                // Controlled-Z
-                apply_rotation_x(state, gate->qubits[0], 0);
-                quantum_wait(state, QGT_GATE_DELAY);
-                apply_rotation_x(state, gate->qubits[1], M_PI);
+                // CZ: controlled-Z, applies phase when both are |1>
+                apply_controlled_z(state, gate->qubits[0], gate->qubits[1]);
                 break;
             case GATE_SWAP:
-                // SWAP = CNOT CNOT CNOT
-                for (int j = 0; j < 3; j++) {
-                    apply_hadamard_gate(state, gate->qubits[1], 0);
-                    apply_rotation_x(state, gate->qubits[0], 0);
-                    quantum_wait(state, QGT_GATE_DELAY);
-                    apply_rotation_x(state, gate->qubits[1], M_PI);
-                    apply_hadamard_gate(state, gate->qubits[1], 0);
-                }
+                // SWAP: exchanges two qubit states
+                apply_swap(state, gate->qubits[0], gate->qubits[1]);
                 break;
             default:
                 return QGT_ERROR_INVALID_OPERATOR;

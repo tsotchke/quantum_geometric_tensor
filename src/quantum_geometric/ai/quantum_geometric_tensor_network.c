@@ -134,9 +134,11 @@ static int contract_pair_tensors(const tensor_t* t1, const tensor_t* t2, tensor_
 static float compute_truncation_error(const ComplexFloat* singular_values, size_t size, float tolerance);
 static size_t find_truncation_rank(const ComplexFloat* singular_values, size_t size, float tolerance);
 static tensor_node_t* create_compressed_node(const tensor_t* u, const tensor_t* s, const tensor_t* v, size_t rank);
+static tensor_t* create_compressed_tensor(const tensor_t* u, const tensor_t* s, const tensor_t* v, size_t rank);
 static bool is_gpu_available(void);
 static int qg_tensor_network_optimize_gpu(tensor_network_t* network, const optimization_params_t* params);
 static int qg_tensor_network_compress_gpu(tensor_network_t* network, float tolerance);
+static int qg_ai_tensor_decompose_svd(const tensor_t* tensor, size_t split_dim, tensor_t* u, tensor_t* s, tensor_t* v);
 
 // Tensor initialization with pool allocation
 int qg_tensor_network_tensor_init(tensor_t* tensor, const size_t* dimensions, size_t rank) {
@@ -641,22 +643,155 @@ static bool is_gpu_available(void) {
     #endif
 }
 
-// GPU-accelerated network optimization (stub for platform-specific implementation)
+// GPU-accelerated network optimization with CPU fallback
+// Uses OpenMP parallelization to provide GPU-like performance on CPU
 static int qg_tensor_network_optimize_gpu(tensor_network_t* network,
                                           const optimization_params_t* params) {
-    (void)network;
-    (void)params;
-    // Platform-specific GPU optimization would go here
-    // Falls back to CPU implementation for now
-    return QG_ERROR_INVALID_ARGUMENT;
+    if (!network || !params) {
+        return QG_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (network->num_nodes < 2) {
+        return QG_SUCCESS;  // Nothing to optimize
+    }
+
+    // TODO: Implement Metal/CUDA acceleration here when available
+    // For now, use highly optimized CPU path with OpenMP parallelization
+
+    size_t n = network->num_nodes;
+
+    // Allocate cost matrix with aligned memory for cache efficiency
+    float* cost_matrix = NULL;
+    if (posix_memalign((void**)&cost_matrix, QG_TENSOR_BLOCK_SIZE, n * n * sizeof(float)) != 0) {
+        return QG_ERROR_OUT_OF_MEMORY;
+    }
+
+    // Parallel cost computation - simulates GPU kernel
+    #pragma omp parallel for collapse(2) num_threads(QG_MAX_TENSOR_THREADS)
+    for (size_t i = 0; i < n; i++) {
+        for (size_t j = 0; j < n; j++) {
+            float cost = INFINITY;
+            if (i != j && network->nodes[i] && network->nodes[j] &&
+                network->nodes[i]->data && network->nodes[j]->data) {
+                size_t shared = count_shared_indices(network->nodes[i], network->nodes[j]);
+                cost = compute_contraction_cost(network->nodes[i], network->nodes[j], shared);
+            }
+            cost_matrix[i * n + j] = cost;
+        }
+    }
+
+    // Find optimal contraction sequence
+    size_t* sequence = (size_t*)malloc(2 * (n-1) * sizeof(size_t));
+    if (!sequence) {
+        free(cost_matrix);
+        return QG_ERROR_OUT_OF_MEMORY;
+    }
+
+    float min_cost = INFINITY;
+    find_optimal_sequence(cost_matrix, n, sequence, &min_cost);
+
+    // Store contraction order
+    if (network->contraction_order) {
+        free(network->contraction_order);
+    }
+    network->contraction_order = sequence;
+    network->is_optimized = true;
+
+    free(cost_matrix);
+    return QG_SUCCESS;
 }
 
-// GPU-accelerated network compression (stub for platform-specific implementation)
+// GPU-accelerated network compression with CPU fallback
+// Uses OpenMP parallelization for SVD truncation
 static int qg_tensor_network_compress_gpu(tensor_network_t* network, float tolerance) {
-    (void)network;
-    (void)tolerance;
-    // Platform-specific GPU compression would go here
-    return QG_ERROR_INVALID_ARGUMENT;
+    if (!network || tolerance <= 0.0f) {
+        return QG_ERROR_INVALID_ARGUMENT;
+    }
+
+    // TODO: Implement Metal/CUDA acceleration here when available
+    // For now, use highly optimized CPU path with OpenMP parallelization
+
+    // Parallel compression using SVD truncation
+    #pragma omp parallel for num_threads(QG_MAX_TENSOR_THREADS)
+    for (size_t i = 0; i < network->num_nodes; i++) {
+        if (!network->nodes[i] || !network->nodes[i]->data) continue;
+
+        tensor_node_t* node = network->nodes[i];
+
+        // Skip tensors that are too small to compress
+        if (node->rank < 2) continue;
+
+        // Find optimal split dimension
+        size_t best_dim = 0;
+        float best_error = INFINITY;
+
+        tensor_t temp_tensor = {
+            .data = node->data,
+            .dimensions = node->dimensions,
+            .rank = node->rank,
+            .total_size = node->total_size,
+            .is_contiguous = true,
+            .strides = NULL,
+            .owns_data = false,
+            .device = NULL,
+            .auxiliary_data = NULL
+        };
+
+        for (size_t dim = 1; dim < node->rank; dim++) {
+            tensor_t u, s, v;
+            memset(&u, 0, sizeof(tensor_t));
+            memset(&s, 0, sizeof(tensor_t));
+            memset(&v, 0, sizeof(tensor_t));
+
+            int status = qg_ai_tensor_decompose_svd(&temp_tensor, dim, &u, &s, &v);
+            if (status != QG_SUCCESS) continue;
+
+            float error = compute_truncation_error(s.data, s.total_size, tolerance);
+            if (error < best_error) {
+                best_error = error;
+                best_dim = dim;
+            }
+
+            qg_tensor_network_tensor_cleanup(&u);
+            qg_tensor_network_tensor_cleanup(&s);
+            qg_tensor_network_tensor_cleanup(&v);
+        }
+
+        // Apply best compression if beneficial
+        if (best_dim > 0 && best_error < tolerance) {
+            tensor_t u, s, v;
+            memset(&u, 0, sizeof(tensor_t));
+            memset(&s, 0, sizeof(tensor_t));
+            memset(&v, 0, sizeof(tensor_t));
+
+            int status = qg_ai_tensor_decompose_svd(&temp_tensor, best_dim, &u, &s, &v);
+            if (status == QG_SUCCESS) {
+                size_t new_rank = find_truncation_rank(s.data, s.total_size, tolerance);
+
+                tensor_t* compressed = create_compressed_tensor(&u, &s, &v, new_rank);
+                if (compressed) {
+                    // Thread-safe update of node data
+                    #pragma omp critical
+                    {
+                        free(node->data);
+                        free(node->dimensions);
+                        node->data = compressed->data;
+                        node->dimensions = compressed->dimensions;
+                        node->rank = compressed->rank;
+                        node->num_dimensions = compressed->rank;
+                        node->total_size = compressed->total_size;
+                        compressed->owns_data = false;
+                    }
+                    free(compressed);
+                }
+            }
+            qg_tensor_network_tensor_cleanup(&u);
+            qg_tensor_network_tensor_cleanup(&s);
+            qg_tensor_network_tensor_cleanup(&v);
+        }
+    }
+
+    return QG_SUCCESS;
 }
 
 // Enhanced tensor contraction with performance tracking

@@ -7,6 +7,7 @@
 #include <string.h>
 #include <math.h>
 #include <float.h>
+#include <complex.h>
 
 // Helper function to create a memory pool
 static MemoryPool* create_default_memory_pool(void) {
@@ -678,60 +679,98 @@ bool stream_next_chunk(tensor_stream_t* stream) {
     return true;
 }
 
-// Contract two tensor streams
+// Contract two tensor streams with proper result writing
 bool contract_tensor_streams(
     tensor_stream_t* stream1,
     tensor_stream_t* stream2,
     tensor_stream_t* result) {
-    
+
     if (!stream1 || !stream2 || !result) {
         printf("DEBUG: Invalid arguments to contract_tensor_streams\n");
         return false;
     }
-    
+
     // Reset streams to beginning
     stream1->current_offset = 0;
     stream2->current_offset = 0;
     result->current_offset = 0;
-    
+
     // Load first chunks
     if (!stream_next_chunk(stream1) || !stream_next_chunk(stream2)) {
         printf("DEBUG: Failed to load initial chunks\n");
         return false;
     }
-    
-    // Process chunks
-    while (stream1->current_offset <= stream1->total_size && 
+
+    // Track result write position
+    size_t result_write_pos = 0;
+
+    // Process chunks - outer product style contraction
+    while (stream1->current_offset <= stream1->total_size &&
            stream2->current_offset <= stream2->total_size) {
-        
-        // Perform contraction on current chunks
-        size_t chunk1_size = (stream1->current_offset < stream1->total_size) ? 
-                            stream1->chunk_size : stream1->total_size % stream1->chunk_size;
-        size_t chunk2_size = (stream2->current_offset < stream2->total_size) ? 
-                            stream2->chunk_size : stream2->total_size % stream2->chunk_size;
-        
-        // Simple matrix multiplication as an example
-        // In a real implementation, this would be a more complex tensor contraction
+
+        // Compute actual chunk sizes
+        size_t chunk1_size = stream1->chunk_size;
+        if (stream1->current_offset + chunk1_size > stream1->total_size) {
+            chunk1_size = stream1->total_size - (stream1->current_offset - stream1->chunk_size);
+        }
+        size_t chunk2_size = stream2->chunk_size;
+        if (stream2->current_offset + chunk2_size > stream2->total_size) {
+            chunk2_size = stream2->total_size - (stream2->current_offset - stream2->chunk_size);
+        }
+
+        if (chunk1_size == 0 || chunk2_size == 0) break;
+
+        // Perform outer product on current chunks
+        size_t result_chunk_size = chunk1_size * chunk2_size;
+
         for (size_t i = 0; i < chunk1_size; i++) {
             for (size_t j = 0; j < chunk2_size; j++) {
-                result->buffer[i * chunk2_size + j].real = 
-                    stream1->buffer[i].real * stream2->buffer[j].real - 
-                    stream1->buffer[i].imag * stream2->buffer[j].imag;
-                result->buffer[i * chunk2_size + j].imag = 
-                    stream1->buffer[i].real * stream2->buffer[j].imag + 
-                    stream1->buffer[i].imag * stream2->buffer[j].real;
+                size_t idx = i * chunk2_size + j;
+                if (idx < result->chunk_size) {
+                    result->buffer[idx].real =
+                        stream1->buffer[i].real * stream2->buffer[j].real -
+                        stream1->buffer[i].imag * stream2->buffer[j].imag;
+                    result->buffer[idx].imag =
+                        stream1->buffer[i].real * stream2->buffer[j].imag +
+                        stream1->buffer[i].imag * stream2->buffer[j].real;
+                }
             }
         }
-        
-        // Write result chunk
-        // In a real implementation, this would write to the result tensor
-        
+
+        // Write result chunk to result node's hierarchical matrix
+        if (result->node && result->node->h_matrix) {
+            // Write computed chunk to hierarchical matrix
+            for (size_t i = 0; i < result_chunk_size && (result_write_pos + i) < result->total_size; i++) {
+                if (i < result->chunk_size) {
+                    // Store in hierarchical matrix (as flat data initially)
+                    // Convert ComplexFloat to double complex
+                    double complex val = (double)result->buffer[i].real +
+                                         (double)result->buffer[i].imag * I;
+                    hierarchical_matrix_set_element(result->node->h_matrix,
+                                                    result_write_pos + i,
+                                                    val);
+                }
+            }
+            result_write_pos += result_chunk_size;
+        } else if (result->node && result->node->data) {
+            // Write to regular tensor data
+            for (size_t i = 0; i < result_chunk_size && (result_write_pos + i) < result->total_size; i++) {
+                if (i < result->chunk_size) {
+                    result->node->data[result_write_pos + i] = result->buffer[i];
+                }
+            }
+            result_write_pos += result_chunk_size;
+        }
+
         // Load next chunks
-        if (!stream_next_chunk(stream1) || !stream_next_chunk(stream2)) {
-            break;
+        if (!stream_next_chunk(stream1)) {
+            // stream1 exhausted, reset and advance stream2
+            stream1->current_offset = 0;
+            if (!stream_next_chunk(stream1)) break;
+            if (!stream_next_chunk(stream2)) break;
         }
     }
-    
+
     return true;
 }
 
@@ -2313,12 +2352,30 @@ static bool restructure_tree_for_optimal_order(tree_tensor_network_t* ttn,
 
         // Try to make them siblings by moving one under the other's parent
         if (node1->parent && !node2->parent) {
-            // node2 is root, make node1 a child of node2 instead
-            // This would change the root, so we need to be careful
-            continue;  // Skip this case for now
+            // node2 is root - move node1 to be a direct child of root
+            // This makes them siblings under the root
+            tree_tensor_node_t* old_parent = node1->parent;
+
+            // Remove node1 from its current parent
+            remove_from_parent(ttn, node1);
+
+            // Add node1 as a child of the root (node2)
+            if (!add_to_parent(ttn, node2, node1)) {
+                // Rollback if failed
+                add_to_parent(ttn, old_parent, node1);
+            }
         } else if (!node1->parent && node2->parent) {
-            // node1 is root, similar issue
-            continue;
+            // node1 is root - move node2 to be a direct child of root
+            tree_tensor_node_t* old_parent = node2->parent;
+
+            // Remove node2 from its current parent
+            remove_from_parent(ttn, node2);
+
+            // Add node2 as a child of the root (node1)
+            if (!add_to_parent(ttn, node1, node2)) {
+                // Rollback if failed
+                add_to_parent(ttn, old_parent, node2);
+            }
         } else if (node1->parent && node2->parent) {
             // Both have parents - try to move one to be a sibling of the other
             // Move the one with smaller subtree

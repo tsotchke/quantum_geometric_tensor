@@ -14,10 +14,20 @@
 #ifndef NO_MPI
 
 #include "quantum_geometric/distributed/communication_optimization.h"
+#include "quantum_geometric/hardware/quantum_geometric_gpu.h"
 #include <mpi.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+
+#ifdef __APPLE__
+#include <IOKit/IOKitLib.h>
+#include <CoreFoundation/CoreFoundation.h>
+#endif
+
+#ifdef HAVE_NVML
+#include <nvml.h>
+#endif
 
 // Training parameters
 #define MAX_NODES 256
@@ -171,6 +181,96 @@ void cleanup_training_orchestrator(TrainingOrchestrator* orchestrator) {
 // Internal Helper Functions
 // ============================================================================
 
+static int detect_gpu_count(DeviceType* gpu_type) {
+    int num_gpus = 0;
+    *gpu_type = DEVICE_CPU;  // Default
+
+#ifdef __APPLE__
+    // macOS: Detect Metal GPUs using IOKit
+    io_iterator_t iterator;
+    kern_return_t result;
+
+    // Count AGXAccelerator (Apple Silicon GPU) devices
+    CFMutableDictionaryRef matching = IOServiceMatching("AGXAccelerator");
+    if (matching) {
+        result = IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator);
+        if (result == KERN_SUCCESS) {
+            io_object_t service;
+            while ((service = IOIteratorNext(iterator)) != 0) {
+                num_gpus++;
+                *gpu_type = DEVICE_GPU_METAL;
+                IOObjectRelease(service);
+            }
+            IOObjectRelease(iterator);
+        }
+    }
+
+    // If no Apple Silicon GPU, check for Intel/AMD GPUs
+    if (num_gpus == 0) {
+        matching = IOServiceMatching("IOGPUDevice");
+        if (!matching) {
+            matching = IOServiceMatching("AppleGPUPowerManagement");
+        }
+        if (matching) {
+            result = IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator);
+            if (result == KERN_SUCCESS) {
+                io_object_t service;
+                while ((service = IOIteratorNext(iterator)) != 0) {
+                    num_gpus++;
+                    *gpu_type = DEVICE_GPU_METAL;
+                    IOObjectRelease(service);
+                }
+                IOObjectRelease(iterator);
+            }
+        }
+    }
+
+    // macOS always has at least one GPU (integrated or discrete)
+    if (num_gpus == 0) {
+        // Fall back to checking system profiler info via sysctl
+        // SPDisplaysDataType contains GPU info
+        // For simplicity, assume at least 1 Metal GPU on modern macOS
+        num_gpus = 1;
+        *gpu_type = DEVICE_GPU_METAL;
+    }
+
+#elif defined(HAVE_NVML)
+    // Linux/NVIDIA: Use NVML to detect CUDA GPUs
+    static bool nvml_initialized = false;
+    static bool nvml_available = false;
+
+    if (!nvml_initialized) {
+        nvml_initialized = true;
+        nvmlReturn_t nvml_result = nvmlInit_v2();
+        nvml_available = (nvml_result == NVML_SUCCESS);
+    }
+
+    if (nvml_available) {
+        unsigned int device_count = 0;
+        nvmlReturn_t nvml_result = nvmlDeviceGetCount_v2(&device_count);
+        if (nvml_result == NVML_SUCCESS && device_count > 0) {
+            num_gpus = (int)device_count;
+            *gpu_type = DEVICE_GPU_CUDA;
+        }
+    }
+
+#else
+    // Try using the GPU interface from quantum_geometric_gpu.h
+    GPUDeviceInfo devices[MAX_GPUS_PER_NODE];
+    int device_count = gpu_get_devices(devices, MAX_GPUS_PER_NODE);
+    if (device_count > 0) {
+        num_gpus = device_count;
+        if (devices[0].backend_type == GPU_BACKEND_METAL) {
+            *gpu_type = DEVICE_GPU_METAL;
+        } else if (devices[0].backend_type == GPU_BACKEND_CUDA) {
+            *gpu_type = DEVICE_GPU_CUDA;
+        }
+    }
+#endif
+
+    return num_gpus;
+}
+
 static void setup_node_config(TrainingOrchestrator* orchestrator) {
     MPI_Comm_rank(MPI_COMM_WORLD, &orchestrator->node_config.rank);
     MPI_Comm_size(MPI_COMM_WORLD, &orchestrator->node_config.world_size);
@@ -181,8 +281,22 @@ static void setup_node_config(TrainingOrchestrator* orchestrator) {
     MPI_Comm_rank(shmcomm, &orchestrator->node_config.local_rank);
     MPI_Comm_free(&shmcomm);
 
-    // Detect GPUs (simplified - in production would use CUDA/Metal APIs)
-    orchestrator->node_config.num_gpus = 1; // Assume at least 1
+    // Detect GPUs using platform-specific APIs
+    DeviceType gpu_type;
+    int detected_gpus = detect_gpu_count(&gpu_type);
+
+    // Ensure at least 1 device (CPU fallback)
+    if (detected_gpus <= 0) {
+        detected_gpus = 1;
+        gpu_type = DEVICE_CPU;
+    }
+
+    // Cap at maximum GPUs per node
+    if (detected_gpus > MAX_GPUS_PER_NODE) {
+        detected_gpus = MAX_GPUS_PER_NODE;
+    }
+
+    orchestrator->node_config.num_gpus = (size_t)detected_gpus;
     orchestrator->node_config.is_master = (orchestrator->node_config.rank == 0);
 
     // Allocate and set device types
@@ -191,11 +305,7 @@ static void setup_node_config(TrainingOrchestrator* orchestrator) {
         orchestrator->node_config.num_devices * sizeof(DeviceType));
     if (orchestrator->node_config.devices) {
         for (size_t i = 0; i < orchestrator->node_config.num_devices; i++) {
-#ifdef __APPLE__
-            orchestrator->node_config.devices[i] = DEVICE_GPU_METAL;
-#else
-            orchestrator->node_config.devices[i] = DEVICE_GPU_CUDA;
-#endif
+            orchestrator->node_config.devices[i] = gpu_type;
         }
     }
 }

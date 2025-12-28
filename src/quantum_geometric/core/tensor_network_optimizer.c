@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <complex.h>
 
 // Platform-specific SIMD includes
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
@@ -282,10 +283,52 @@ static GeometricDecomposition* find_geometric_decomposition(const Tensor* tensor
         return NULL;
     }
 
-    // Create factor tensors (simple split for now)
-    size_t left = compute_left_dimension(tensor);
-    size_t right = compute_right_dimension(tensor);
+    // Compute dimensions for SVD-based decomposition
+    size_t rows = compute_left_dimension(tensor);
+    size_t cols = compute_right_dimension(tensor);
+    size_t min_dim = (rows < cols) ? rows : cols;
 
+    // Allocate SVD workspace
+    double complex* data_c = aligned_alloc(64, rows * cols * sizeof(double complex));
+    double complex* U = aligned_alloc(64, rows * rows * sizeof(double complex));
+    double complex* S = aligned_alloc(64, min_dim * sizeof(double complex));
+    double complex* V = aligned_alloc(64, cols * cols * sizeof(double complex));
+
+    if (!data_c || !U || !S || !V) {
+        if (data_c) free(data_c);
+        if (U) free(U);
+        if (S) free(S);
+        if (V) free(V);
+        free(decomp->factors);
+        free(decomp);
+        return NULL;
+    }
+
+    // Convert real tensor data to complex
+    for (size_t i = 0; i < rows * cols && i < tensor->total_size; i++) {
+        data_c[i] = tensor->data[i] + 0.0 * I;
+    }
+
+    // Perform SVD decomposition
+    compute_svd(data_c, rows, cols, U, S, V);
+
+    // Truncate singular values based on threshold
+    size_t rank = 0;
+    double total_energy = 0.0;
+    for (size_t i = 0; i < min_dim; i++) {
+        total_energy += cabs(S[i]) * cabs(S[i]);
+    }
+
+    double threshold_energy = total_energy * (1.0 - COMPRESSION_THRESHOLD);
+    double cumulative = 0.0;
+    for (size_t i = 0; i < min_dim && i < MAX_RANK; i++) {
+        cumulative += cabs(S[i]) * cabs(S[i]);
+        rank++;
+        if (cumulative >= threshold_energy) break;
+    }
+    if (rank == 0) rank = 1;  // At least rank 1
+
+    // Create factor tensors with proper SVD decomposition
     decomp->factors[0] = aligned_alloc(64, sizeof(Tensor));
     decomp->factors[1] = aligned_alloc(64, sizeof(Tensor));
 
@@ -294,14 +337,65 @@ static GeometricDecomposition* find_geometric_decomposition(const Tensor* tensor
         if (decomp->factors[1]) free(decomp->factors[1]);
         free(decomp->factors);
         free(decomp);
+        free(data_c);
+        free(U);
+        free(S);
+        free(V);
         return NULL;
     }
 
-    // Initialize factors
-    decomp->factors[0]->total_size = left * MAX_RANK;
+    // Factor 0: U * sqrt(S) - rows x rank
+    decomp->factors[0]->total_size = rows * rank;
     decomp->factors[0]->data = aligned_alloc(64, decomp->factors[0]->total_size * sizeof(double));
-    decomp->factors[1]->total_size = MAX_RANK * right;
+    decomp->factors[0]->dimensions = NULL;
+    decomp->factors[0]->num_dimensions = 2;
+    decomp->factors[0]->is_compressed = true;
+
+    // Factor 1: sqrt(S) * V^H - rank x cols
+    decomp->factors[1]->total_size = rank * cols;
     decomp->factors[1]->data = aligned_alloc(64, decomp->factors[1]->total_size * sizeof(double));
+    decomp->factors[1]->dimensions = NULL;
+    decomp->factors[1]->num_dimensions = 2;
+    decomp->factors[1]->is_compressed = true;
+
+    if (!decomp->factors[0]->data || !decomp->factors[1]->data) {
+        cleanup_geometric_decomposition(decomp);
+        free(data_c);
+        free(U);
+        free(S);
+        free(V);
+        return NULL;
+    }
+
+    // Fill factor 0: U[:, :rank] * diag(sqrt(S[:rank]))
+    for (size_t i = 0; i < rows; i++) {
+        for (size_t j = 0; j < rank; j++) {
+            double s_sqrt = sqrt(cabs(S[j]));
+            decomp->factors[0]->data[i * rank + j] = creal(U[i * rows + j]) * s_sqrt;
+        }
+    }
+
+    // Fill factor 1: diag(sqrt(S[:rank])) * V^H[:rank, :]
+    for (size_t i = 0; i < rank; i++) {
+        double s_sqrt = sqrt(cabs(S[i]));
+        for (size_t j = 0; j < cols; j++) {
+            // V is stored as V^H, so V^H[i,j] = conj(V[j,i])
+            decomp->factors[1]->data[i * cols + j] = creal(V[i * cols + j]) * s_sqrt;
+        }
+    }
+
+    // Compute approximation error
+    double reconstruction_error = 0.0;
+    for (size_t i = rank; i < min_dim; i++) {
+        reconstruction_error += cabs(S[i]) * cabs(S[i]);
+    }
+    decomp->error = sqrt(reconstruction_error / (total_energy + 1e-10));
+
+    // Cleanup
+    free(data_c);
+    free(U);
+    free(S);
+    free(V);
 
     return decomp;
 }
@@ -309,11 +403,95 @@ static GeometricDecomposition* find_geometric_decomposition(const Tensor* tensor
 static void apply_geometric_decomposition(TensorNetworkOptimizer* optimizer,
                                          TensorNetwork* network,
                                          const GeometricDecomposition* decomp) {
-    (void)optimizer;
-    (void)network;
-    (void)decomp;
-    // Apply the decomposition factors to the network
-    // This would replace tensors with their decomposed factors
+    if (!optimizer || !network || !decomp || decomp->num_factors == 0) {
+        return;
+    }
+
+    // Skip if decomposition error is too high (not beneficial)
+    if (decomp->error > optimizer->config.convergence_threshold * 10) {
+        return;
+    }
+
+    // Only apply decomposition if it reduces complexity
+    // (at least 2 factors means actual decomposition happened)
+    if (decomp->num_factors < 2 || !decomp->factors) {
+        return;
+    }
+
+    // Find the tensor in network that matches the first factor's size
+    // (the decomposition was computed from this tensor)
+    size_t target_idx = SIZE_MAX;
+    for (size_t i = 0; i < network->num_tensors; i++) {
+        Tensor* t = network->tensors[i];
+        if (t && t->total_size > 0) {
+            // Check if this tensor could have produced these factors
+            size_t decomp_size = 0;
+            for (size_t j = 0; j < decomp->num_factors; j++) {
+                if (decomp->factors[j]) {
+                    decomp_size += decomp->factors[j]->total_size;
+                }
+            }
+            // The decomposed factors should have similar or smaller total size
+            if (decomp_size <= t->total_size * 2) {
+                target_idx = i;
+                break;
+            }
+        }
+    }
+
+    if (target_idx == SIZE_MAX) {
+        return;  // No suitable target tensor found
+    }
+
+    // Expand network to hold additional factors
+    size_t new_num_tensors = network->num_tensors + decomp->num_factors - 1;
+    Tensor** new_tensors = realloc(network->tensors, new_num_tensors * sizeof(Tensor*));
+    if (!new_tensors) {
+        return;  // Memory allocation failed
+    }
+    network->tensors = new_tensors;
+
+    // Free the original tensor
+    Tensor* original = network->tensors[target_idx];
+    if (original) {
+        if (original->data) free(original->data);
+        free(original);
+    }
+
+    // Insert decomposition factors
+    // First factor replaces the original
+    network->tensors[target_idx] = decomp->factors[0];
+
+    // Additional factors go at the end
+    for (size_t i = 1; i < decomp->num_factors; i++) {
+        network->tensors[network->num_tensors + i - 1] = decomp->factors[i];
+    }
+    network->num_tensors = new_num_tensors;
+
+    // Update bonds if they exist
+    if (network->bonds && network->num_bonds > 0) {
+        // Add new bonds connecting the factors
+        size_t new_num_bonds = network->num_bonds + decomp->num_factors - 1;
+        BondDimension* new_bonds = realloc(network->bonds,
+                                           new_num_bonds * sizeof(BondDimension));
+        if (new_bonds) {
+            network->bonds = new_bonds;
+            // Initialize new bonds with truncated dimensions
+            for (size_t i = network->num_bonds; i < new_num_bonds; i++) {
+                network->bonds[i].left_dim =
+                    (decomp->factors[i - network->num_bonds + 1]) ?
+                    decomp->factors[i - network->num_bonds + 1]->num_dimensions : 1;
+                network->bonds[i].right_dim =
+                    (i + 1 < decomp->num_factors && decomp->factors[i + 1]) ?
+                    decomp->factors[i + 1]->num_dimensions : 1;
+                network->bonds[i].num_values = 0;
+            }
+            network->num_bonds = new_num_bonds;
+        }
+    }
+
+    // Mark network as needing re-optimization
+    network->is_optimized = false;
 }
 
 static void cleanup_geometric_decomposition(GeometricDecomposition* decomp) {

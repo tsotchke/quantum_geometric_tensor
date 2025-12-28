@@ -496,6 +496,126 @@ double* measure_expectation_value(QuantumGeometricInterface* interface) {
     return result;
 }
 
+// Helper: Apply RY rotation to a single qubit in statevector
+// RY(θ) = [[cos(θ/2), -sin(θ/2)], [sin(θ/2), cos(θ/2)]]
+static void apply_ry_to_statevector(ComplexFloat* amplitudes, size_t dim,
+                                     size_t target_qubit, double angle) {
+    double cos_half = cos(angle / 2.0);
+    double sin_half = sin(angle / 2.0);
+
+    size_t stride = 1ULL << target_qubit;
+
+    for (size_t block = 0; block < dim; block += 2 * stride) {
+        for (size_t i = block; i < block + stride; i++) {
+            size_t j = i + stride;
+
+            ComplexFloat a = amplitudes[i];  // |...0...⟩
+            ComplexFloat b = amplitudes[j];  // |...1...⟩
+
+            // a' = cos(θ/2)*a - sin(θ/2)*b
+            // b' = sin(θ/2)*a + cos(θ/2)*b
+            amplitudes[i].real = (float)(cos_half * a.real - sin_half * b.real);
+            amplitudes[i].imag = (float)(cos_half * a.imag - sin_half * b.imag);
+
+            amplitudes[j].real = (float)(sin_half * a.real + cos_half * b.real);
+            amplitudes[j].imag = (float)(sin_half * a.imag + cos_half * b.imag);
+        }
+    }
+}
+
+// Helper: Apply RZ rotation to a single qubit in statevector
+// RZ(θ) = [[e^(-iθ/2), 0], [0, e^(iθ/2)]]
+static void apply_rz_to_statevector(ComplexFloat* amplitudes, size_t dim,
+                                     size_t target_qubit, double angle) {
+    double cos_half = cos(angle / 2.0);
+    double sin_half = sin(angle / 2.0);
+
+    size_t stride = 1ULL << target_qubit;
+
+    for (size_t block = 0; block < dim; block += 2 * stride) {
+        for (size_t i = block; i < block + stride; i++) {
+            size_t j = i + stride;
+
+            ComplexFloat a = amplitudes[i];  // |...0...⟩ gets e^(-iθ/2)
+            ComplexFloat b = amplitudes[j];  // |...1...⟩ gets e^(+iθ/2)
+
+            // a' = e^(-iθ/2) * a = (cos - i*sin) * a
+            amplitudes[i].real = (float)(cos_half * a.real + sin_half * a.imag);
+            amplitudes[i].imag = (float)(cos_half * a.imag - sin_half * a.real);
+
+            // b' = e^(+iθ/2) * b = (cos + i*sin) * b
+            amplitudes[j].real = (float)(cos_half * b.real - sin_half * b.imag);
+            amplitudes[j].imag = (float)(cos_half * b.imag + sin_half * b.real);
+        }
+    }
+}
+
+// Helper: Compute Z expectation value for a single qubit
+// ⟨Z⟩ = Σ|α_i|² - Σ|β_j|² where i has qubit=0 and j has qubit=1
+static double compute_z_expectation(const ComplexFloat* amplitudes, size_t dim,
+                                     size_t target_qubit) {
+    double prob_zero = 0.0;
+    double prob_one = 0.0;
+
+    size_t stride = 1ULL << target_qubit;
+
+    for (size_t block = 0; block < dim; block += 2 * stride) {
+        for (size_t i = block; i < block + stride; i++) {
+            size_t j = i + stride;
+
+            prob_zero += amplitudes[i].real * amplitudes[i].real +
+                        amplitudes[i].imag * amplitudes[i].imag;
+            prob_one += amplitudes[j].real * amplitudes[j].real +
+                       amplitudes[j].imag * amplitudes[j].imag;
+        }
+    }
+
+    return prob_zero - prob_one;  // ⟨Z⟩ = P(0) - P(1)
+}
+
+// Evaluate variational cost function using actual quantum circuit simulation
+// Applies hardware-efficient ansatz: RY-RZ layers per qubit
+// Returns sum of Z expectation values (common cost for optimization problems)
+static double evaluate_variational_cost(size_t num_qubits, size_t dim,
+                                         const double* params, size_t num_params) {
+    if (num_qubits == 0 || dim == 0 || !params) return INFINITY;
+
+    // Limit simulation size for practical computation
+    if (num_qubits > 20) {
+        num_qubits = 20;
+        dim = 1ULL << 20;
+    }
+
+    // Allocate working statevector initialized to |0...0⟩
+    ComplexFloat* state = calloc(dim, sizeof(ComplexFloat));
+    if (!state) return INFINITY;
+    state[0].real = 1.0f;
+    state[0].imag = 0.0f;
+
+    // Apply hardware-efficient ansatz: RY(θ₀)-RZ(θ₁)-RY(θ₂) per qubit
+    // Parameters layout: [RY0, RZ0, RY1, RZ1, RY2, RZ2, ...]
+    size_t param_idx = 0;
+    for (size_t q = 0; q < num_qubits && param_idx + 2 < num_params; q++) {
+        apply_ry_to_statevector(state, dim, q, params[param_idx]);
+        apply_rz_to_statevector(state, dim, q, params[param_idx + 1]);
+        apply_ry_to_statevector(state, dim, q, params[param_idx + 2]);
+        param_idx += 3;
+    }
+
+    // Compute cost as sum of Z expectation values
+    // This is equivalent to minimizing <H> where H = Σᵢ Zᵢ
+    double cost = 0.0;
+    for (size_t q = 0; q < num_qubits; q++) {
+        cost += compute_z_expectation(state, dim, q);
+    }
+
+    free(state);
+
+    // Return normalized cost (shifted to be non-negative for optimization)
+    // Range: [-num_qubits, +num_qubits] -> [0, 2*num_qubits]
+    return cost + (double)num_qubits;
+}
+
 // Run variational optimization
 double* run_variational_optimization(QuantumGeometricInterface* interface) {
     if (!interface) return NULL;
@@ -504,14 +624,16 @@ double* run_variational_optimization(QuantumGeometricInterface* interface) {
     if (!internal) return NULL;
 
     // Number of variational parameters (default for a simple ansatz)
-    size_t num_params = interface->num_qubits * 3;  // 3 rotation angles per qubit
+    size_t num_qubits = interface->num_qubits;
+    size_t num_params = num_qubits * 3;  // 3 rotation angles per qubit (RY-RZ-RY)
+    size_t dim = 1ULL << (num_qubits > 20 ? 20 : num_qubits);  // Limit dimension
 
     double* params = aligned_alloc(QGT_POOL_ALIGNMENT, num_params * sizeof(double));
     if (!params) return NULL;
 
-    // Initialize parameters
+    // Initialize parameters with small random values for symmetry breaking
     for (size_t i = 0; i < num_params; i++) {
-        params[i] = 0.0;
+        params[i] = 0.1 * ((double)rand() / RAND_MAX - 0.5);
     }
 
     // Simple gradient descent optimization
@@ -531,32 +653,26 @@ double* run_variational_optimization(QuantumGeometricInterface* interface) {
         for (size_t p = 0; p < num_params; p++) {
             double original = params[p];
 
-            // Forward shift
+            // Forward shift (+π/2)
             params[p] = original + M_PI / 2.0;
-            double cost_plus = 0.0;
-            // Would evaluate circuit here - using placeholder cost
-            for (size_t i = 0; i < num_params; i++) {
-                cost_plus += params[i] * params[i];  // Quadratic cost
-            }
+            double cost_plus = evaluate_variational_cost(num_qubits, dim, params, num_params);
 
-            // Backward shift
+            // Backward shift (-π/2)
             params[p] = original - M_PI / 2.0;
-            double cost_minus = 0.0;
-            for (size_t i = 0; i < num_params; i++) {
-                cost_minus += params[i] * params[i];
-            }
+            double cost_minus = evaluate_variational_cost(num_qubits, dim, params, num_params);
 
-            // Restore and compute gradient
+            // Restore and compute gradient using parameter-shift rule
             params[p] = original;
             gradients[p] = (cost_plus - cost_minus) / 2.0;
         }
 
-        // Update parameters
-        double cost = 0.0;
+        // Update parameters using gradient descent
         for (size_t p = 0; p < num_params; p++) {
             params[p] -= learning_rate * gradients[p];
-            cost += params[p] * params[p];
         }
+
+        // Compute current cost
+        double cost = evaluate_variational_cost(num_qubits, dim, params, num_params);
 
         // Check convergence
         if (fabs(prev_cost - cost) < QGT_CONVERGENCE_TOL) {
@@ -564,7 +680,7 @@ double* run_variational_optimization(QuantumGeometricInterface* interface) {
         }
         prev_cost = cost;
 
-        // Adaptive learning rate
+        // Adaptive learning rate decay
         if (iter > 0 && iter % 100 == 0) {
             learning_rate *= 0.9;
         }
@@ -572,8 +688,10 @@ double* run_variational_optimization(QuantumGeometricInterface* interface) {
 
     free(gradients);
 
-    // Update interface state properties
-    interface->state_props.fidelity = exp(-prev_cost);
+    // Update interface state properties based on optimization result
+    // Fidelity approximation: optimal cost approaches 0
+    double final_cost = evaluate_variational_cost(num_qubits, dim, params, num_params);
+    interface->state_props.fidelity = exp(-final_cost / (double)num_qubits);
 
     return params;
 }

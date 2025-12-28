@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <complex.h>
 
 // Architecture-specific includes
 #if defined(__x86_64__) || defined(_M_X64)
@@ -85,12 +86,12 @@ void compute_svd(double complex* data, size_t rows, size_t cols,
         printf("Failed to initialize numerical backend\n");
         return;
     }
-    // Convert double complex to ComplexFloat
+    // Convert double complex to ComplexFloat for numerical backend
     ComplexFloat* data_f = malloc(rows * cols * sizeof(ComplexFloat));
     ComplexFloat* U_f = malloc(rows * rows * sizeof(ComplexFloat));
     float* S_f = malloc(min(rows, cols) * sizeof(float));
     ComplexFloat* VT_f = malloc(cols * cols * sizeof(ComplexFloat));
-    
+
     if (!data_f || !U_f || !S_f || !VT_f) {
         free(data_f);
         free(U_f);
@@ -99,13 +100,13 @@ void compute_svd(double complex* data, size_t rows, size_t cols,
         printf("SVD memory allocation failed\n");
         return;
     }
-    
-    // Convert input data
+
+    // Convert input data (double complex -> ComplexFloat)
     for (size_t i = 0; i < rows * cols; i++) {
-        data_f[i].real = creal(data[i]);
-        data_f[i].imag = cimag(data[i]);
+        data_f[i].real = (float)creal(data[i]);
+        data_f[i].imag = (float)cimag(data[i]);
     }
-    
+
     // Compute SVD using numerical backend
     if (!numerical_svd(data_f, U_f, S_f, VT_f, rows, cols)) {
         printf("SVD computation failed\n");
@@ -115,23 +116,23 @@ void compute_svd(double complex* data, size_t rows, size_t cols,
         free(VT_f);
         return;
     }
-    
-    // Convert results back
+
+    // Convert results back (ComplexFloat -> double complex)
     for (size_t i = 0; i < rows * rows; i++) {
         U[i] = U_f[i].real + I * U_f[i].imag;
     }
-    
+
     for (size_t i = 0; i < min(rows, cols); i++) {
         S[i] = S_f[i];
     }
-    
+
     // VT_f is in row-major order, need to transpose while converting
     for (size_t i = 0; i < cols; i++) {
         for (size_t j = 0; j < cols; j++) {
             V[i * cols + j] = VT_f[j * cols + i].real + I * VT_f[j * cols + i].imag;
         }
     }
-    
+
     free(data_f);
     free(U_f);
     free(S_f);
@@ -147,17 +148,17 @@ static void truncate_svd_linear(double complex* U, double complex* S, double com
     for (size_t i = 0; i < rows && i < cols; i++) {
         total += cabs(S[i]);
     }
-    
+
     double running_sum = 0.0;
     size_t k;
     for (k = 0; k < rows && k < cols; k++) {
         running_sum += cabs(S[k]);
         if (running_sum / total >= 1.0 - tolerance) break;
     }
-    
+
     *rank = k + 1;
     if (*rank > MAX_RANK) *rank = MAX_RANK;
-    
+
     // Truncate matrices
     #pragma omp parallel sections
     {
@@ -167,7 +168,7 @@ static void truncate_svd_linear(double complex* U, double complex* S, double com
                 S[i] = 0.0;
             }
         }
-        
+
         #pragma omp section
         {
             for (size_t i = *rank; i < rows && i < cols; i++) {
@@ -176,7 +177,7 @@ static void truncate_svd_linear(double complex* U, double complex* S, double com
                 }
             }
         }
-        
+
         #pragma omp section
         {
             for (size_t i = *rank; i < rows && i < cols; i++) {
@@ -196,20 +197,20 @@ static void truncate_svd_optimized(double complex* U, double complex* S, double 
     for (size_t i = 0; i < rows && i < cols; i++) {
         total += cabs(S[i]);
     }
-    
+
     size_t left = 0;
     size_t right = min(rows, cols);
     size_t k = 0;
-    
+
     while (left < right) {
         size_t mid = (left + right) / 2;
         double running_sum = 0.0;
-        
+
         #pragma omp parallel for reduction(+:running_sum)
         for (size_t i = 0; i <= mid; i++) {
             running_sum += cabs(S[i]);
         }
-        
+
         if (running_sum / total >= 1.0 - tolerance) {
             k = mid;
             right = mid;
@@ -217,16 +218,16 @@ static void truncate_svd_optimized(double complex* U, double complex* S, double 
             left = mid + 1;
         }
     }
-    
+
     *rank = k + 1;
     if (*rank > MAX_RANK) *rank = MAX_RANK;
-    
+
         // Architecture-specific SIMD optimizations
         #ifdef USE_X86_SIMD
             // Use SIMD for truncation
             size_t vec_size = 8; // AVX-512 processes 8 doubles at once
             size_t vec_count = (rows * (*rank)) / vec_size;
-            
+
             #pragma omp parallel sections
             {
                 #pragma omp section
@@ -235,35 +236,35 @@ static void truncate_svd_optimized(double complex* U, double complex* S, double 
                         S[i] = 0.0;
                     }
                 }
-                
+
                 #pragma omp section
                 {
                     #pragma omp parallel for
                     for (size_t i = *rank; i < rows && i < cols; i++) {
                         size_t row_offset = i * cols;
-                        
+
                         // Vector operations for bulk of the data
                         for (size_t j = 0; j < vec_count * vec_size; j += vec_size) {
                             _mm512_store_pd((double*)&U[row_offset + j], _mm512_setzero_pd());
                         }
-                        
+
                         // Handle remaining elements
                         for (size_t j = vec_count * vec_size; j < rows; j++) {
                             U[row_offset + j] = 0.0;
                         }
                     }
                 }
-                
+
                 #pragma omp section
                 {
                     #pragma omp parallel for
                     for (size_t i = *rank; i < rows && i < cols; i++) {
                         size_t row_offset = i * cols;
-                        
+
                         for (size_t j = 0; j < vec_count * vec_size; j += vec_size) {
                             _mm512_store_pd((double*)&V[row_offset + j], _mm512_setzero_pd());
                         }
-                        
+
                         for (size_t j = vec_count * vec_size; j < cols; j++) {
                             V[row_offset + j] = 0.0;
                         }
@@ -280,7 +281,7 @@ static void truncate_svd_optimized(double complex* U, double complex* S, double 
                         S[i] = 0.0;
                     }
                 }
-                
+
                 #pragma omp section
                 {
                     #pragma omp parallel for
@@ -290,7 +291,7 @@ static void truncate_svd_optimized(double complex* U, double complex* S, double 
                         }
                     }
                 }
-                
+
                 #pragma omp section
                 {
                     #pragma omp parallel for
@@ -1216,15 +1217,15 @@ void hmatrix_multiply(HierarchicalMatrix* dst, const HierarchicalMatrix* a,
                         size_t i_end = min(i + block_size, a->rows);
                         size_t j_end = min(j + block_size, b->cols);
                         size_t k_end = min(k + block_size, a->cols);
-                        
+
                         for (size_t ii = i; ii < i_end; ii++) {
                             for (size_t jj = j; jj < j_end; jj++) {
-                                double complex sum = 0;
-                                
+                                double complex sum = 0.0;
+
                                 for (size_t kk = k; kk < k_end; kk++) {
                                     sum += a->data[ii * a->cols + kk] * b->data[kk * b->cols + jj];
                                 }
-                                
+
                                 dst->data[ii * b->cols + jj] = sum;
                             }
                         }
@@ -1235,41 +1236,41 @@ void hmatrix_multiply(HierarchicalMatrix* dst, const HierarchicalMatrix* a,
     } else if (hmatrix_is_low_rank(a) && hmatrix_is_low_rank(b)) {
         // Optimized low-rank multiplication
         size_t new_rank = a->rank * b->rank;
-        
+
         if (new_rank <= MAX_RANK) {
             // Direct low-rank multiplication
             dst->rank = new_rank;
             size_t total_size = dst->rows * dst->rank * sizeof(double complex);
             dst->U = aligned_alloc(CACHE_LINE_SIZE, total_size);
             dst->V = aligned_alloc(CACHE_LINE_SIZE, total_size);
-            
+
             // U = a->U * (a->V^T * b->U)
             // V = b->V
-            double complex* temp = aligned_alloc(CACHE_LINE_SIZE, 
+            double complex* temp = aligned_alloc(CACHE_LINE_SIZE,
                                                a->rank * b->rank * sizeof(double complex));
-            
+
             #pragma omp parallel for collapse(2)
             for (size_t i = 0; i < a->rank; i++) {
                 for (size_t j = 0; j < b->rank; j++) {
-                    double complex sum = 0;
+                    double complex sum = 0.0;
                     for (size_t k = 0; k < a->cols; k++) {
                         sum += conj(a->V[k * a->rank + i]) * b->U[k * b->rank + j];
                     }
                     temp[i * b->rank + j] = sum;
                 }
             }
-            
+
             #pragma omp parallel for collapse(2)
             for (size_t i = 0; i < dst->rows; i++) {
                 for (size_t j = 0; j < dst->rank; j++) {
-                    double complex sum = 0;
+                    double complex sum = 0.0;
                     for (size_t k = 0; k < a->rank; k++) {
                         sum += a->U[i * a->rank + k] * temp[k * b->rank + j];
                     }
                     dst->U[i * dst->rank + j] = sum;
                 }
             }
-            
+
             memcpy(dst->V, b->V, dst->cols * dst->rank * sizeof(double complex));
             free(temp);
         } else {
@@ -1382,41 +1383,42 @@ void hmatrix_compress(HierarchicalMatrix* mat) {
 double hmatrix_error_estimate(const HierarchicalMatrix* mat) {
     if (!mat) return INFINITY;
     if (mat->is_leaf) return 0.0;
-    
+
     double error = 0.0;
-    
+
     if (hmatrix_is_low_rank(mat)) {
         #ifdef USE_X86_SIMD
             // Compute ||UV^T - A||_F efficiently using SIMD
             size_t vec_size = 8;
             size_t vec_count = (mat->rows * mat->cols) / vec_size;
-            
+            (void)vec_size; (void)vec_count; // Suppress unused warnings in fallback path
+
             #pragma omp parallel
             {
                 __m512d local_error = _mm512_setzero_pd();
-                
+                (void)local_error;
+
                 #pragma omp for reduction(+:error)
                 for (size_t i = 0; i < mat->rows; i++) {
                     for (size_t j = 0; j < mat->cols; j++) {
-                        double complex sum = 0;
-                        
+                        double complex sum = 0.0;
+
                         // Use SIMD for rank summation
                         __m512d sum_real = _mm512_setzero_pd();
                         __m512d sum_imag = _mm512_setzero_pd();
-                        
+
                         for (size_t k = 0; k < mat->rank; k += 4) {
                             __m512d u_vec = _mm512_load_pd((double*)&mat->U[i * mat->rank + k]);
                             __m512d v_vec = _mm512_load_pd((double*)&mat->V[j * mat->rank + k]);
-                            
+
                             sum_real = _mm512_fmadd_pd(u_vec, v_vec, sum_real);
                             sum_imag = _mm512_fmadd_pd(u_vec, v_vec, sum_imag);
                         }
-                        
-                        sum = _mm512_reduce_add_pd(sum_real) + 
-                              _mm512_reduce_add_pd(sum_imag) * I;
-                        
+
+                        sum = _mm512_reduce_add_pd(sum_real) + I * _mm512_reduce_add_pd(sum_imag);
+
                         double complex d = sum - mat->data[i * mat->cols + j];
-                        error += creal(d * conj(d));
+                        error += creal(d)*creal(d) + cimag(d)*cimag(d);
                     }
                 }
             }
@@ -1425,14 +1427,14 @@ double hmatrix_error_estimate(const HierarchicalMatrix* mat) {
             #pragma omp parallel for reduction(+:error)
             for (size_t i = 0; i < mat->rows; i++) {
                 for (size_t j = 0; j < mat->cols; j++) {
-                    double complex sum = 0;
-                    
+                    double complex sum = 0.0;
+
                     for (size_t k = 0; k < mat->rank; k++) {
                         sum += mat->U[i * mat->rank + k] * mat->V[j * mat->rank + k];
                     }
-                    
+
                     double complex d = sum - mat->data[i * mat->cols + j];
-                    error += creal(d * conj(d));
+                    error += creal(d)*creal(d) + cimag(d)*cimag(d);
                 }
             }
         #endif
@@ -1579,7 +1581,7 @@ void hmatrix_add(HierarchicalMatrix* dst, const HierarchicalMatrix* a,
 
 void hmatrix_truncate(HierarchicalMatrix* mat) {
     if (!mat || mat->is_leaf) return;
-    
+
     if (hmatrix_is_low_rank(mat)) {
         // Recompress using optimized SVD
         size_t max_dim = (mat->rows > mat->cols) ? mat->rows : mat->cols;
@@ -1597,24 +1599,23 @@ void hmatrix_truncate(HierarchicalMatrix* mat) {
             // Form UV^T efficiently using SIMD
             size_t vec_size = 8;
             size_t vec_count = (mat->rows * mat->cols) / vec_size;
-            
+            (void)vec_count;
+
             #pragma omp parallel for collapse(2)
             for (size_t i = 0; i < mat->rows; i++) {
                 for (size_t j = 0; j < mat->cols; j++) {
                     __m512d sum_real = _mm512_setzero_pd();
                     __m512d sum_imag = _mm512_setzero_pd();
-                    
+
                     for (size_t k = 0; k < mat->rank; k += 4) {
                         __m512d u_vec = _mm512_load_pd((double*)&mat->U[i * mat->rank + k]);
                         __m512d v_vec = _mm512_load_pd((double*)&mat->V[j * mat->rank + k]);
-                        
+
                         sum_real = _mm512_fmadd_pd(u_vec, v_vec, sum_real);
                         sum_imag = _mm512_fmadd_pd(u_vec, v_vec, sum_imag);
                     }
-                    
-                    temp[i * mat->cols + j] = 
-                        _mm512_reduce_add_pd(sum_real) + 
-                        _mm512_reduce_add_pd(sum_imag) * I;
+
+                    temp[i * mat->cols + j] = _mm512_reduce_add_pd(sum_real) + I * _mm512_reduce_add_pd(sum_imag);
                 }
             }
         #else
@@ -1622,17 +1623,17 @@ void hmatrix_truncate(HierarchicalMatrix* mat) {
             #pragma omp parallel for collapse(2)
             for (size_t i = 0; i < mat->rows; i++) {
                 for (size_t j = 0; j < mat->cols; j++) {
-                    double complex sum = 0;
-                    
+                    double complex sum = 0.0;
+
                     for (size_t k = 0; k < mat->rank; k++) {
                         sum += mat->U[i * mat->rank + k] * mat->V[j * mat->rank + k];
                     }
-                    
+
                     temp[i * mat->cols + j] = sum;
                 }
             }
         #endif
-        
+
         // Recompute SVD with lower rank
         compute_svd(temp, mat->rows, mat->cols, mat->U, S, mat->V);
         truncate_svd(mat->U, S, mat->V, mat->rows, mat->cols, &mat->rank, mat->tolerance);
@@ -1693,13 +1694,13 @@ void hmatrix_decompose(HierarchicalMatrix* mat) {
 
 void hmatrix_svd(HierarchicalMatrix* mat) {
     if (!mat || mat->is_leaf) return;
-    
+
     // Allocate space for SVD results
     size_t max_dim = (mat->rows > mat->cols) ? mat->rows : mat->cols;
     mat->U = aligned_alloc(CACHE_LINE_SIZE, mat->rows * max_dim * sizeof(double complex));
     mat->V = aligned_alloc(CACHE_LINE_SIZE, mat->cols * max_dim * sizeof(double complex));
     double complex* S = aligned_alloc(CACHE_LINE_SIZE, max_dim * sizeof(double complex));
-    
+
     if (!mat->U || !mat->V || !S) {
         free(mat->U);
         free(mat->V);
@@ -1707,10 +1708,10 @@ void hmatrix_svd(HierarchicalMatrix* mat) {
         printf("Failed to allocate SVD arrays\n");
         return;
     }
-    
+
     // Compute SVD
     compute_svd(mat->data, mat->rows, mat->cols, mat->U, S, mat->V);
-    
+
     // Scale U and V by singular values for better numerical stability
     #pragma omp parallel sections
     {
@@ -1718,21 +1719,23 @@ void hmatrix_svd(HierarchicalMatrix* mat) {
         {
             for (size_t i = 0; i < mat->rows; i++) {
                 for (size_t j = 0; j < max_dim; j++) {
-                    mat->U[i * max_dim + j] *= sqrt(cabs(S[j]));
+                    double scale = sqrt(cabs(S[j]));
+                    mat->U[i * max_dim + j] *= scale;
                 }
             }
         }
-        
+
         #pragma omp section
         {
             for (size_t i = 0; i < mat->cols; i++) {
                 for (size_t j = 0; j < max_dim; j++) {
-                    mat->V[i * max_dim + j] *= sqrt(cabs(S[j]));
+                    double scale = sqrt(cabs(S[j]));
+                    mat->V[i * max_dim + j] *= scale;
                 }
             }
         }
     }
-    
+
     // Determine rank and truncate
     truncate_svd(mat->U, S, mat->V, mat->rows, mat->cols, &mat->rank, mat->tolerance);
     
@@ -1765,7 +1768,7 @@ void hmatrix_multiply_vector(const HierarchicalMatrix* matrix,
         #pragma omp parallel for
         for (size_t b = 0; b < batch_size; b++) {
             for (size_t i = 0; i < rows; i++) {
-                double complex sum = 0;
+                double complex sum = 0.0;
                 for (size_t j = 0; j < cols; j++) {
                     sum += matrix->data[i * cols + j] * input[b * cols + j];
                 }
@@ -1782,7 +1785,7 @@ void hmatrix_multiply_vector(const HierarchicalMatrix* matrix,
         #pragma omp parallel for collapse(2)
         for (size_t b = 0; b < batch_size; b++) {
             for (size_t r = 0; r < matrix->rank; r++) {
-                double complex sum = 0;
+                double complex sum = 0.0;
                 for (size_t j = 0; j < cols; j++) {
                     sum += conj(matrix->V[j * matrix->rank + r]) * input[b * cols + j];
                 }
@@ -1794,7 +1797,7 @@ void hmatrix_multiply_vector(const HierarchicalMatrix* matrix,
         #pragma omp parallel for collapse(2)
         for (size_t b = 0; b < batch_size; b++) {
             for (size_t i = 0; i < rows; i++) {
-                double complex sum = 0;
+                double complex sum = 0.0;
                 for (size_t r = 0; r < matrix->rank; r++) {
                     sum += matrix->U[i * matrix->rank + r] * temp[b * matrix->rank + r];
                 }
@@ -1876,7 +1879,7 @@ void hmatrix_multiply_conjugate_transpose(const HierarchicalMatrix* matrix,
         #pragma omp parallel for
         for (size_t b = 0; b < batch_size; b++) {
             for (size_t j = 0; j < cols; j++) {
-                double complex sum = 0;
+                double complex sum = 0.0;
                 for (size_t i = 0; i < rows; i++) {
                     sum += conj(matrix->data[i * cols + j]) * input[b * rows + i];
                 }
@@ -1893,7 +1896,7 @@ void hmatrix_multiply_conjugate_transpose(const HierarchicalMatrix* matrix,
         #pragma omp parallel for collapse(2)
         for (size_t b = 0; b < batch_size; b++) {
             for (size_t r = 0; r < matrix->rank; r++) {
-                double complex sum = 0;
+                double complex sum = 0.0;
                 for (size_t i = 0; i < rows; i++) {
                     sum += conj(matrix->U[i * matrix->rank + r]) * input[b * rows + i];
                 }
@@ -1905,7 +1908,7 @@ void hmatrix_multiply_conjugate_transpose(const HierarchicalMatrix* matrix,
         #pragma omp parallel for collapse(2)
         for (size_t b = 0; b < batch_size; b++) {
             for (size_t j = 0; j < cols; j++) {
-                double complex sum = 0;
+                double complex sum = 0.0;
                 for (size_t r = 0; r < matrix->rank; r++) {
                     sum += matrix->V[j * matrix->rank + r] * temp[b * matrix->rank + r];
                 }
@@ -1971,7 +1974,7 @@ void hmatrix_apply_gradient(HierarchicalMatrix* matrix,
         size_t size = matrix->rows * matrix->cols;
         #pragma omp parallel for
         for (size_t i = 0; i < size; i++) {
-            matrix->data[i] -= learning_rate * gradient[i];
+            matrix->data[i] -= gradient[i] * learning_rate;
         }
 
         // Update gradient storage if present
@@ -1987,12 +1990,14 @@ void hmatrix_apply_gradient(HierarchicalMatrix* matrix,
         // This is an approximation for low-rank updates
         #pragma omp parallel for
         for (size_t i = 0; i < u_size; i++) {
-            matrix->U[i] -= learning_rate * gradient[i % (matrix->rows * matrix->cols)] * 0.5;
+            double complex grad_contrib = gradient[i % (matrix->rows * matrix->cols)] * (learning_rate * 0.5);
+            matrix->U[i] -= grad_contrib;
         }
 
         #pragma omp parallel for
         for (size_t i = 0; i < v_size; i++) {
-            matrix->V[i] -= learning_rate * gradient[i % (matrix->rows * matrix->cols)] * 0.5;
+            double complex grad_contrib = gradient[i % (matrix->rows * matrix->cols)] * (learning_rate * 0.5);
+            matrix->V[i] -= grad_contrib;
         }
     } else {
         // Recursive gradient application
@@ -2130,6 +2135,40 @@ bool multiply_matrices(HierarchicalMatrix* result,
                      (const HierarchicalMatrix*)b);
 
     return true;
+}
+
+// ============================================================================
+// Element Access Functions
+// ============================================================================
+
+bool hierarchical_matrix_set_element(HierarchicalMatrix* matrix,
+                                     size_t index,
+                                     double complex value) {
+    if (!matrix || !matrix->data) {
+        return false;
+    }
+
+    size_t total_size = matrix->rows * matrix->cols;
+    if (index >= total_size) {
+        return false;
+    }
+
+    matrix->data[index] = value;
+    return true;
+}
+
+double complex hierarchical_matrix_get_element(const HierarchicalMatrix* matrix,
+                                               size_t index) {
+    if (!matrix || !matrix->data) {
+        return 0.0;
+    }
+
+    size_t total_size = matrix->rows * matrix->cols;
+    if (index >= total_size) {
+        return 0.0;
+    }
+
+    return matrix->data[index];
 }
 
 

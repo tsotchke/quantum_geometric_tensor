@@ -13,6 +13,7 @@
 #include <string.h>
 #include <math.h>
 #include <stdio.h>
+#include <unistd.h>
 
 // Auto-detect CURL availability using __has_include
 #ifdef __has_include
@@ -438,7 +439,157 @@ void cleanup_dwave_config(DWaveConfig* config) {
     free(config);
 }
 
-#else // No CURL or JSON-C - local simulation fallback
+#else // No CURL or JSON-C - local simulation fallback with simulated annealing
+
+#include <time.h>
+
+// Storage for local simulation results (simple single-job cache)
+static DWaveJobResult* g_cached_result = NULL;
+static char* g_cached_job_id = NULL;
+
+// Compute Ising energy: E = Σᵢ hᵢsᵢ + Σᵢⱼ Jᵢⱼsᵢsⱼ
+static double compute_ising_energy(const DWaveProblem* problem, const int32_t* spins) {
+    double energy = problem->offset;
+
+    // Linear terms
+    for (size_t i = 0; i < problem->num_variables; i++) {
+        energy += problem->linear_terms[i] * spins[i];
+    }
+
+    // Quadratic terms - assuming J stored linearly for pairs
+    // In Ising model, J_ij contributes when both i and j are +1 or both -1
+    size_t idx = 0;
+    for (size_t i = 0; i < problem->num_variables && idx < problem->num_interactions; i++) {
+        for (size_t j = i + 1; j < problem->num_variables && idx < problem->num_interactions; j++) {
+            double J_ij = problem->quadratic_terms[idx];
+            if (J_ij != 0.0) {
+                energy += J_ij * spins[i] * spins[j];
+            }
+            idx++;
+        }
+    }
+
+    return energy;
+}
+
+// Simulated annealing for Ising problems
+static DWaveJobResult* simulated_annealing(const DWaveProblem* problem,
+                                            const DWaveSamplingParams* params) {
+    if (!problem || problem->num_variables == 0) return NULL;
+
+    size_t n = problem->num_variables;
+    uint32_t num_reads = params->num_reads > 0 ? params->num_reads : 100;
+    uint32_t annealing_time = params->annealing_time > 0 ? params->annealing_time : 20;
+
+    // Scale annealing steps based on annealing_time (microseconds -> iterations)
+    size_t num_sweeps = (size_t)(annealing_time * 10);  // 10 sweeps per microsecond
+    if (num_sweeps < 100) num_sweeps = 100;
+    if (num_sweeps > 10000) num_sweeps = 10000;
+
+    // Allocate result
+    DWaveJobResult* result = calloc(1, sizeof(DWaveJobResult));
+    if (!result) return NULL;
+
+    result->samples = calloc(num_reads, sizeof(DWaveSample));
+    result->energies = calloc(num_reads, sizeof(double));
+    result->probabilities = calloc(num_reads, sizeof(double));
+    result->num_samples = num_reads;
+    result->min_energy = INFINITY;
+    result->max_energy = -INFINITY;
+
+    if (!result->samples || !result->energies || !result->probabilities) {
+        cleanup_dwave_result(result);
+        return NULL;
+    }
+
+    // Allocate working spin array
+    int32_t* spins = malloc(n * sizeof(int32_t));
+    if (!spins) {
+        cleanup_dwave_result(result);
+        return NULL;
+    }
+
+    unsigned int seed = (unsigned int)(time(NULL) ^ getpid());
+
+    // Perform multiple annealing runs
+    for (uint32_t read = 0; read < num_reads; read++) {
+        // Initialize random spins
+        for (size_t i = 0; i < n; i++) {
+            spins[i] = (rand_r(&seed) % 2) * 2 - 1;  // Random {-1, +1}
+        }
+
+        double energy = compute_ising_energy(problem, spins);
+
+        // Annealing schedule: T decreases from T_high to T_low
+        double T_high = 10.0;
+        double T_low = 0.01;
+
+        for (size_t sweep = 0; sweep < num_sweeps; sweep++) {
+            // Current temperature
+            double T = T_high * pow(T_low / T_high, (double)sweep / (double)num_sweeps);
+
+            // Sweep through all variables
+            for (size_t i = 0; i < n; i++) {
+                // Compute energy change if we flip spin i
+                double delta_E = -2.0 * problem->linear_terms[i] * spins[i];
+
+                // Add interaction terms
+                size_t idx = 0;
+                for (size_t a = 0; a < n && idx < problem->num_interactions; a++) {
+                    for (size_t b = a + 1; b < n && idx < problem->num_interactions; b++) {
+                        double J_ab = problem->quadratic_terms[idx];
+                        if (J_ab != 0.0) {
+                            if (a == i) {
+                                delta_E -= 2.0 * J_ab * spins[i] * spins[b];
+                            } else if (b == i) {
+                                delta_E -= 2.0 * J_ab * spins[a] * spins[i];
+                            }
+                        }
+                        idx++;
+                    }
+                }
+
+                // Metropolis acceptance criterion
+                if (delta_E < 0.0 || (double)rand_r(&seed) / RAND_MAX < exp(-delta_E / T)) {
+                    spins[i] = -spins[i];
+                    energy += delta_E;
+                }
+            }
+        }
+
+        // Store result
+        result->samples[read].variables = malloc(n * sizeof(int32_t));
+        if (result->samples[read].variables) {
+            memcpy(result->samples[read].variables, spins, n * sizeof(int32_t));
+        }
+        result->samples[read].energy = energy;
+        result->samples[read].occurrence = 1.0;
+        result->energies[read] = energy;
+
+        if (energy < result->min_energy) result->min_energy = energy;
+        if (energy > result->max_energy) result->max_energy = energy;
+    }
+
+    // Compute probabilities (Boltzmann distribution at final temperature)
+    double T_final = T_low;
+    double Z = 0.0;
+    for (uint32_t i = 0; i < num_reads; i++) {
+        result->probabilities[i] = exp(-result->energies[i] / T_final);
+        Z += result->probabilities[i];
+    }
+    if (Z > 0.0) {
+        for (uint32_t i = 0; i < num_reads; i++) {
+            result->probabilities[i] /= Z;
+        }
+    }
+
+    free(spins);
+
+    result->status = DWAVE_STATUS_COMPLETED;
+    result->error_message = NULL;
+
+    return result;
+}
 
 DWaveConfig* init_dwave_backend(const DWaveBackendConfig* config) {
     if (!config) return NULL;
@@ -470,27 +621,64 @@ DWaveConfig* init_dwave_backend(const DWaveBackendConfig* config) {
 
     state->num_qubits = MAX_QUBITS;  // Default Advantage qubits
     state->initialized = true;
-    state->connected = false;  // Not connected without CURL
+    state->connected = true;  // Local simulation is always "connected"
 
     return dc;
 }
 
 char* submit_dwave_job(DWaveConfig* config, const DWaveJobConfig* job_config) {
-    (void)config;
-    (void)job_config;
-    return NULL;  // Cannot submit without CURL
+    if (!config || !job_config || !job_config->problem) {
+        return NULL;
+    }
+
+    // Clear previous cached result
+    if (g_cached_result) {
+        cleanup_dwave_result(g_cached_result);
+        g_cached_result = NULL;
+    }
+    if (g_cached_job_id) {
+        free(g_cached_job_id);
+        g_cached_job_id = NULL;
+    }
+
+    // Perform simulated annealing immediately
+    g_cached_result = simulated_annealing(job_config->problem, &job_config->params);
+    if (!g_cached_result) {
+        return NULL;
+    }
+
+    // Generate a pseudo job ID
+    g_cached_job_id = malloc(64);
+    if (g_cached_job_id) {
+        snprintf(g_cached_job_id, 64, "local-sa-%lu", (unsigned long)time(NULL));
+    }
+
+    return g_cached_job_id ? strdup(g_cached_job_id) : NULL;
 }
 
 DWaveJobStatus get_dwave_job_status(DWaveConfig* config, const char* job_id) {
     (void)config;
-    (void)job_id;
+
+    // Local simulation is always complete immediately
+    if (job_id && g_cached_job_id && strcmp(job_id, g_cached_job_id) == 0) {
+        return g_cached_result ? DWAVE_STATUS_COMPLETED : DWAVE_STATUS_ERROR;
+    }
     return DWAVE_STATUS_ERROR;
 }
 
 DWaveJobResult* get_dwave_job_result(DWaveConfig* config, const char* job_id) {
     (void)config;
-    (void)job_id;
-    return NULL;
+
+    if (!job_id || !g_cached_job_id || strcmp(job_id, g_cached_job_id) != 0) {
+        return NULL;
+    }
+
+    // Return the cached result (caller should not free this)
+    // For proper API, we'd deep copy, but for simplicity return the cached one
+    // and mark it as transferred
+    DWaveJobResult* result = g_cached_result;
+    g_cached_result = NULL;  // Transfer ownership
+    return result;
 }
 
 void cleanup_dwave_config(DWaveConfig* config) {

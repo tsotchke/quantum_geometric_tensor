@@ -6,6 +6,7 @@
 #include "quantum_geometric/core/quantum_types.h"
 #include "quantum_geometric/core/quantum_complex.h"
 #include "quantum_geometric/core/quantum_circuit_operations.h"
+#include "quantum_geometric/core/lapack_wrapper.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -861,82 +862,89 @@ static void quantum_multiply_cpu(quantum_register_t* c, quantum_register_t* a,
     }
 }
 
-// GPU-accelerated quantum SVD
+// GPU-accelerated quantum SVD - now uses proper LAPACK SVD
 static void quantum_svd_gpu(GPUContext* gpu_ctx, quantum_register_t* u, quantum_register_t* v,
                            quantum_register_t* input, quantum_system_t* system,
                            quantum_circuit_t* circuit, void* config) {
     // gpu_ctx can be NULL for CPU fallback
-    if (!u || !v || !input) return;
+    if (!u || !v || !input || !input->amplitudes) return;
     (void)gpu_ctx;
     (void)system;
     (void)circuit;
     (void)config;
 
-    // For GPU SVD, we use iterative power method with quantum acceleration
-    // This is a simplified implementation - full production would use cuSOLVER/Metal
-
+    // Determine matrix dimensions from input size
     size_t n = (size_t)sqrt((double)input->size);
-    if (n * n != input->size) n = input->size;
-
-    // Initialize U and V with random orthonormal vectors
-    for (size_t i = 0; i < u->size; i++) {
-        double angle = 2.0 * M_PI * (double)i / (double)u->size;
-        u->amplitudes[i] = (ComplexFloat){(float)cos(angle), (float)sin(angle)};
+    if (n * n != input->size) {
+        // Not a square matrix - use input size as dimension
+        n = input->size;
     }
-    for (size_t i = 0; i < v->size; i++) {
-        double angle = 2.0 * M_PI * (double)i / (double)v->size;
-        v->amplitudes[i] = (ComplexFloat){(float)cos(angle), (float)sin(angle)};
-    }
+    size_t m = n;  // Assume square matrix for quantum state
 
-    // Power iteration for dominant singular vector
-    const int max_iter = 20;
-    for (int iter = 0; iter < max_iter; iter++) {
-        // v = A^T * u
-        quantum_register_t* temp_a = quantum_register_create_empty(input->size);
-        if (temp_a) {
-            // Transpose input
-            for (size_t i = 0; i < n && i * n < input->size; i++) {
-                for (size_t j = 0; j < n && j * n + i < temp_a->size; j++) {
-                    if (i * n + j < input->size) {
-                        temp_a->amplitudes[j * n + i] = input->amplitudes[i * n + j];
-                    }
-                }
-            }
-            quantum_multiply_cpu(v, temp_a, u, system, circuit, config);
-            quantum_register_destroy(temp_a);
-        }
+    // Allocate temporary arrays for LAPACK SVD
+    ComplexFloat* U_full = malloc(m * m * sizeof(ComplexFloat));
+    float* S = malloc(n * sizeof(float));  // Singular values
+    ComplexFloat* VT = malloc(n * n * sizeof(ComplexFloat));
 
-        // Normalize v
-        double norm = 0.0;
-        for (size_t i = 0; i < v->size; i++) {
-            norm += v->amplitudes[i].real * v->amplitudes[i].real +
-                    v->amplitudes[i].imag * v->amplitudes[i].imag;
-        }
-        norm = sqrt(norm);
-        if (norm > QG_QUANTUM_PRECISION) {
-            for (size_t i = 0; i < v->size; i++) {
-                v->amplitudes[i].real /= (float)norm;
-                v->amplitudes[i].imag /= (float)norm;
-            }
-        }
-
-        // u = A * v
-        quantum_multiply_cpu(u, input, v, system, circuit, config);
-
-        // Normalize u
-        norm = 0.0;
+    if (!U_full || !S || !VT) {
+        free(U_full);
+        free(S);
+        free(VT);
+        // Fallback to normalized initialization if LAPACK unavailable
         for (size_t i = 0; i < u->size; i++) {
-            norm += u->amplitudes[i].real * u->amplitudes[i].real +
-                    u->amplitudes[i].imag * u->amplitudes[i].imag;
+            u->amplitudes[i] = (ComplexFloat){1.0f / sqrtf((float)u->size), 0.0f};
         }
-        norm = sqrt(norm);
-        if (norm > QG_QUANTUM_PRECISION) {
+        for (size_t i = 0; i < v->size; i++) {
+            v->amplitudes[i] = (ComplexFloat){1.0f / sqrtf((float)v->size), 0.0f};
+        }
+        return;
+    }
+
+    // Compute SVD using LAPACK: input = U * S * V^T
+    bool svd_success = lapack_svd(input->amplitudes, m, n, U_full, S, VT, LAPACK_ROW_MAJOR);
+
+    if (svd_success) {
+        // Copy first column of U (dominant left singular vector) to u register
+        size_t u_copy_size = (m < u->size) ? m : u->size;
+        for (size_t i = 0; i < u_copy_size; i++) {
+            u->amplitudes[i] = U_full[i * m];  // First column
+        }
+        // Zero remaining elements if u is larger
+        for (size_t i = u_copy_size; i < u->size; i++) {
+            u->amplitudes[i] = (ComplexFloat){0.0f, 0.0f};
+        }
+
+        // Copy first row of V^T (dominant right singular vector) to v register
+        size_t v_copy_size = (n < v->size) ? n : v->size;
+        for (size_t i = 0; i < v_copy_size; i++) {
+            v->amplitudes[i] = VT[i];  // First row of VT = first column of V
+        }
+        // Zero remaining elements if v is larger
+        for (size_t i = v_copy_size; i < v->size; i++) {
+            v->amplitudes[i] = (ComplexFloat){0.0f, 0.0f};
+        }
+
+        // Scale by sqrt of singular value for proper normalization
+        if (S[0] > 0.0f) {
+            float scale = sqrtf(S[0]);
             for (size_t i = 0; i < u->size; i++) {
-                u->amplitudes[i].real /= (float)norm;
-                u->amplitudes[i].imag /= (float)norm;
+                u->amplitudes[i].real *= scale;
+                u->amplitudes[i].imag *= scale;
             }
         }
+    } else {
+        // Fallback: initialize with normalized vectors
+        for (size_t i = 0; i < u->size; i++) {
+            u->amplitudes[i] = (ComplexFloat){1.0f / sqrtf((float)u->size), 0.0f};
+        }
+        for (size_t i = 0; i < v->size; i++) {
+            v->amplitudes[i] = (ComplexFloat){1.0f / sqrtf((float)v->size), 0.0f};
+        }
     }
+
+    free(U_full);
+    free(S);
+    free(VT);
 }
 
 // CPU quantum SVD

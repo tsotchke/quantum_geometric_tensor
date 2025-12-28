@@ -193,10 +193,81 @@ ClassicalNetwork* create_classical_network(const NetworkArchitecture* architectu
         
         prev_size = curr_size;
     }
-    
-    // Initialize activation functions (placeholder)
-    network->activation_functions = NULL;
-    
+
+    // Allocate and initialize activation functions for each layer
+    network->activation_functions = malloc(network->num_layers * sizeof(ActivationType));
+    if (!network->activation_functions) {
+        for (size_t j = 0; j < network->num_layers; j++) {
+            free(network->weights[j]);
+            free(network->biases[j]);
+        }
+        free(network->weights);
+        free(network->biases);
+        free(network->layer_sizes);
+        free(network);
+        return NULL;
+    }
+
+    // Set default activations: ReLU for hidden layers, linear for output layer
+    for (size_t i = 0; i < network->num_layers; i++) {
+        if (i < network->num_layers - 1) {
+            network->activation_functions[i] = ACTIVATION_RELU;
+        } else {
+            network->activation_functions[i] = ACTIVATION_NONE;  // Linear output
+        }
+    }
+
+    // Allocate activation cache for backpropagation
+    network->activations = malloc(network->num_layers * sizeof(double*));
+    if (!network->activations) {
+        for (size_t j = 0; j < network->num_layers; j++) {
+            free(network->weights[j]);
+            free(network->biases[j]);
+        }
+        free(network->weights);
+        free(network->biases);
+        free(network->layer_sizes);
+        free(network->activation_functions);
+        free(network);
+        return NULL;
+    }
+    for (size_t i = 0; i < network->num_layers; i++) {
+        network->activations[i] = malloc(network->layer_sizes[i] * sizeof(double));
+        if (!network->activations[i]) {
+            for (size_t j = 0; j < i; j++) {
+                free(network->activations[j]);
+            }
+            for (size_t j = 0; j < network->num_layers; j++) {
+                free(network->weights[j]);
+                free(network->biases[j]);
+            }
+            free(network->activations);
+            free(network->weights);
+            free(network->biases);
+            free(network->layer_sizes);
+            free(network->activation_functions);
+            free(network);
+            return NULL;
+        }
+    }
+
+    // Allocate space for caching input
+    network->last_input = malloc(network->input_size * sizeof(double));
+    if (!network->last_input) {
+        for (size_t j = 0; j < network->num_layers; j++) {
+            free(network->activations[j]);
+            free(network->weights[j]);
+            free(network->biases[j]);
+        }
+        free(network->activations);
+        free(network->weights);
+        free(network->biases);
+        free(network->layer_sizes);
+        free(network->activation_functions);
+        free(network);
+        return NULL;
+    }
+
     return network;
 }
 
@@ -218,6 +289,14 @@ void cleanup_classical_network(ClassicalNetwork* network) {
         free(network->biases);
     }
 
+    if (network->activations) {
+        for (size_t i = 0; i < network->num_layers; i++) {
+            free(network->activations[i]);
+        }
+        free(network->activations);
+    }
+
+    free(network->last_input);
     free(network->layer_sizes);
     free(network->activation_functions);
     free(network);
@@ -529,6 +608,17 @@ static double sigmoid_derivative(double x) {
     return s * (1.0 - s);
 }
 
+// Tanh activation function
+static double tanh_activation(double x) {
+    return tanh(x);
+}
+
+// Tanh derivative
+static double tanh_derivative(double x) {
+    double t = tanh(x);
+    return 1.0 - t * t;
+}
+
 // Softmax for classification output (in-place on output array)
 static void softmax(double* output, size_t size) {
     double max_val = output[0];
@@ -544,6 +634,38 @@ static void softmax(double* output, size_t size) {
 
     for (size_t i = 0; i < size; i++) {
         output[i] /= sum;
+    }
+}
+
+// Apply activation function based on type
+static double apply_activation(double x, ActivationType activation_type) {
+    switch (activation_type) {
+        case ACTIVATION_RELU:
+            return relu(x);
+        case ACTIVATION_SIGMOID:
+            return sigmoid_activation(x);
+        case ACTIVATION_TANH:
+            return tanh_activation(x);
+        case ACTIVATION_NONE:
+        case ACTIVATION_SOFTMAX:  // Softmax is applied separately to entire layer
+        default:
+            return x;  // Linear (no activation)
+    }
+}
+
+// Get derivative of activation function
+static double activation_derivative(double x, ActivationType activation_type) {
+    switch (activation_type) {
+        case ACTIVATION_RELU:
+            return relu_derivative(x);
+        case ACTIVATION_SIGMOID:
+            return sigmoid_derivative(x);
+        case ACTIVATION_TANH:
+            return tanh_derivative(x);
+        case ACTIVATION_NONE:
+        case ACTIVATION_SOFTMAX:
+        default:
+            return 1.0;  // Linear derivative
     }
 }
 
@@ -576,6 +698,10 @@ static double* apply_layer(ClassicalNetwork* network, size_t layer_idx, double* 
     double* weights = network->weights[layer_idx];
     double* bias = network->biases[layer_idx];
 
+    // Get the configured activation type for this layer
+    ActivationType activation = network->activation_functions ?
+                                network->activation_functions[layer_idx] : ACTIVATION_RELU;
+
     OMP_PARALLEL_FOR
     for (size_t i = 0; i < output_size; i++) {
         double sum = bias[i];
@@ -583,12 +709,23 @@ static double* apply_layer(ClassicalNetwork* network, size_t layer_idx, double* 
             sum += weights[j * output_size + i] * input[j];
         }
 
-        // Apply activation (ReLU for hidden layers, linear for output)
-        if (layer_idx < network->num_layers - 1) {
-            output[i] = relu(sum);
-        } else {
-            output[i] = sum;  // Linear output for final layer
-        }
+        // Apply configured activation function
+        output[i] = apply_activation(sum, activation);
+    }
+
+    // Apply softmax if specified (needs entire layer output)
+    if (activation == ACTIVATION_SOFTMAX) {
+        softmax(output, output_size);
+    }
+
+    // Cache activations for backpropagation
+    if (network->activations && network->activations[layer_idx]) {
+        memcpy(network->activations[layer_idx], output, output_size * sizeof(double));
+    }
+
+    // Cache input for first layer (needed for gradient computation)
+    if (layer_idx == 0 && network->last_input) {
+        memcpy(network->last_input, input, input_size * sizeof(double));
     }
 
     return output;
@@ -600,25 +737,49 @@ static void update_layer_gradients(ClassicalNetwork* network, size_t layer_idx, 
         return;
     }
 
-    // Get layer dimensions
-    size_t input_size = (layer_idx == 0) ? network->input_size : network->input_size;  // Simplified
-    size_t output_size = (layer_idx == network->num_layers - 1) ?
-                         network->output_size : network->input_size;
+    // Get layer dimensions using stored layer sizes
+    size_t input_size;
+    size_t output_size;
+
+    if (layer_idx == 0) {
+        input_size = network->input_size;
+    } else {
+        input_size = network->layer_sizes[layer_idx - 1];
+    }
+    output_size = network->layer_sizes[layer_idx];
 
     double* weights = network->weights[layer_idx];
     double learning_rate = 0.001;  // Default learning rate
 
-    // Update weights using gradient descent
-    OMP_PARALLEL_FOR
-    for (size_t i = 0; i < input_size; i++) {
-        for (size_t j = 0; j < output_size; j++) {
-            // Weight gradient = input * output_gradient
-            // This is simplified - full implementation would use cached activations
-            weights[i * output_size + j] -= learning_rate * gradients[j];
+    // Get the input activations for this layer
+    // For layer 0, use cached input; for other layers, use previous layer's cached activations
+    double* layer_input = NULL;
+    if (layer_idx == 0) {
+        layer_input = network->last_input;
+    } else if (network->activations && network->activations[layer_idx - 1]) {
+        layer_input = network->activations[layer_idx - 1];
+    }
+
+    // Update weights using gradient descent: dW = input^T * gradient
+    if (layer_input) {
+        OMP_PARALLEL_FOR
+        for (size_t i = 0; i < input_size; i++) {
+            for (size_t j = 0; j < output_size; j++) {
+                // Weight gradient = input_activation * output_gradient
+                weights[i * output_size + j] -= learning_rate * gradients[j] * layer_input[i];
+            }
+        }
+    } else {
+        // Fallback if activations not cached (shouldn't happen in normal operation)
+        OMP_PARALLEL_FOR
+        for (size_t i = 0; i < input_size; i++) {
+            for (size_t j = 0; j < output_size; j++) {
+                weights[i * output_size + j] -= learning_rate * gradients[j];
+            }
         }
     }
 
-    // Update biases
+    // Update biases: dB = gradient
     double* bias = network->biases[layer_idx];
     for (size_t i = 0; i < output_size; i++) {
         bias[i] -= learning_rate * gradients[i];
@@ -662,6 +823,10 @@ static void compute_classification_gradients(ClassicalNetwork* network, double* 
 
         double* weights = network->weights[layer_idx];
 
+        // Get the configured activation type for the previous layer
+        ActivationType prev_activation = (layer_idx > 0 && network->activation_functions) ?
+                                         network->activation_functions[layer_idx - 1] : ACTIVATION_RELU;
+
         OMP_PARALLEL_FOR
         for (size_t i = 0; i < prev_size; i++) {
             for (size_t j = 0; j < curr_size; j++) {
@@ -669,7 +834,7 @@ static void compute_classification_gradients(ClassicalNetwork* network, double* 
             }
             // Apply activation derivative for hidden layers
             if (layer_idx > 0) {
-                prev_gradients[i] *= relu_derivative(prev_gradients[i]);
+                prev_gradients[i] *= activation_derivative(prev_gradients[i], prev_activation);
             }
         }
 
@@ -716,13 +881,17 @@ static void compute_regression_gradients(ClassicalNetwork* network, double* grad
 
         double* weights = network->weights[layer_idx];
 
+        // Get the configured activation type for the previous layer
+        ActivationType prev_activation = (layer_idx > 0 && network->activation_functions) ?
+                                         network->activation_functions[layer_idx - 1] : ACTIVATION_RELU;
+
         OMP_PARALLEL_FOR
         for (size_t i = 0; i < prev_size; i++) {
             for (size_t j = 0; j < curr_size; j++) {
                 prev_gradients[i] += weights[i * curr_size + j] * gradients[j];
             }
             if (layer_idx > 0) {
-                prev_gradients[i] *= relu_derivative(prev_gradients[i]);
+                prev_gradients[i] *= activation_derivative(prev_gradients[i], prev_activation);
             }
         }
 
@@ -771,6 +940,11 @@ static void compute_reconstruction_gradients(ClassicalNetwork* network, double* 
 
         double* weights = network->weights[layer_idx];
 
+        // Get the configured activation type for the previous layer
+        // Default to SIGMOID for reconstruction networks if not specified
+        ActivationType prev_activation = (layer_idx > 0 && network->activation_functions) ?
+                                         network->activation_functions[layer_idx - 1] : ACTIVATION_SIGMOID;
+
         // Compute gradient w.r.t. previous layer
         OMP_PARALLEL_FOR
         for (size_t i = 0; i < prev_size; i++) {
@@ -778,9 +952,9 @@ static void compute_reconstruction_gradients(ClassicalNetwork* network, double* 
                 prev_gradients[i] += weights[i * curr_size + j] * gradients[j];
             }
 
-            // Apply sigmoid derivative for reconstruction networks
+            // Apply configured activation derivative
             if (layer_idx > 0) {
-                prev_gradients[i] *= sigmoid_derivative(prev_gradients[i]);
+                prev_gradients[i] *= activation_derivative(prev_gradients[i], prev_activation);
             }
         }
 

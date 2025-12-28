@@ -31,7 +31,8 @@ struct tensor_stream {
     size_t current_offset;       // Current position in the stream
     size_t total_size;           // Total size of the tensor
     ComplexFloat* buffer;        // Buffer for current chunk
-    void* source;                // Source tensor (could be node or matrix)
+    void* source;                // Source tensor (for reading)
+    tree_tensor_node_t* node;    // Target node (for writing results)
     bool is_hierarchical;        // Whether source is a hierarchical matrix
     MemoryPool* memory_pool;     // Memory pool for buffer allocation
 };

@@ -718,12 +718,74 @@ static ComputeResult opencl_quantum_unitary(ComputeBackend* backend,
 static ComputeResult opencl_quantum_normalize(ComputeBackend* backend,
                                                float* state, size_t size,
                                                ComputeStream* stream) {
+    OpenCLBackendContext* ctx = (OpenCLBackendContext*)backend;
     (void)stream;
 
-    // Use SIMD for normalization (more efficient for small/medium sizes)
-    float norm = simd_complex_norm_float(state, size);
-    if (norm > 1e-10f) {
-        simd_complex_scale_float(state, size, 1.0f / norm);
+    if (!ctx || !state || size == 0) {
+        return COMPUTE_ERROR_INVALID_ARGUMENT;
+    }
+
+    // For large sizes, use GPU; for small sizes, SIMD is efficient
+    if (size >= 1024 && ctx->normKernel && ctx->scaleKernel) {
+        cl_int err;
+        size_t state_bytes = size * 2 * sizeof(float);
+        size_t num_groups = (size + ctx->workgroup_size - 1) / ctx->workgroup_size;
+
+        // Create buffers
+        cl_mem stateBuf = clCreateBuffer(ctx->context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+                                         state_bytes, state, &err);
+        cl_mem partialBuf = clCreateBuffer(ctx->context, CL_MEM_READ_WRITE,
+                                           num_groups * sizeof(float), NULL, &err);
+
+        cl_uint sz = (cl_uint)size;
+
+        // Compute norm squared
+        clSetKernelArg(ctx->normKernel, 0, sizeof(cl_mem), &stateBuf);
+        clSetKernelArg(ctx->normKernel, 1, sizeof(cl_mem), &partialBuf);
+        clSetKernelArg(ctx->normKernel, 2, sizeof(cl_uint), &sz);
+        clSetKernelArg(ctx->normKernel, 3, ctx->workgroup_size * sizeof(float), NULL);
+
+        size_t global_size = num_groups * ctx->workgroup_size;
+        size_t local_size = ctx->workgroup_size;
+        err = clEnqueueNDRangeKernel(ctx->queue, ctx->normKernel, 1, NULL,
+                                      &global_size, &local_size, 0, NULL, NULL);
+
+        // Read partial sums and sum on CPU
+        float* partials = malloc(num_groups * sizeof(float));
+        clEnqueueReadBuffer(ctx->queue, partialBuf, CL_TRUE, 0,
+                            num_groups * sizeof(float), partials, 0, NULL, NULL);
+
+        float norm_sq = 0.0f;
+        for (size_t i = 0; i < num_groups; i++) {
+            norm_sq += partials[i];
+        }
+        free(partials);
+
+        float norm = sqrtf(norm_sq);
+        if (norm > 1e-10f) {
+            float scale = 1.0f / norm;
+
+            // Scale state
+            clSetKernelArg(ctx->scaleKernel, 0, sizeof(cl_mem), &stateBuf);
+            clSetKernelArg(ctx->scaleKernel, 1, sizeof(float), &scale);
+            clSetKernelArg(ctx->scaleKernel, 2, sizeof(cl_uint), &sz);
+
+            clEnqueueNDRangeKernel(ctx->queue, ctx->scaleKernel, 1, NULL,
+                                    &size, &local_size, 0, NULL, NULL);
+
+            // Copy back
+            clEnqueueReadBuffer(ctx->queue, stateBuf, CL_TRUE, 0,
+                                state_bytes, state, 0, NULL, NULL);
+        }
+
+        clReleaseMemObject(stateBuf);
+        clReleaseMemObject(partialBuf);
+    } else {
+        // Use SIMD for small sizes
+        float norm = simd_complex_norm_float(state, size);
+        if (norm > 1e-10f) {
+            simd_complex_scale_float(state, size, 1.0f / norm);
+        }
     }
 
     return COMPUTE_SUCCESS;
@@ -783,10 +845,44 @@ static ComputeResult opencl_quantum_gradient(ComputeBackend* backend,
                                               const float* backward_state,
                                               size_t size,
                                               ComputeStream* stream) {
-    (void)backend;
+    OpenCLBackendContext* ctx = (OpenCLBackendContext*)backend;
     (void)stream;
 
-    simd_complex_inner_product(gradients, backward_state, forward_state, size);
+    if (!ctx || !gradients || !forward_state || !backward_state) {
+        return COMPUTE_ERROR_INVALID_ARGUMENT;
+    }
+
+    // For large sizes, use GPU; for small sizes, SIMD is efficient
+    if (size >= 1024 && ctx->gradientKernel) {
+        cl_int err;
+        size_t bytes = size * 2 * sizeof(float);
+
+        cl_mem fwdBuf = clCreateBuffer(ctx->context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                                       bytes, (void*)forward_state, &err);
+        cl_mem bwdBuf = clCreateBuffer(ctx->context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                                       bytes, (void*)backward_state, &err);
+        cl_mem gradBuf = clCreateBuffer(ctx->context, CL_MEM_WRITE_ONLY, bytes, NULL, &err);
+
+        cl_uint sz = (cl_uint)size;
+
+        clSetKernelArg(ctx->gradientKernel, 0, sizeof(cl_mem), &fwdBuf);
+        clSetKernelArg(ctx->gradientKernel, 1, sizeof(cl_mem), &bwdBuf);
+        clSetKernelArg(ctx->gradientKernel, 2, sizeof(cl_mem), &gradBuf);
+        clSetKernelArg(ctx->gradientKernel, 3, sizeof(cl_uint), &sz);
+
+        size_t local_size = ctx->workgroup_size;
+        err = clEnqueueNDRangeKernel(ctx->queue, ctx->gradientKernel, 1, NULL,
+                                      &size, &local_size, 0, NULL, NULL);
+
+        clEnqueueReadBuffer(ctx->queue, gradBuf, CL_TRUE, 0, bytes, gradients, 0, NULL, NULL);
+
+        clReleaseMemObject(fwdBuf);
+        clReleaseMemObject(bwdBuf);
+        clReleaseMemObject(gradBuf);
+    } else {
+        simd_complex_inner_product(gradients, backward_state, forward_state, size);
+    }
+
     return COMPUTE_SUCCESS;
 }
 
@@ -796,10 +892,59 @@ static ComputeResult opencl_quantum_inner_product(ComputeBackend* backend,
                                                    const float* state_b,
                                                    size_t size,
                                                    ComputeStream* stream) {
-    (void)backend;
+    OpenCLBackendContext* ctx = (OpenCLBackendContext*)backend;
     (void)stream;
 
-    simd_complex_inner_product(result, state_a, state_b, size);
+    if (!ctx || !result || !state_a || !state_b) {
+        return COMPUTE_ERROR_INVALID_ARGUMENT;
+    }
+
+    // For large sizes, use GPU reduction
+    if (size >= 1024 && ctx->innerProductKernel) {
+        cl_int err;
+        size_t bytes = size * 2 * sizeof(float);
+        size_t num_groups = (size + ctx->workgroup_size - 1) / ctx->workgroup_size;
+
+        cl_mem aBuf = clCreateBuffer(ctx->context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                                     bytes, (void*)state_a, &err);
+        cl_mem bBuf = clCreateBuffer(ctx->context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                                     bytes, (void*)state_b, &err);
+        cl_mem partialBuf = clCreateBuffer(ctx->context, CL_MEM_WRITE_ONLY,
+                                           num_groups * 2 * sizeof(float), NULL, &err);
+
+        cl_uint sz = (cl_uint)size;
+
+        clSetKernelArg(ctx->innerProductKernel, 0, sizeof(cl_mem), &aBuf);
+        clSetKernelArg(ctx->innerProductKernel, 1, sizeof(cl_mem), &bBuf);
+        clSetKernelArg(ctx->innerProductKernel, 2, sizeof(cl_mem), &partialBuf);
+        clSetKernelArg(ctx->innerProductKernel, 3, sizeof(cl_uint), &sz);
+        clSetKernelArg(ctx->innerProductKernel, 4, ctx->workgroup_size * 2 * sizeof(float), NULL);
+
+        size_t global_size = num_groups * ctx->workgroup_size;
+        size_t local_size = ctx->workgroup_size;
+        err = clEnqueueNDRangeKernel(ctx->queue, ctx->innerProductKernel, 1, NULL,
+                                      &global_size, &local_size, 0, NULL, NULL);
+
+        float* partials = malloc(num_groups * 2 * sizeof(float));
+        clEnqueueReadBuffer(ctx->queue, partialBuf, CL_TRUE, 0,
+                            num_groups * 2 * sizeof(float), partials, 0, NULL, NULL);
+
+        float real_sum = 0.0f, imag_sum = 0.0f;
+        for (size_t i = 0; i < num_groups; i++) {
+            real_sum += partials[i * 2];
+            imag_sum += partials[i * 2 + 1];
+        }
+        result[0] = real_sum;
+        result[1] = imag_sum;
+        free(partials);
+
+        clReleaseMemObject(aBuf);
+        clReleaseMemObject(bBuf);
+        clReleaseMemObject(partialBuf);
+    } else {
+        simd_complex_inner_product(result, state_a, state_b, size);
+    }
+
     return COMPUTE_SUCCESS;
 }
 
@@ -809,10 +954,58 @@ static ComputeResult opencl_quantum_expectation(ComputeBackend* backend,
                                                  const float* observable,
                                                  size_t size,
                                                  ComputeStream* stream) {
-    (void)backend;
+    OpenCLBackendContext* ctx = (OpenCLBackendContext*)backend;
     (void)stream;
 
-    *result = simd_expectation_diagonal(state, observable, size);
+    if (!ctx || !result || !state || !observable) {
+        return COMPUTE_ERROR_INVALID_ARGUMENT;
+    }
+
+    // For large sizes, use GPU reduction
+    if (size >= 1024 && ctx->expectationKernel) {
+        cl_int err;
+        size_t state_bytes = size * 2 * sizeof(float);
+        size_t obs_bytes = size * sizeof(float);
+        size_t num_groups = (size + ctx->workgroup_size - 1) / ctx->workgroup_size;
+
+        cl_mem stateBuf = clCreateBuffer(ctx->context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                                         state_bytes, (void*)state, &err);
+        cl_mem obsBuf = clCreateBuffer(ctx->context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                                       obs_bytes, (void*)observable, &err);
+        cl_mem partialBuf = clCreateBuffer(ctx->context, CL_MEM_WRITE_ONLY,
+                                           num_groups * sizeof(float), NULL, &err);
+
+        cl_uint sz = (cl_uint)size;
+
+        clSetKernelArg(ctx->expectationKernel, 0, sizeof(cl_mem), &stateBuf);
+        clSetKernelArg(ctx->expectationKernel, 1, sizeof(cl_mem), &obsBuf);
+        clSetKernelArg(ctx->expectationKernel, 2, sizeof(cl_mem), &partialBuf);
+        clSetKernelArg(ctx->expectationKernel, 3, sizeof(cl_uint), &sz);
+        clSetKernelArg(ctx->expectationKernel, 4, ctx->workgroup_size * sizeof(float), NULL);
+
+        size_t global_size = num_groups * ctx->workgroup_size;
+        size_t local_size = ctx->workgroup_size;
+        err = clEnqueueNDRangeKernel(ctx->queue, ctx->expectationKernel, 1, NULL,
+                                      &global_size, &local_size, 0, NULL, NULL);
+
+        float* partials = malloc(num_groups * sizeof(float));
+        clEnqueueReadBuffer(ctx->queue, partialBuf, CL_TRUE, 0,
+                            num_groups * sizeof(float), partials, 0, NULL, NULL);
+
+        float sum = 0.0f;
+        for (size_t i = 0; i < num_groups; i++) {
+            sum += partials[i];
+        }
+        *result = sum;
+        free(partials);
+
+        clReleaseMemObject(stateBuf);
+        clReleaseMemObject(obsBuf);
+        clReleaseMemObject(partialBuf);
+    } else {
+        *result = simd_expectation_diagonal(state, observable, size);
+    }
+
     return COMPUTE_SUCCESS;
 }
 
@@ -867,27 +1060,78 @@ static ComputeResult opencl_allreduce(ComputeBackend* backend,
 static ComputeResult opencl_scatter(ComputeBackend* backend,
                                      const void* send_data, void* recv_data,
                                      size_t count, ComputeDataType dtype, int root) {
-    size_t elem_size = compute_dtype_size(dtype);
-    memcpy(recv_data, send_data, count * elem_size);
-    (void)backend; (void)root;
+#if COMPUTE_HAS_MPI
+    OpenCLBackendContext* ctx = (OpenCLBackendContext*)backend;
+    if (ctx && ctx->num_nodes > 1) {
+        MPI_Datatype mpi_type;
+        switch (dtype) {
+            case COMPUTE_DTYPE_FLOAT32:   mpi_type = MPI_FLOAT; break;
+            case COMPUTE_DTYPE_FLOAT64:   mpi_type = MPI_DOUBLE; break;
+            case COMPUTE_DTYPE_INT32:     mpi_type = MPI_INT; break;
+            case COMPUTE_DTYPE_INT64:     mpi_type = MPI_LONG_LONG; break;
+            default:                      mpi_type = MPI_BYTE; break;
+        }
+        MPI_Scatter(send_data, (int)count, mpi_type,
+                    recv_data, (int)count, mpi_type, root, ctx->comm);
+    } else
+#endif
+    {
+        size_t elem_size = compute_dtype_size(dtype);
+        memcpy(recv_data, send_data, count * elem_size);
+        (void)backend; (void)root;
+    }
     return COMPUTE_SUCCESS;
 }
 
 static ComputeResult opencl_gather(ComputeBackend* backend,
                                     const void* send_data, void* recv_data,
                                     size_t count, ComputeDataType dtype, int root) {
-    size_t elem_size = compute_dtype_size(dtype);
-    memcpy(recv_data, send_data, count * elem_size);
-    (void)backend; (void)root;
+#if COMPUTE_HAS_MPI
+    OpenCLBackendContext* ctx = (OpenCLBackendContext*)backend;
+    if (ctx && ctx->num_nodes > 1) {
+        MPI_Datatype mpi_type;
+        switch (dtype) {
+            case COMPUTE_DTYPE_FLOAT32:   mpi_type = MPI_FLOAT; break;
+            case COMPUTE_DTYPE_FLOAT64:   mpi_type = MPI_DOUBLE; break;
+            case COMPUTE_DTYPE_INT32:     mpi_type = MPI_INT; break;
+            case COMPUTE_DTYPE_INT64:     mpi_type = MPI_LONG_LONG; break;
+            default:                      mpi_type = MPI_BYTE; break;
+        }
+        MPI_Gather(send_data, (int)count, mpi_type,
+                   recv_data, (int)count, mpi_type, root, ctx->comm);
+    } else
+#endif
+    {
+        size_t elem_size = compute_dtype_size(dtype);
+        memcpy(recv_data, send_data, count * elem_size);
+        (void)backend; (void)root;
+    }
     return COMPUTE_SUCCESS;
 }
 
 static ComputeResult opencl_allgather(ComputeBackend* backend,
                                        const void* send_data, void* recv_data,
                                        size_t count, ComputeDataType dtype) {
-    size_t elem_size = compute_dtype_size(dtype);
-    memcpy(recv_data, send_data, count * elem_size);
-    (void)backend;
+#if COMPUTE_HAS_MPI
+    OpenCLBackendContext* ctx = (OpenCLBackendContext*)backend;
+    if (ctx && ctx->num_nodes > 1) {
+        MPI_Datatype mpi_type;
+        switch (dtype) {
+            case COMPUTE_DTYPE_FLOAT32:   mpi_type = MPI_FLOAT; break;
+            case COMPUTE_DTYPE_FLOAT64:   mpi_type = MPI_DOUBLE; break;
+            case COMPUTE_DTYPE_INT32:     mpi_type = MPI_INT; break;
+            case COMPUTE_DTYPE_INT64:     mpi_type = MPI_LONG_LONG; break;
+            default:                      mpi_type = MPI_BYTE; break;
+        }
+        MPI_Allgather(send_data, (int)count, mpi_type,
+                      recv_data, (int)count, mpi_type, ctx->comm);
+    } else
+#endif
+    {
+        size_t elem_size = compute_dtype_size(dtype);
+        memcpy(recv_data, send_data, count * elem_size);
+        (void)backend;
+    }
     return COMPUTE_SUCCESS;
 }
 
@@ -895,9 +1139,41 @@ static ComputeResult opencl_reduce_scatter(ComputeBackend* backend,
                                             const void* send_data, void* recv_data,
                                             size_t count, ComputeDataType dtype,
                                             ComputeReduceOp op) {
-    size_t elem_size = compute_dtype_size(dtype);
-    memcpy(recv_data, send_data, count * elem_size);
-    (void)backend; (void)op;
+#if COMPUTE_HAS_MPI
+    OpenCLBackendContext* ctx = (OpenCLBackendContext*)backend;
+    if (ctx && ctx->num_nodes > 1) {
+        MPI_Datatype mpi_type;
+        MPI_Op mpi_op;
+
+        switch (dtype) {
+            case COMPUTE_DTYPE_FLOAT32:   mpi_type = MPI_FLOAT; break;
+            case COMPUTE_DTYPE_FLOAT64:   mpi_type = MPI_DOUBLE; break;
+            case COMPUTE_DTYPE_INT32:     mpi_type = MPI_INT; break;
+            case COMPUTE_DTYPE_INT64:     mpi_type = MPI_LONG_LONG; break;
+            default:                      mpi_type = MPI_BYTE; break;
+        }
+
+        switch (op) {
+            case COMPUTE_REDUCE_SUM:  mpi_op = MPI_SUM; break;
+            case COMPUTE_REDUCE_PROD: mpi_op = MPI_PROD; break;
+            case COMPUTE_REDUCE_MIN:  mpi_op = MPI_MIN; break;
+            case COMPUTE_REDUCE_MAX:  mpi_op = MPI_MAX; break;
+            default:                  mpi_op = MPI_SUM; break;
+        }
+
+        int* recvcounts = calloc(ctx->num_nodes, sizeof(int));
+        for (int i = 0; i < ctx->num_nodes; i++) {
+            recvcounts[i] = (int)count;
+        }
+        MPI_Reduce_scatter(send_data, recv_data, recvcounts, mpi_type, mpi_op, ctx->comm);
+        free(recvcounts);
+    } else
+#endif
+    {
+        size_t elem_size = compute_dtype_size(dtype);
+        memcpy(recv_data, send_data, count * elem_size);
+        (void)backend; (void)op;
+    }
     return COMPUTE_SUCCESS;
 }
 

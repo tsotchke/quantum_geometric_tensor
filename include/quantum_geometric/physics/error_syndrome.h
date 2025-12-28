@@ -99,8 +99,9 @@ typedef struct SyndromeConfig {
     size_t max_matching_iterations; // Max matching iterations
     double pattern_threshold;  // Threshold for patterns
     size_t min_pattern_occurrences; // Min pattern occurrences
-    size_t lattice_width;      // Width of lattice
-    size_t lattice_height;     // Height of lattice
+    size_t lattice_width;      // Width of lattice (x dimension)
+    size_t lattice_height;     // Height of lattice (y dimension)
+    size_t lattice_depth;      // Depth of lattice (z dimension, 1 for 2D)
     size_t history_window;     // Size of history window for error tracking
     uint64_t calibration_interval; // Calibration interval in nanoseconds
     size_t num_threads;        // Number of threads for parallel operations

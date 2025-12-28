@@ -86,11 +86,27 @@ void qg_sampling_cleanup(sampling_state_t* state);
 // ============================================================================
 
 /**
- * @brief Prepare quantum state for sampling
+ * @brief Prepare quantum state for sampling from real values
  */
 int qg_sampling_prepare_state(sampling_state_t* state,
                               const float* initial_state,
                               size_t state_size);
+
+/**
+ * @brief Prepare quantum state from complex amplitudes
+ *
+ * Computes probabilities from |amplitude|^2 for proper quantum sampling.
+ *
+ * @param state Sampling state to prepare
+ * @param amplitudes_real Real parts of complex amplitudes
+ * @param amplitudes_imag Imaginary parts of complex amplitudes
+ * @param state_size Number of amplitudes
+ * @return QGT_SUCCESS on success, error code otherwise
+ */
+int qg_sampling_prepare_complex(sampling_state_t* state,
+                                const float* amplitudes_real,
+                                const float* amplitudes_imag,
+                                size_t state_size);
 
 /**
  * @brief Update probability distribution

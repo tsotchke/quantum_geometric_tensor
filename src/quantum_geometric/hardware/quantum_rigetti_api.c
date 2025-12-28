@@ -180,7 +180,12 @@ static bool http_execute(const http_request_t* req, http_response_t* resp, int* 
     // Fallback: use system curl command
     char cmd[4096];
     char tmpfile[64];
-    snprintf(tmpfile, sizeof(tmpfile), "/tmp/qcs_resp_%d.json", getpid());
+
+    // Use mkstemp for secure temp file creation (mode 0600)
+    snprintf(tmpfile, sizeof(tmpfile), "/tmp/qcs_resp_XXXXXX");
+    int fd = mkstemp(tmpfile);
+    if (fd < 0) return false;
+    close(fd);  // Close fd, will reopen after curl writes
 
     if (strcmp(req->method, "GET") == 0) {
         snprintf(cmd, sizeof(cmd),

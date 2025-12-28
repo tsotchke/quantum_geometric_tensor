@@ -745,10 +745,47 @@ static ComputeResult metal_quantum_gradient(ComputeBackend* backend,
                                              ComputeStream* stream) {
     @autoreleasepool {
         MetalBackendContext* ctx = (MetalBackendContext*)backend;
-        if (!ctx) return COMPUTE_ERROR_INVALID_ARGUMENT;
+        if (!ctx || !gradients || !forward_state || !backward_state) {
+            return COMPUTE_ERROR_INVALID_ARGUMENT;
+        }
 
-        // Use SIMD for gradient computation (simpler than GPU for small sizes)
-        simd_complex_inner_product(gradients, backward_state, forward_state, size);
+        // For large sizes, use GPU; for small sizes, SIMD is more efficient
+        if (size >= 1024 && ctx->gradientPipeline) {
+            size_t bytes = size * 2 * sizeof(float);
+
+            id<MTLBuffer> fwdBuf = [ctx->device newBufferWithBytes:forward_state
+                                                            length:bytes
+                                                           options:MTLResourceStorageModeShared];
+            id<MTLBuffer> bwdBuf = [ctx->device newBufferWithBytes:backward_state
+                                                            length:bytes
+                                                           options:MTLResourceStorageModeShared];
+            id<MTLBuffer> gradBuf = [ctx->device newBufferWithLength:bytes
+                                                             options:MTLResourceStorageModeShared];
+
+            uint32_t sz = (uint32_t)size;
+
+            id<MTLCommandBuffer> cmdBuf = [ctx->commandQueue commandBuffer];
+            id<MTLComputeCommandEncoder> encoder = [cmdBuf computeCommandEncoder];
+
+            [encoder setComputePipelineState:ctx->gradientPipeline];
+            [encoder setBuffer:fwdBuf offset:0 atIndex:0];
+            [encoder setBuffer:bwdBuf offset:0 atIndex:1];
+            [encoder setBuffer:gradBuf offset:0 atIndex:2];
+            [encoder setBytes:&sz length:sizeof(sz) atIndex:3];
+
+            MTLSize gridSize = MTLSizeMake(size, 1, 1);
+            MTLSize threadgroupSize = MTLSizeMake(MIN(ctx->threadgroup_size, size), 1, 1);
+            [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadgroupSize];
+
+            [encoder endEncoding];
+            [cmdBuf commit];
+            [cmdBuf waitUntilCompleted];
+
+            memcpy(gradients, [gradBuf contents], bytes);
+        } else {
+            // Use SIMD for small sizes
+            simd_complex_inner_product(gradients, backward_state, forward_state, size);
+        }
 
         return COMPUTE_SUCCESS;
     }
@@ -762,9 +799,55 @@ static ComputeResult metal_quantum_inner_product(ComputeBackend* backend,
                                                   ComputeStream* stream) {
     @autoreleasepool {
         MetalBackendContext* ctx = (MetalBackendContext*)backend;
-        if (!ctx) return COMPUTE_ERROR_INVALID_ARGUMENT;
+        if (!ctx || !result || !state_a || !state_b) {
+            return COMPUTE_ERROR_INVALID_ARGUMENT;
+        }
 
-        simd_complex_inner_product(result, state_a, state_b, size);
+        // For large sizes, use GPU reduction; for small sizes, SIMD is more efficient
+        if (size >= 1024 && ctx->innerProductPipeline) {
+            size_t bytes = size * 2 * sizeof(float);
+            size_t num_groups = (size + ctx->threadgroup_size - 1) / ctx->threadgroup_size;
+
+            id<MTLBuffer> aBuf = [ctx->device newBufferWithBytes:state_a
+                                                          length:bytes
+                                                         options:MTLResourceStorageModeShared];
+            id<MTLBuffer> bBuf = [ctx->device newBufferWithBytes:state_b
+                                                          length:bytes
+                                                         options:MTLResourceStorageModeShared];
+            id<MTLBuffer> partialBuf = [ctx->device newBufferWithLength:num_groups * 2 * sizeof(float)
+                                                                options:MTLResourceStorageModeShared];
+
+            uint32_t sz = (uint32_t)size;
+
+            id<MTLCommandBuffer> cmdBuf = [ctx->commandQueue commandBuffer];
+            id<MTLComputeCommandEncoder> encoder = [cmdBuf computeCommandEncoder];
+
+            [encoder setComputePipelineState:ctx->innerProductPipeline];
+            [encoder setBuffer:aBuf offset:0 atIndex:0];
+            [encoder setBuffer:bBuf offset:0 atIndex:1];
+            [encoder setBuffer:partialBuf offset:0 atIndex:2];
+            [encoder setBytes:&sz length:sizeof(sz) atIndex:3];
+
+            MTLSize gridSize = MTLSizeMake(size, 1, 1);
+            MTLSize threadgroupSize = MTLSizeMake(ctx->threadgroup_size, 1, 1);
+            [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadgroupSize];
+
+            [encoder endEncoding];
+            [cmdBuf commit];
+            [cmdBuf waitUntilCompleted];
+
+            // Sum partial results on CPU (few elements)
+            float* partials = (float*)[partialBuf contents];
+            float real_sum = 0.0f, imag_sum = 0.0f;
+            for (size_t i = 0; i < num_groups; i++) {
+                real_sum += partials[i * 2];
+                imag_sum += partials[i * 2 + 1];
+            }
+            result[0] = real_sum;
+            result[1] = imag_sum;
+        } else {
+            simd_complex_inner_product(result, state_a, state_b, size);
+        }
 
         return COMPUTE_SUCCESS;
     }
@@ -778,9 +861,54 @@ static ComputeResult metal_quantum_expectation(ComputeBackend* backend,
                                                 ComputeStream* stream) {
     @autoreleasepool {
         MetalBackendContext* ctx = (MetalBackendContext*)backend;
-        if (!ctx) return COMPUTE_ERROR_INVALID_ARGUMENT;
+        if (!ctx || !result || !state || !observable) {
+            return COMPUTE_ERROR_INVALID_ARGUMENT;
+        }
 
-        *result = simd_expectation_diagonal(state, observable, size);
+        // For large sizes, use GPU reduction; for small sizes, SIMD is more efficient
+        if (size >= 1024 && ctx->expectationPipeline) {
+            size_t state_bytes = size * 2 * sizeof(float);
+            size_t obs_bytes = size * sizeof(float);
+            size_t num_groups = (size + ctx->threadgroup_size - 1) / ctx->threadgroup_size;
+
+            id<MTLBuffer> stateBuf = [ctx->device newBufferWithBytes:state
+                                                              length:state_bytes
+                                                             options:MTLResourceStorageModeShared];
+            id<MTLBuffer> obsBuf = [ctx->device newBufferWithBytes:observable
+                                                            length:obs_bytes
+                                                           options:MTLResourceStorageModeShared];
+            id<MTLBuffer> partialBuf = [ctx->device newBufferWithLength:num_groups * sizeof(float)
+                                                                options:MTLResourceStorageModeShared];
+
+            uint32_t sz = (uint32_t)size;
+
+            id<MTLCommandBuffer> cmdBuf = [ctx->commandQueue commandBuffer];
+            id<MTLComputeCommandEncoder> encoder = [cmdBuf computeCommandEncoder];
+
+            [encoder setComputePipelineState:ctx->expectationPipeline];
+            [encoder setBuffer:stateBuf offset:0 atIndex:0];
+            [encoder setBuffer:obsBuf offset:0 atIndex:1];
+            [encoder setBuffer:partialBuf offset:0 atIndex:2];
+            [encoder setBytes:&sz length:sizeof(sz) atIndex:3];
+
+            MTLSize gridSize = MTLSizeMake(size, 1, 1);
+            MTLSize threadgroupSize = MTLSizeMake(ctx->threadgroup_size, 1, 1);
+            [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadgroupSize];
+
+            [encoder endEncoding];
+            [cmdBuf commit];
+            [cmdBuf waitUntilCompleted];
+
+            // Sum partial results on CPU (few elements)
+            float* partials = (float*)[partialBuf contents];
+            float sum = 0.0f;
+            for (size_t i = 0; i < num_groups; i++) {
+                sum += partials[i];
+            }
+            *result = sum;
+        } else {
+            *result = simd_expectation_diagonal(state, observable, size);
+        }
 
         return COMPUTE_SUCCESS;
     }
@@ -838,27 +966,78 @@ static ComputeResult metal_allreduce(ComputeBackend* backend,
 static ComputeResult metal_scatter(ComputeBackend* backend,
                                     const void* send_data, void* recv_data,
                                     size_t count, ComputeDataType dtype, int root) {
-    size_t elem_size = compute_dtype_size(dtype);
-    memcpy(recv_data, send_data, count * elem_size);
-    (void)backend; (void)root;
+#if COMPUTE_HAS_MPI
+    MetalBackendContext* ctx = (MetalBackendContext*)backend;
+    if (ctx && ctx->num_nodes > 1) {
+        MPI_Datatype mpi_type;
+        switch (dtype) {
+            case COMPUTE_DTYPE_FLOAT32:   mpi_type = MPI_FLOAT; break;
+            case COMPUTE_DTYPE_FLOAT64:   mpi_type = MPI_DOUBLE; break;
+            case COMPUTE_DTYPE_INT32:     mpi_type = MPI_INT; break;
+            case COMPUTE_DTYPE_INT64:     mpi_type = MPI_LONG_LONG; break;
+            default:                      mpi_type = MPI_BYTE; break;
+        }
+        MPI_Scatter(send_data, (int)count, mpi_type,
+                    recv_data, (int)count, mpi_type, root, ctx->comm);
+    } else
+#endif
+    {
+        size_t elem_size = compute_dtype_size(dtype);
+        memcpy(recv_data, send_data, count * elem_size);
+        (void)backend; (void)root;
+    }
     return COMPUTE_SUCCESS;
 }
 
 static ComputeResult metal_gather(ComputeBackend* backend,
                                    const void* send_data, void* recv_data,
                                    size_t count, ComputeDataType dtype, int root) {
-    size_t elem_size = compute_dtype_size(dtype);
-    memcpy(recv_data, send_data, count * elem_size);
-    (void)backend; (void)root;
+#if COMPUTE_HAS_MPI
+    MetalBackendContext* ctx = (MetalBackendContext*)backend;
+    if (ctx && ctx->num_nodes > 1) {
+        MPI_Datatype mpi_type;
+        switch (dtype) {
+            case COMPUTE_DTYPE_FLOAT32:   mpi_type = MPI_FLOAT; break;
+            case COMPUTE_DTYPE_FLOAT64:   mpi_type = MPI_DOUBLE; break;
+            case COMPUTE_DTYPE_INT32:     mpi_type = MPI_INT; break;
+            case COMPUTE_DTYPE_INT64:     mpi_type = MPI_LONG_LONG; break;
+            default:                      mpi_type = MPI_BYTE; break;
+        }
+        MPI_Gather(send_data, (int)count, mpi_type,
+                   recv_data, (int)count, mpi_type, root, ctx->comm);
+    } else
+#endif
+    {
+        size_t elem_size = compute_dtype_size(dtype);
+        memcpy(recv_data, send_data, count * elem_size);
+        (void)backend; (void)root;
+    }
     return COMPUTE_SUCCESS;
 }
 
 static ComputeResult metal_allgather(ComputeBackend* backend,
                                       const void* send_data, void* recv_data,
                                       size_t count, ComputeDataType dtype) {
-    size_t elem_size = compute_dtype_size(dtype);
-    memcpy(recv_data, send_data, count * elem_size);
-    (void)backend;
+#if COMPUTE_HAS_MPI
+    MetalBackendContext* ctx = (MetalBackendContext*)backend;
+    if (ctx && ctx->num_nodes > 1) {
+        MPI_Datatype mpi_type;
+        switch (dtype) {
+            case COMPUTE_DTYPE_FLOAT32:   mpi_type = MPI_FLOAT; break;
+            case COMPUTE_DTYPE_FLOAT64:   mpi_type = MPI_DOUBLE; break;
+            case COMPUTE_DTYPE_INT32:     mpi_type = MPI_INT; break;
+            case COMPUTE_DTYPE_INT64:     mpi_type = MPI_LONG_LONG; break;
+            default:                      mpi_type = MPI_BYTE; break;
+        }
+        MPI_Allgather(send_data, (int)count, mpi_type,
+                      recv_data, (int)count, mpi_type, ctx->comm);
+    } else
+#endif
+    {
+        size_t elem_size = compute_dtype_size(dtype);
+        memcpy(recv_data, send_data, count * elem_size);
+        (void)backend;
+    }
     return COMPUTE_SUCCESS;
 }
 
@@ -866,9 +1045,41 @@ static ComputeResult metal_reduce_scatter(ComputeBackend* backend,
                                            const void* send_data, void* recv_data,
                                            size_t count, ComputeDataType dtype,
                                            ComputeReduceOp op) {
-    size_t elem_size = compute_dtype_size(dtype);
-    memcpy(recv_data, send_data, count * elem_size);
-    (void)backend; (void)op;
+#if COMPUTE_HAS_MPI
+    MetalBackendContext* ctx = (MetalBackendContext*)backend;
+    if (ctx && ctx->num_nodes > 1) {
+        MPI_Datatype mpi_type;
+        MPI_Op mpi_op;
+
+        switch (dtype) {
+            case COMPUTE_DTYPE_FLOAT32:   mpi_type = MPI_FLOAT; break;
+            case COMPUTE_DTYPE_FLOAT64:   mpi_type = MPI_DOUBLE; break;
+            case COMPUTE_DTYPE_INT32:     mpi_type = MPI_INT; break;
+            case COMPUTE_DTYPE_INT64:     mpi_type = MPI_LONG_LONG; break;
+            default:                      mpi_type = MPI_BYTE; break;
+        }
+
+        switch (op) {
+            case COMPUTE_REDUCE_SUM:  mpi_op = MPI_SUM; break;
+            case COMPUTE_REDUCE_PROD: mpi_op = MPI_PROD; break;
+            case COMPUTE_REDUCE_MIN:  mpi_op = MPI_MIN; break;
+            case COMPUTE_REDUCE_MAX:  mpi_op = MPI_MAX; break;
+            default:                  mpi_op = MPI_SUM; break;
+        }
+
+        int* recvcounts = (int*)calloc(ctx->num_nodes, sizeof(int));
+        for (int i = 0; i < ctx->num_nodes; i++) {
+            recvcounts[i] = (int)count;
+        }
+        MPI_Reduce_scatter(send_data, recv_data, recvcounts, mpi_type, mpi_op, ctx->comm);
+        free(recvcounts);
+    } else
+#endif
+    {
+        size_t elem_size = compute_dtype_size(dtype);
+        memcpy(recv_data, send_data, count * elem_size);
+        (void)backend; (void)op;
+    }
     return COMPUTE_SUCCESS;
 }
 

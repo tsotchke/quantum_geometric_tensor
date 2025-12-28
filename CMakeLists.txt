@@ -525,7 +525,27 @@ file(GLOB QGT_CONFIG_SOURCES
 # Supercomputer module sources
 file(GLOB QGT_SUPERCOMPUTER_SOURCES
     ${CMAKE_SOURCE_DIR}/src/quantum_geometric/supercomputer/*.c
+    ${CMAKE_SOURCE_DIR}/src/quantum_geometric/supercomputer/backends/*.c
 )
+
+# Metal sources (Apple platforms)
+if(APPLE)
+    file(GLOB QGT_METAL_MM_SOURCES
+        ${CMAKE_SOURCE_DIR}/src/quantum_geometric/supercomputer/backends/*.mm
+        ${CMAKE_SOURCE_DIR}/src/metal/*.mm
+    )
+    list(APPEND QGT_SUPERCOMPUTER_SOURCES ${QGT_METAL_MM_SOURCES})
+endif()
+
+# CUDA backend sources
+if(QGT_ENABLE_CUDA)
+    enable_language(CUDA)
+    file(GLOB QGT_CUDA_SOURCES
+        ${CMAKE_SOURCE_DIR}/src/quantum_geometric/supercomputer/backends/*.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/*.cu
+    )
+    list(APPEND QGT_SUPERCOMPUTER_SOURCES ${QGT_CUDA_SOURCES})
+endif()
 
 # Algorithms module sources (QAOA, Grover, VQE, etc.)
 file(GLOB QGT_ALGORITHMS_SOURCES

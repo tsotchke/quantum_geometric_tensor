@@ -185,6 +185,75 @@ int qg_sampling_prepare_state(sampling_state_t* state,
     return QGT_SUCCESS;
 }
 
+int qg_sampling_prepare_complex(sampling_state_t* state,
+                                const float* amplitudes_real,
+                                const float* amplitudes_imag,
+                                size_t state_size) {
+    if (!state || !amplitudes_real || !amplitudes_imag || state_size == 0) {
+        return QGT_ERROR_INVALID_PARAMETER;
+    }
+
+    if (state_size > state->state_dim) {
+        return QGT_ERROR_DIMENSION_MISMATCH;
+    }
+
+    // Compute probabilities from complex amplitudes: P(i) = |a_i|^2 = real^2 + imag^2
+#if defined(USE_AVX2)
+    size_t simd_size = state_size / 8;
+    for (size_t i = 0; i < simd_size; i++) {
+        __m256 real_vec = _mm256_loadu_ps(&amplitudes_real[i * 8]);
+        __m256 imag_vec = _mm256_loadu_ps(&amplitudes_imag[i * 8]);
+
+        // Compute |amplitude|^2 = real^2 + imag^2
+        __m256 real_sq = _mm256_mul_ps(real_vec, real_vec);
+        __m256 imag_sq = _mm256_mul_ps(imag_vec, imag_vec);
+        __m256 prob = _mm256_add_ps(real_sq, imag_sq);
+
+        _mm256_storeu_ps(&state->probabilities[i * 8], prob);
+    }
+    // Handle remaining elements
+    for (size_t i = simd_size * 8; i < state_size; i++) {
+        float real = amplitudes_real[i];
+        float imag = amplitudes_imag[i];
+        state->probabilities[i] = real * real + imag * imag;
+    }
+#elif defined(USE_NEON)
+    size_t simd_size = state_size / 4;
+    for (size_t i = 0; i < simd_size; i++) {
+        float32x4_t real_vec = vld1q_f32(&amplitudes_real[i * 4]);
+        float32x4_t imag_vec = vld1q_f32(&amplitudes_imag[i * 4]);
+
+        // Compute |amplitude|^2 = real^2 + imag^2
+        float32x4_t real_sq = vmulq_f32(real_vec, real_vec);
+        float32x4_t imag_sq = vmulq_f32(imag_vec, imag_vec);
+        float32x4_t prob = vaddq_f32(real_sq, imag_sq);
+
+        vst1q_f32(&state->probabilities[i * 4], prob);
+    }
+    // Handle remaining elements
+    for (size_t i = simd_size * 4; i < state_size; i++) {
+        float real = amplitudes_real[i];
+        float imag = amplitudes_imag[i];
+        state->probabilities[i] = real * real + imag * imag;
+    }
+#else
+    // Scalar fallback
+    for (size_t i = 0; i < state_size; i++) {
+        float real = amplitudes_real[i];
+        float imag = amplitudes_imag[i];
+        state->probabilities[i] = real * real + imag * imag;
+    }
+#endif
+
+    // Also store the state vector (use probabilities as state for now)
+    memcpy(state->state_vector, state->probabilities, state_size * sizeof(float));
+
+    // Mark as not normalized - caller should call qg_sampling_normalize
+    state->normalized = false;
+
+    return QGT_SUCCESS;
+}
+
 int qg_sampling_update_probabilities(sampling_state_t* state,
                                      const float* new_probs,
                                      size_t prob_size) {

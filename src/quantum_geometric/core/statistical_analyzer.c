@@ -1151,19 +1151,30 @@ char* stat_export_json(stat_analyzer_t* analyzer) {
     }
 
     char* p = json;
-    p += sprintf(p, "{\n  \"series\": [\n");
+    size_t remaining = buf_size;
+    int written;
+
+#define SAFE_APPEND(...) do { \
+    written = snprintf(p, remaining, __VA_ARGS__); \
+    if (written > 0 && (size_t)written < remaining) { \
+        p += written; \
+        remaining -= written; \
+    } \
+} while(0)
+
+    SAFE_APPEND("{\n  \"series\": [\n");
 
     bool first = true;
-    for (size_t i = 0; i < HASH_TABLE_SIZE; i++) {
+    for (size_t i = 0; i < HASH_TABLE_SIZE && remaining > 1; i++) {
         series_entry_t* entry = analyzer->series[i];
-        while (entry) {
-            if (!first) p += sprintf(p, ",\n");
+        while (entry && remaining > 1) {
+            if (!first) SAFE_APPEND(",\n");
             first = false;
 
             stat_descriptive_t stats;
             stat_descriptive_from_data(entry->data, entry->count, &stats);
 
-            p += sprintf(p,
+            SAFE_APPEND(
                 "    {\n"
                 "      \"name\": \"%s\",\n"
                 "      \"count\": %zu,\n"
@@ -1185,19 +1196,21 @@ char* stat_export_json(stat_analyzer_t* analyzer) {
         }
     }
 
-    p += sprintf(p, "\n  ],\n");
+    SAFE_APPEND("\n  ],\n");
 
     // Add QEC stats
-    p += sprintf(p, "  \"qec\": {\n");
-    p += sprintf(p, "    \"total_cycles\": %zu,\n", analyzer->qec.total_cycles);
-    p += sprintf(p, "    \"logical_errors\": %zu,\n", analyzer->qec.logical_errors);
+    SAFE_APPEND("  \"qec\": {\n");
+    SAFE_APPEND("    \"total_cycles\": %zu,\n", analyzer->qec.total_cycles);
+    SAFE_APPEND("    \"logical_errors\": %zu,\n", analyzer->qec.logical_errors);
     if (analyzer->qec.total_cycles > 0) {
-        p += sprintf(p, "    \"logical_error_rate\": %.6e\n",
+        SAFE_APPEND("    \"logical_error_rate\": %.6e\n",
                      (double)analyzer->qec.logical_errors / (double)analyzer->qec.total_cycles);
     } else {
-        p += sprintf(p, "    \"logical_error_rate\": null\n");
+        SAFE_APPEND("    \"logical_error_rate\": null\n");
     }
-    p += sprintf(p, "  }\n}\n");
+    SAFE_APPEND("  }\n}\n");
+
+#undef SAFE_APPEND
 
     pthread_mutex_unlock(&analyzer->mutex);
     return json;
@@ -1235,21 +1248,32 @@ char* stat_generate_report(stat_analyzer_t* analyzer) {
     }
 
     char* p = report;
-    p += sprintf(p, "=== Statistical Analysis Report ===\n\n");
-    p += sprintf(p, "Data Series: %zu\n\n", analyzer->series_count);
+    size_t remaining = buf_size;
+    int written;
 
-    for (size_t i = 0; i < HASH_TABLE_SIZE; i++) {
+#define SAFE_APPEND(...) do { \
+    written = snprintf(p, remaining, __VA_ARGS__); \
+    if (written > 0 && (size_t)written < remaining) { \
+        p += written; \
+        remaining -= written; \
+    } \
+} while(0)
+
+    SAFE_APPEND("=== Statistical Analysis Report ===\n\n");
+    SAFE_APPEND("Data Series: %zu\n\n", analyzer->series_count);
+
+    for (size_t i = 0; i < HASH_TABLE_SIZE && remaining > 1; i++) {
         series_entry_t* entry = analyzer->series[i];
-        while (entry) {
+        while (entry && remaining > 1) {
             stat_descriptive_t stats;
             stat_descriptive_from_data(entry->data, entry->count, &stats);
 
-            p += sprintf(p, "Series: %s (n=%zu)\n", entry->name, stats.count);
-            p += sprintf(p, "  Mean: %.4f ± %.4f (SE)\n", stats.mean, stats.std_error);
-            p += sprintf(p, "  Median: %.4f, IQR: [%.4f, %.4f]\n",
+            SAFE_APPEND("Series: %s (n=%zu)\n", entry->name, stats.count);
+            SAFE_APPEND("  Mean: %.4f ± %.4f (SE)\n", stats.mean, stats.std_error);
+            SAFE_APPEND("  Median: %.4f, IQR: [%.4f, %.4f]\n",
                         stats.median, stats.q1, stats.q3);
-            p += sprintf(p, "  Range: [%.4f, %.4f]\n", stats.min, stats.max);
-            p += sprintf(p, "  Skewness: %.4f, Kurtosis: %.4f\n\n",
+            SAFE_APPEND("  Range: [%.4f, %.4f]\n", stats.min, stats.max);
+            SAFE_APPEND("  Skewness: %.4f, Kurtosis: %.4f\n\n",
                         stats.skewness, stats.kurtosis);
 
             entry = entry->next;
@@ -1258,12 +1282,14 @@ char* stat_generate_report(stat_analyzer_t* analyzer) {
 
     // QEC summary
     if (analyzer->qec.total_cycles > 0) {
-        p += sprintf(p, "=== QEC Statistics ===\n");
-        p += sprintf(p, "Total cycles: %zu\n", analyzer->qec.total_cycles);
-        p += sprintf(p, "Logical errors: %zu\n", analyzer->qec.logical_errors);
-        p += sprintf(p, "Logical error rate: %.2e\n",
+        SAFE_APPEND("=== QEC Statistics ===\n");
+        SAFE_APPEND("Total cycles: %zu\n", analyzer->qec.total_cycles);
+        SAFE_APPEND("Logical errors: %zu\n", analyzer->qec.logical_errors);
+        SAFE_APPEND("Logical error rate: %.2e\n",
                      (double)analyzer->qec.logical_errors / (double)analyzer->qec.total_cycles);
     }
+
+#undef SAFE_APPEND
 
     pthread_mutex_unlock(&analyzer->mutex);
     return report;

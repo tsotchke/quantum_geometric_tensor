@@ -2,57 +2,91 @@
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 #include <nvml.h>
+#include <math.h>
+
+// Include tensor core headers for supported architectures
+#if __CUDA_ARCH__ >= 700
+#include <mma.h>
+using namespace nvcuda;
+#endif
 
 // Constants for optimization
 #define WARP_SIZE 32
 #define MAX_BLOCK_SIZE 256
 #define TILE_SIZE 16
+#define WMMA_M 16
+#define WMMA_N 16
+#define WMMA_K 16
 
-// Complex number operators optimized for tensor cores
+// Complex number operators - always use cuBLAS complex operations
+// Tensor cores work on matrix fragments, not individual complex ops
 __device__ __forceinline__ cuDoubleComplex operator*(const cuDoubleComplex &a,
                                                     const cuDoubleComplex &b) {
-    // Use tensor core intrinsics when available
-    #if __CUDA_ARCH__ >= 800
-        return __hmul2(a, b);  // Tensor core multiply
-    #else
-        return cuCmul(a, b);   // Regular multiply
-    #endif
+    return cuCmul(a, b);
 }
 
 __device__ __forceinline__ cuDoubleComplex operator+(const cuDoubleComplex &a,
                                                     const cuDoubleComplex &b) {
-    #if __CUDA_ARCH__ >= 800
-        return __hadd2(a, b);  // Tensor core add
-    #else
-        return cuCadd(a, b);   // Regular add
-    #endif
+    return cuCadd(a, b);
 }
 
 __device__ __forceinline__ cuDoubleComplex operator-(const cuDoubleComplex &a,
                                                     const cuDoubleComplex &b) {
-    #if __CUDA_ARCH__ >= 800
-        return __hsub2(a, b);  // Tensor core subtract
-    #else
-        cuDoubleComplex result;
-        result.x = a.x - b.x;
-        result.y = a.y - b.y;
-        return result;
-    #endif
+    cuDoubleComplex result;
+    result.x = a.x - b.x;
+    result.y = a.y - b.y;
+    return result;
 }
 
 __device__ __forceinline__ cuDoubleComplex conj(const cuDoubleComplex &a) {
-    #if __CUDA_ARCH__ >= 800
-        return __hconj2(a);    // Tensor core conjugate
-    #else
-        return cuConj(a);      // Regular conjugate
-    #endif
+    return cuConj(a);
 }
 
-// Warp-level reduction
+// Warp-level reduction for complex numbers
+// Need to reduce real and imaginary parts separately
 __device__ __forceinline__ cuDoubleComplex warpReduceSum(cuDoubleComplex val) {
+    // Shuffle real and imaginary parts separately
     for (int offset = WARP_SIZE/2; offset > 0; offset /= 2) {
-        val = val + __shfl_down_sync(0xffffffff, val, offset);
+        double real_part = __shfl_down_sync(0xffffffff, val.x, offset);
+        double imag_part = __shfl_down_sync(0xffffffff, val.y, offset);
+        val.x += real_part;
+        val.y += imag_part;
     }
+    return val;
+}
+
+// Block-level reduction for complex numbers
+__device__ __forceinline__ cuDoubleComplex blockReduceSum(cuDoubleComplex val) {
+    __shared__ double shared_real[32];
+    __shared__ double shared_imag[32];
+
+    int lane = threadIdx.x % WARP_SIZE;
+    int wid = threadIdx.x / WARP_SIZE;
+
+    // Warp-level reduction
+    val = warpReduceSum(val);
+
+    // Write reduced warp value
+    if (lane == 0) {
+        shared_real[wid] = val.x;
+        shared_imag[wid] = val.y;
+    }
+    __syncthreads();
+
+    // Final reduction in first warp
+    int num_warps = (blockDim.x + WARP_SIZE - 1) / WARP_SIZE;
+    if (threadIdx.x < num_warps) {
+        val.x = shared_real[lane];
+        val.y = shared_imag[lane];
+    } else {
+        val.x = 0.0;
+        val.y = 0.0;
+    }
+
+    if (wid == 0) {
+        val = warpReduceSum(val);
+    }
+
     return val;
 }
 
@@ -64,136 +98,223 @@ static float lastTensorOpsPerf = 0.0f;
 __global__ void precompute_exp_factors_kernel(cuDoubleComplex *exp_factors,
                                             const double *phases,
                                             size_t size) {
-    __shared__ double shared_phases[TILE_SIZE];
-    
+    __shared__ double shared_phases[256];  // Match max block size
+
     int tid = threadIdx.x;
     int idx = blockIdx.x * blockDim.x + tid;
-    
+
     // Load phases into shared memory
-    if (idx < size) {
+    if (idx < size && tid < 256) {
         shared_phases[tid] = phases[idx];
     }
     __syncthreads();
-    
+
     // Compute exponential factors using shared memory
     if (idx < size) {
         double phase = shared_phases[tid];
-        #if __CUDA_ARCH__ >= 800
-            // Use tensor core sincos when available
-            double sinval, cosval;
-            __hsincos(2.0 * M_PI * phase, &sinval, &cosval);
-            exp_factors[idx] = make_cuDoubleComplex(cosval, sinval);
-        #else
-            exp_factors[idx] = make_cuDoubleComplex(cos(2.0 * M_PI * phase),
-                                                   sin(2.0 * M_PI * phase));
-        #endif
+        double angle = 2.0 * M_PI * phase;
+        // Use sincos for better performance (single instruction on GPU)
+        double sinval, cosval;
+        sincos(angle, &sinval, &cosval);
+        exp_factors[idx] = make_cuDoubleComplex(cosval, sinval);
     }
 }
 
-// Optimized compute kernel using tensor cores and shared memory
+// Optimized compute kernel for quantum geometric metric tensor
+// Uses shared memory tiling and efficient memory access patterns
 __global__ void compute_metric_tensor_kernel(const QuantumAmplitude *state,
                                            QuantumAmplitude *metric,
                                            const double *phases,
                                            const cuDoubleComplex *exp_factors,
                                            size_t size) {
     // Shared memory allocation
-    __shared__ cuDoubleComplex shared_state[TILE_SIZE * TILE_SIZE];
+    __shared__ cuDoubleComplex shared_state[TILE_SIZE];
     __shared__ cuDoubleComplex shared_exp[TILE_SIZE];
     __shared__ double shared_phases[TILE_SIZE];
-    
+
     int tx = threadIdx.x;
     int ty = threadIdx.y;
     int bx = blockIdx.x;
     int by = blockIdx.y;
     int i = bx * TILE_SIZE + tx;
     int j = by * TILE_SIZE + ty;
-    
-    // Initialize accumulator using tensor cores if available
-    #if __CUDA_ARCH__ >= 800
-        wmma::fragment<wmma::accumulator, TILE_SIZE, TILE_SIZE, TILE_SIZE> sum;
-        wmma::fill_fragment(sum, 0.0f);
-    #else
-        cuDoubleComplex sum = make_cuDoubleComplex(0.0, 0.0);
-    #endif
-    
-    // Load state and phases into shared memory
-    if (i < size && ty == 0) {
-        shared_state[tx] = to_cuda_complex(state[i].amplitude);
-        shared_phases[tx] = phases[i];
-    }
-    if (j < size && tx == 0) {
-        shared_exp[ty] = exp_factors[j];
-    }
-    __syncthreads();
-    
+
+    // Initialize accumulator
+    cuDoubleComplex sum = make_cuDoubleComplex(0.0, 0.0);
+
     if (i >= size || j >= size)
         return;
-        
-    cuDoubleComplex state_i = shared_state[tx];
-    cuDoubleComplex state_j = shared_state[ty];
-    
-    // Process tiles using tensor cores
+
+    // Load initial state elements for this thread
+    cuDoubleComplex state_i = to_cuda_complex(state[i].amplitude);
+    cuDoubleComplex state_j = to_cuda_complex(state[j].amplitude);
+    double phase_i_base = phases[i];
+    double phase_j_base = phases[j];
+
+    // Process tiles
     for (int k = 0; k < size; k += TILE_SIZE) {
-        __syncthreads();
-        
-        // Load next tile
-        if (k + tx < size) {
+        // Load tile into shared memory (first warp does the loading)
+        if (ty == 0 && k + tx < size) {
             shared_state[tx] = to_cuda_complex(state[k + tx].amplitude);
             shared_exp[tx] = exp_factors[k + tx];
             shared_phases[tx] = phases[k + tx];
         }
         __syncthreads();
-        
-        #pragma unroll
-        for (int t = 0; t < TILE_SIZE && k + t < size; t++) {
-            double phase_i = shared_phases[tx] * shared_phases[t];
-            double phase_j = shared_phases[ty] * shared_phases[t];
-            
-            // Compute derivatives using tensor cores
-            #if __CUDA_ARCH__ >= 800
-                cuDoubleComplex d_i = __hmul2(state_i, 
-                    make_cuDoubleComplex(0.0, 2.0 * M_PI * phase_i));
-                cuDoubleComplex d_j = __hmul2(state_j,
-                    make_cuDoubleComplex(0.0, 2.0 * M_PI * phase_j));
-            #else
-                cuDoubleComplex d_i = cuCmul(state_i,
-                    make_cuDoubleComplex(0.0, 2.0 * M_PI * phase_i));
-                cuDoubleComplex d_j = cuCmul(state_j,
-                    make_cuDoubleComplex(0.0, 2.0 * M_PI * phase_j));
-            #endif
-            
+
+        // Process elements in this tile
+        int tile_end = min(TILE_SIZE, (int)(size - k));
+        #pragma unroll 4
+        for (int t = 0; t < tile_end; t++) {
+            double phase_k = shared_phases[t];
+            double phase_i = phase_i_base * phase_k;
+            double phase_j = phase_j_base * phase_k;
+
+            // Compute derivatives: d/dθ |ψ⟩ = i * phase * |ψ⟩
+            cuDoubleComplex deriv_factor_i = make_cuDoubleComplex(0.0, 2.0 * M_PI * phase_i);
+            cuDoubleComplex deriv_factor_j = make_cuDoubleComplex(0.0, 2.0 * M_PI * phase_j);
+
+            cuDoubleComplex d_i = cuCmul(state_i, deriv_factor_i);
+            cuDoubleComplex d_j = cuCmul(state_j, deriv_factor_j);
+
             // Compute overlaps with phase factors
-            cuDoubleComplex overlap_i = cuCmul(cuCmul(conj(state_i), d_j),
-                                             shared_exp[t]);
-            cuDoubleComplex overlap_j = cuCmul(cuCmul(conj(state_j), d_i),
-                                             conj(shared_exp[t]));
-            
-            // Accumulate using tensor cores
-            #if __CUDA_ARCH__ >= 800
-                wmma::mma_sync(sum, d_i, d_j, sum);
-                wmma::mma_sync(sum, overlap_i, overlap_j, sum);
-            #else
-                sum = sum + (conj(d_i) * d_j - overlap_i * conj(overlap_j));
-            #endif
+            // ⟨∂_i ψ | ∂_j ψ⟩ - ⟨∂_i ψ | ψ⟩⟨ψ | ∂_j ψ⟩
+            cuDoubleComplex overlap_i = cuCmul(cuCmul(conj(state_i), d_j), shared_exp[t]);
+            cuDoubleComplex overlap_j = cuCmul(cuCmul(conj(state_j), d_i), conj(shared_exp[t]));
+
+            // Accumulate metric tensor element
+            cuDoubleComplex term1 = cuCmul(conj(d_i), d_j);
+            cuDoubleComplex term2 = cuCmul(overlap_i, conj(overlap_j));
+            sum = sum + (term1 - term2);
         }
+        __syncthreads();
     }
-    
-    // Perform warp-level reduction
-    sum = warpReduceSum(sum);
-    
-    // Store final result
+
+    // Use block-level reduction for better accuracy
+    sum = blockReduceSum(sum);
+
+    // Store final result (only one thread per output element)
     if (threadIdx.x == 0 && threadIdx.y == 0) {
-        #if __CUDA_ARCH__ >= 800
-            cuDoubleComplex final_sum;
-            wmma::store_matrix_sync(&final_sum, sum, TILE_SIZE, wmma::mem_row_major);
-            metric[i * size + j].amplitude = from_cuda_complex(
-                make_cuDoubleComplex(cuCreal(final_sum) / size, 0.0)
-            );
-        #else
-            metric[i * size + j].amplitude = from_cuda_complex(
-                make_cuDoubleComplex(cuCreal(sum) / size, 0.0)
-            );
-        #endif
+        // Real part is the metric tensor element
+        metric[i * size + j].amplitude = from_cuda_complex(
+            make_cuDoubleComplex(sum.x / (double)size, 0.0)
+        );
+    }
+}
+
+// High-performance quantum state normalization kernel
+__global__ void quantum_normalize_kernel(cuDoubleComplex *state,
+                                         double *norm_squared,
+                                         size_t size) {
+    __shared__ double shared_sum[256];
+
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + tid;
+
+    // Compute local norm squared
+    double local_sum = 0.0;
+    if (idx < size) {
+        cuDoubleComplex amp = state[idx];
+        local_sum = amp.x * amp.x + amp.y * amp.y;
+    }
+
+    shared_sum[tid] = local_sum;
+    __syncthreads();
+
+    // Parallel reduction
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            shared_sum[tid] += shared_sum[tid + s];
+        }
+        __syncthreads();
+    }
+
+    // Write block result
+    if (tid == 0) {
+        atomicAdd(norm_squared, shared_sum[0]);
+    }
+}
+
+// Apply normalization factor
+__global__ void quantum_scale_kernel(cuDoubleComplex *state,
+                                     double scale,
+                                     size_t size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        state[idx].x *= scale;
+        state[idx].y *= scale;
+    }
+}
+
+// Inner product kernel: <a|b>
+__global__ void quantum_inner_product_kernel(const cuDoubleComplex *state_a,
+                                              const cuDoubleComplex *state_b,
+                                              cuDoubleComplex *result,
+                                              size_t size) {
+    __shared__ double shared_real[256];
+    __shared__ double shared_imag[256];
+
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + tid;
+
+    double local_real = 0.0;
+    double local_imag = 0.0;
+
+    if (idx < size) {
+        cuDoubleComplex a = state_a[idx];
+        cuDoubleComplex b = state_b[idx];
+        // <a|b> = conj(a) * b
+        local_real = a.x * b.x + a.y * b.y;
+        local_imag = a.x * b.y - a.y * b.x;
+    }
+
+    shared_real[tid] = local_real;
+    shared_imag[tid] = local_imag;
+    __syncthreads();
+
+    // Parallel reduction
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            shared_real[tid] += shared_real[tid + s];
+            shared_imag[tid] += shared_imag[tid + s];
+        }
+        __syncthreads();
+    }
+
+    if (tid == 0) {
+        atomicAdd(&result->x, shared_real[0]);
+        atomicAdd(&result->y, shared_imag[0]);
+    }
+}
+
+// Expectation value for diagonal observable
+__global__ void quantum_expectation_kernel(const cuDoubleComplex *state,
+                                           const double *observable,
+                                           double *result,
+                                           size_t size) {
+    __shared__ double shared_sum[256];
+
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + tid;
+
+    double local_sum = 0.0;
+    if (idx < size) {
+        cuDoubleComplex amp = state[idx];
+        double prob = amp.x * amp.x + amp.y * amp.y;
+        local_sum = prob * observable[idx];
+    }
+
+    shared_sum[tid] = local_sum;
+    __syncthreads();
+
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            shared_sum[tid] += shared_sum[tid + s];
+        }
+        __syncthreads();
+    }
+
+    if (tid == 0) {
+        atomicAdd(result, shared_sum[0]);
     }
 }
 

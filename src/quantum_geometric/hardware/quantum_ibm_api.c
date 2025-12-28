@@ -109,6 +109,10 @@ typedef struct {
     // Error tracking
     char last_error[512];
     int last_error_code;
+
+    // Fallback tracking - explicitly track when local simulation is used as fallback
+    bool using_fallback;
+    char fallback_reason[256];
 } ibm_api_handle_t;
 
 // Forward declarations
@@ -528,6 +532,10 @@ char* ibm_api_submit_job(void* api_handle, const char* qasm) {
     if (handle->api_available && !handle->use_local_simulator) {
         ResponseBuffer* response = response_buffer_create();
         if (!response) {
+            handle->using_fallback = true;
+            snprintf(handle->fallback_reason, sizeof(handle->fallback_reason),
+                     "Memory allocation failed for response buffer");
+            fprintf(stderr, "[IBM API] WARNING: %s, using local simulator\n", handle->fallback_reason);
             handle->jobs[job_idx].job_id = generate_job_id();
             goto local_fallback;
         }
@@ -537,6 +545,10 @@ char* ibm_api_submit_job(void* api_handle, const char* qasm) {
         size_t payload_size = strlen(qasm) * 2 + 4096;
         char* payload = malloc(payload_size);
         if (!payload) {
+            handle->using_fallback = true;
+            snprintf(handle->fallback_reason, sizeof(handle->fallback_reason),
+                     "Memory allocation failed for payload");
+            fprintf(stderr, "[IBM API] WARNING: %s, using local simulator\n", handle->fallback_reason);
             response_buffer_free(response);
             handle->jobs[job_idx].job_id = generate_job_id();
             goto local_fallback;
@@ -545,6 +557,10 @@ char* ibm_api_submit_job(void* api_handle, const char* qasm) {
         // Escape QASM for JSON (basic escaping)
         char* escaped_qasm = malloc(strlen(qasm) * 2 + 1);
         if (!escaped_qasm) {
+            handle->using_fallback = true;
+            snprintf(handle->fallback_reason, sizeof(handle->fallback_reason),
+                     "Memory allocation failed for QASM escaping");
+            fprintf(stderr, "[IBM API] WARNING: %s, using local simulator\n", handle->fallback_reason);
             free(payload);
             response_buffer_free(response);
             handle->jobs[job_idx].job_id = generate_job_id();
@@ -621,17 +637,34 @@ char* ibm_api_submit_job(void* api_handle, const char* qasm) {
         }
 
         // API submission failed, fall back to local simulation
-        fprintf(stderr, "[IBM API] Job submission failed: %s, using local simulator\n",
-                handle->last_error);
+        handle->using_fallback = true;
+        snprintf(handle->fallback_reason, sizeof(handle->fallback_reason),
+                 "API job submission failed: %s", handle->last_error);
+        fprintf(stderr, "[IBM API] WARNING: %s, using local simulator\n", handle->fallback_reason);
         free(payload);
         response_buffer_free(response);
         handle->jobs[job_idx].job_id = generate_job_id();
     } else {
+        // API not available or explicitly using local simulator
+        handle->using_fallback = true;
+        if (handle->use_local_simulator) {
+            snprintf(handle->fallback_reason, sizeof(handle->fallback_reason),
+                     "Local simulator explicitly requested");
+        } else {
+            snprintf(handle->fallback_reason, sizeof(handle->fallback_reason),
+                     "IBM Quantum API not available");
+            fprintf(stderr, "[IBM API] WARNING: %s, using local simulator\n", handle->fallback_reason);
+        }
         handle->jobs[job_idx].job_id = generate_job_id();
     }
 
 local_fallback:
 #else
+    // No CURL support - must use local simulation
+    handle->using_fallback = true;
+    snprintf(handle->fallback_reason, sizeof(handle->fallback_reason),
+             "CURL not available - built without network support");
+    fprintf(stderr, "[IBM API] WARNING: %s, using local simulator\n", handle->fallback_reason);
     handle->jobs[job_idx].job_id = generate_job_id();
 #endif
 
@@ -1512,37 +1545,176 @@ bool configure_ibm_feedback(const char* backend_name, const ibm_feedback_setup* 
     return true;
 }
 
+// Helper: apply single-qubit gate to state vector
+static void apply_gate_to_statevector(complex double* state, size_t dim, size_t qubit,
+                                      complex double gate[2][2]) {
+    size_t stride = 1ULL << qubit;
+    for (size_t i = 0; i < dim; i += 2 * stride) {
+        for (size_t j = 0; j < stride; j++) {
+            size_t idx0 = i + j;
+            size_t idx1 = idx0 + stride;
+            complex double a0 = state[idx0];
+            complex double a1 = state[idx1];
+            state[idx0] = gate[0][0] * a0 + gate[0][1] * a1;
+            state[idx1] = gate[1][0] * a0 + gate[1][1] * a1;
+        }
+    }
+}
+
+// Helper: apply CNOT to state vector
+static void apply_cnot_to_statevector(complex double* state, size_t dim,
+                                      size_t control, size_t target) {
+    size_t control_mask = 1ULL << control;
+    size_t target_mask = 1ULL << target;
+    for (size_t i = 0; i < dim; i++) {
+        if ((i & control_mask) && !(i & target_mask)) {
+            size_t j = i | target_mask;
+            complex double temp = state[i];
+            state[i] = state[j];
+            state[j] = temp;
+        }
+    }
+}
+
+// Helper: apply CZ to state vector
+static void apply_cz_to_statevector(complex double* state, size_t dim,
+                                    size_t control, size_t target) {
+    size_t control_mask = 1ULL << control;
+    size_t target_mask = 1ULL << target;
+    for (size_t i = 0; i < dim; i++) {
+        if ((i & control_mask) && (i & target_mask)) {
+            state[i] = -state[i];
+        }
+    }
+}
+
 bool execute_ibm_parallel(const char* backend_name, ibm_quantum_circuit* circuit,
                           IBMJobResult* result, const ibm_parallel_setup* setup) {
-    if (!backend_name || !circuit || !result || !setup) {
+    (void)backend_name;  // Used for real hardware connection
+
+    if (!circuit || !result || !setup) {
         return false;
     }
 
-    // Initialize result
-    size_t num_outcomes = 1UL << circuit->num_qubits;
-    if (num_outcomes > 1024) {
-        num_outcomes = 1024;  // Limit for practical simulation
+    // Limit simulation to 20 qubits for practical reasons
+    if (circuit->num_qubits > 20) {
+        return false;
     }
 
+    size_t dim = 1ULL << circuit->num_qubits;
+    size_t num_outcomes = dim;
+    size_t num_shots = 1024;  // Default number of shots
+
+    // Allocate state vector
+    complex double* state = calloc(dim, sizeof(complex double));
+    if (!state) {
+        return false;
+    }
+
+    // Initialize result arrays
     result->counts = calloc(num_outcomes, sizeof(uint64_t));
     result->probabilities = calloc(num_outcomes, sizeof(double));
     result->num_counts = num_outcomes;
 
     if (!result->counts || !result->probabilities) {
+        free(state);
         cleanup_ibm_result(result);
         return false;
     }
 
-    // Simulate uniform distribution for now
-    // Real implementation would execute on IBM backend with parallel optimization
-    double uniform_prob = 1.0 / num_outcomes;
-    for (size_t i = 0; i < num_outcomes; i++) {
-        result->probabilities[i] = uniform_prob;
-        result->counts[i] = 100;  // 100 shots per outcome
+    // Initialize state to |0...0⟩
+    state[0] = 1.0 + 0.0*I;
+
+    // Define standard gates
+    complex double H[2][2] = {{1.0/sqrt(2.0), 1.0/sqrt(2.0)}, {1.0/sqrt(2.0), -1.0/sqrt(2.0)}};
+    complex double X[2][2] = {{0, 1}, {1, 0}};
+    complex double Y[2][2] = {{0, -I}, {I, 0}};
+    complex double Z[2][2] = {{1, 0}, {0, -1}};
+    complex double S[2][2] = {{1, 0}, {0, I}};
+    complex double T[2][2] = {{1, 0}, {0, cexp(I * M_PI / 4.0)}};
+
+    // Apply all gates in circuit
+    for (size_t g = 0; g < circuit->num_gates; g++) {
+        ibm_quantum_gate* gate = &circuit->gates[g];
+        if (gate->cancelled) continue;
+
+        size_t qubit = (gate->qubits && gate->num_qubits > 0) ? gate->qubits[0] : 0;
+        double theta = (gate->params && gate->num_params > 0) ? gate->params[0] : 0.0;
+
+        switch (gate->type) {
+            case GATE_H:
+                apply_gate_to_statevector(state, dim, qubit, H);
+                break;
+            case GATE_X:
+                apply_gate_to_statevector(state, dim, qubit, X);
+                break;
+            case GATE_Y:
+                apply_gate_to_statevector(state, dim, qubit, Y);
+                break;
+            case GATE_Z:
+                apply_gate_to_statevector(state, dim, qubit, Z);
+                break;
+            case GATE_S:
+                apply_gate_to_statevector(state, dim, qubit, S);
+                break;
+            case GATE_T:
+                apply_gate_to_statevector(state, dim, qubit, T);
+                break;
+            case GATE_RX: {
+                double c = cos(theta / 2.0);
+                double s = sin(theta / 2.0);
+                complex double RX[2][2] = {{c, -I*s}, {-I*s, c}};
+                apply_gate_to_statevector(state, dim, qubit, RX);
+                break;
+            }
+            case GATE_RY: {
+                double c = cos(theta / 2.0);
+                double s = sin(theta / 2.0);
+                complex double RY[2][2] = {{c, -s}, {s, c}};
+                apply_gate_to_statevector(state, dim, qubit, RY);
+                break;
+            }
+            case GATE_RZ: {
+                complex double phase_neg = cexp(-I * theta / 2.0);
+                complex double phase_pos = cexp(I * theta / 2.0);
+                complex double RZ[2][2] = {{phase_neg, 0}, {0, phase_pos}};
+                apply_gate_to_statevector(state, dim, qubit, RZ);
+                break;
+            }
+            case GATE_CNOT:
+                apply_cnot_to_statevector(state, dim, gate->control, gate->target);
+                break;
+            case GATE_CZ:
+                apply_cz_to_statevector(state, dim, gate->control, gate->target);
+                break;
+            default:
+                break;
+        }
     }
 
-    result->fidelity = 0.95;
-    result->error_rate = 0.01;
+    // Calculate probabilities from state vector
+    for (size_t i = 0; i < dim; i++) {
+        result->probabilities[i] = cabs(state[i]) * cabs(state[i]);
+    }
+
+    // Sample outcomes based on probabilities (Born rule)
+    unsigned int seed = (unsigned int)(time(NULL) ^ getpid());
+    for (size_t shot = 0; shot < num_shots; shot++) {
+        double r = (double)rand_r(&seed) / RAND_MAX;
+        double cumulative = 0.0;
+        for (size_t i = 0; i < dim; i++) {
+            cumulative += result->probabilities[i];
+            if (r <= cumulative) {
+                result->counts[i]++;
+                break;
+            }
+        }
+    }
+
+    free(state);
+
+    result->fidelity = 0.99;  // High fidelity for ideal simulation
+    result->error_rate = 0.0;
     result->status = IBM_STATUS_COMPLETED;
     result->error_message = NULL;
     result->raw_data = NULL;
@@ -1945,4 +2117,28 @@ void cleanup_ibm_quantum_circuit(ibm_quantum_circuit* circuit) {
         free(circuit->name);
         memset(circuit, 0, sizeof(ibm_quantum_circuit));
     }
+}
+
+// =============================================================================
+// Fallback Status Query Functions
+// =============================================================================
+
+bool ibm_api_is_using_fallback(void* api_handle) {
+    if (!api_handle) return true;  // No handle = definitely using fallback
+    ibm_api_handle_t* handle = (ibm_api_handle_t*)api_handle;
+    return handle->using_fallback;
+}
+
+const char* ibm_api_get_fallback_reason(void* api_handle) {
+    if (!api_handle) return "Invalid API handle";
+    ibm_api_handle_t* handle = (ibm_api_handle_t*)api_handle;
+    if (!handle->using_fallback) return NULL;
+    return handle->fallback_reason;
+}
+
+void ibm_api_clear_fallback_status(void* api_handle) {
+    if (!api_handle) return;
+    ibm_api_handle_t* handle = (ibm_api_handle_t*)api_handle;
+    handle->using_fallback = false;
+    handle->fallback_reason[0] = '\0';
 }
