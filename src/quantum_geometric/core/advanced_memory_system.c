@@ -707,8 +707,100 @@ bool optimize_pool_configuration(advanced_memory_system_t* system,
 }
 
 // ============================================================================
-// Defragmentation Functions
+// Defragmentation Functions - O(n log n) Quicksort Implementation
 // ============================================================================
+
+// Compare function for layout addresses
+static int compare_layout_addresses(const void* a, const void* b) {
+    const MemoryLayout* la = (const MemoryLayout*)a;
+    const MemoryLayout* lb = (const MemoryLayout*)b;
+    uintptr_t addr_a = (uintptr_t)la->base_ptr;
+    uintptr_t addr_b = (uintptr_t)lb->base_ptr;
+    if (addr_a < addr_b) return -1;
+    if (addr_a > addr_b) return 1;
+    return 0;
+}
+
+// Partition function for quicksort with move counting
+static size_t partition_layouts(MemoryLayout* layouts, size_t low, size_t high,
+                                size_t* moves, size_t max_moves) {
+    uintptr_t pivot = (uintptr_t)layouts[high].base_ptr;
+    size_t i = low;
+
+    for (size_t j = low; j < high && *moves < max_moves; j++) {
+        if ((uintptr_t)layouts[j].base_ptr < pivot) {
+            if (i != j) {
+                MemoryLayout temp = layouts[i];
+                layouts[i] = layouts[j];
+                layouts[j] = temp;
+                (*moves)++;
+            }
+            i++;
+        }
+    }
+
+    if (i != high && *moves < max_moves) {
+        MemoryLayout temp = layouts[i];
+        layouts[i] = layouts[high];
+        layouts[high] = temp;
+        (*moves)++;
+    }
+
+    return i;
+}
+
+// Iterative quicksort to avoid stack overflow on large arrays
+static void quicksort_layouts(MemoryLayout* layouts, size_t n,
+                              size_t* moves, size_t max_moves,
+                              size_t* batch, size_t batch_size, bool incremental) {
+    if (n <= 1) return;
+
+    // Stack for iterative quicksort (log2(n) max depth)
+    size_t stack[64];  // Supports up to 2^64 elements
+    int top = -1;
+
+    stack[++top] = 0;
+    stack[++top] = n - 1;
+
+    while (top >= 0 && *moves < max_moves) {
+        size_t high = stack[top--];
+        size_t low = stack[top--];
+
+        if (low < high) {
+            size_t pi = partition_layouts(layouts, low, high, moves, max_moves);
+
+            // Check incremental batch limit
+            if (incremental && *batch + (*moves) >= batch_size) {
+                *batch = *moves;
+                return;
+            }
+
+            // Push larger partition first (tail recursion optimization)
+            if (pi > 0 && pi - 1 > low) {
+                if (pi - 1 - low > high - pi - 1) {
+                    stack[++top] = low;
+                    stack[++top] = pi - 1;
+                    if (pi + 1 < high) {
+                        stack[++top] = pi + 1;
+                        stack[++top] = high;
+                    }
+                } else {
+                    if (pi + 1 < high) {
+                        stack[++top] = pi + 1;
+                        stack[++top] = high;
+                    }
+                    stack[++top] = low;
+                    stack[++top] = pi - 1;
+                }
+            } else if (pi + 1 < high) {
+                stack[++top] = pi + 1;
+                stack[++top] = high;
+            }
+        }
+    }
+
+    *batch = *moves;
+}
 
 bool start_defragmentation(advanced_memory_system_t* system,
                           const defrag_config_t* config) {
@@ -723,31 +815,16 @@ bool start_defragmentation(advanced_memory_system_t* system,
         return true;
     }
 
-    // Perform defragmentation by compacting layouts
-    // This is a simplified implementation that reorganizes the layout array
+    size_t n = system->pool.num_layouts;
+    if (n <= 1) return true;
 
     size_t moves = 0;
     size_t batch = 0;
 
-    // Sort layouts by address for compaction
-    for (size_t i = 0; i < system->pool.num_layouts && moves < config->max_moves; i++) {
-        for (size_t j = i + 1; j < system->pool.num_layouts; j++) {
-            if ((uintptr_t)system->pool.layouts[j].base_ptr <
-                (uintptr_t)system->pool.layouts[i].base_ptr) {
-                // Swap layouts to achieve address-ordered layout
-                MemoryLayout temp = system->pool.layouts[i];
-                system->pool.layouts[i] = system->pool.layouts[j];
-                system->pool.layouts[j] = temp;
-                moves++;
-                batch++;
-
-                if (config->incremental && batch >= config->batch_size) {
-                    // In incremental mode, stop after batch_size moves
-                    return true;
-                }
-            }
-        }
-    }
+    // Use O(n log n) quicksort for layout compaction
+    quicksort_layouts(system->pool.layouts, n,
+                      &moves, config->max_moves,
+                      &batch, config->batch_size, config->incremental);
 
     return true;
 }

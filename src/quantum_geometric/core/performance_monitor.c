@@ -8,6 +8,22 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <unistd.h>
+#include <time.h>
+#include <stdint.h>
+
+// Platform-specific includes for network monitoring
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <sys/sysctl.h>
+#include <net/if.h>
+#include <ifaddrs.h>
+#include <net/if_dl.h>
+#endif
+
+#ifdef HAVE_MPI
+#include <mpi.h>
+#endif
 
 // performance_metrics_t is defined in performance_operations.h
 // This file uses that shared comprehensive definition
@@ -160,16 +176,139 @@ static double measure_page_faults(void) {
 static double g_mpi_time = 0.0;
 static double measure_mpi_time(void) { return g_mpi_time; }
 
-// Network bandwidth estimation
+// Network bandwidth estimation - bytes/sec
+static uint64_t g_last_bytes_sent = 0;
+static uint64_t g_last_bytes_recv = 0;
+static double g_last_bandwidth_time = 0.0;
+static double g_cached_bandwidth = 0.0;
+
 static double measure_network_bandwidth(void) {
-    // TODO: Integrate with network monitoring
-    return 0.0;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    double current_time = now.tv_sec + now.tv_nsec * 1e-9;
+    double dt = current_time - g_last_bandwidth_time;
+
+    // Minimum sample interval of 100ms
+    if (dt < 0.1 && g_cached_bandwidth > 0) {
+        return g_cached_bandwidth;
+    }
+
+    uint64_t bytes_sent = 0, bytes_recv = 0;
+
+#ifdef __APPLE__
+    struct ifaddrs* ifap = NULL;
+    if (getifaddrs(&ifap) == 0) {
+        for (struct ifaddrs* ifa = ifap; ifa != NULL; ifa = ifa->ifa_next) {
+            if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_LINK) continue;
+            if (!ifa->ifa_data) continue;
+            if (ifa->ifa_flags & IFF_LOOPBACK) continue;
+
+            struct if_data* if_data = (struct if_data*)ifa->ifa_data;
+            bytes_sent += if_data->ifi_obytes;
+            bytes_recv += if_data->ifi_ibytes;
+        }
+        freeifaddrs(ifap);
+    }
+#elif defined(__linux__)
+    FILE* fp = fopen("/proc/net/dev", "r");
+    if (fp) {
+        char line[512];
+        // Skip header lines
+        if (fgets(line, sizeof(line), fp) && fgets(line, sizeof(line), fp)) {
+            while (fgets(line, sizeof(line), fp)) {
+                char iface[32];
+                unsigned long long rbytes, tbytes, dummy;
+                if (sscanf(line, "%31[^:]: %llu %llu %llu %llu %llu %llu %llu %llu %llu",
+                           iface, &rbytes, &dummy, &dummy, &dummy,
+                           &dummy, &dummy, &dummy, &dummy, &tbytes) >= 10) {
+                    // Skip loopback
+                    if (strncmp(iface, "lo", 2) != 0) {
+                        bytes_recv += rbytes;
+                        bytes_sent += tbytes;
+                    }
+                }
+            }
+        }
+        fclose(fp);
+    }
+#endif
+
+    // Calculate bandwidth if we have previous measurement
+    double bandwidth = 0.0;
+    if (g_last_bytes_sent > 0 && dt > 0) {
+        uint64_t delta_sent = bytes_sent - g_last_bytes_sent;
+        uint64_t delta_recv = bytes_recv - g_last_bytes_recv;
+        bandwidth = (double)(delta_sent + delta_recv) / dt;
+    }
+
+    g_last_bytes_sent = bytes_sent;
+    g_last_bytes_recv = bytes_recv;
+    g_last_bandwidth_time = current_time;
+    g_cached_bandwidth = bandwidth;
+
+    return bandwidth;
 }
 
-// Communication latency measurement
+// Communication latency measurement - measures IPC latency in seconds
+// Uses pipe round-trip for local latency estimation
+static double g_cached_latency = 0.0;
+static double g_last_latency_time = 0.0;
+
 static double measure_communication_latency(void) {
-    // TODO: Implement latency measurement
-    return 0.0;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    double current_time = now.tv_sec + now.tv_nsec * 1e-9;
+
+    // Cache latency measurement for 1 second (it's expensive)
+    if (current_time - g_last_latency_time < 1.0 && g_cached_latency > 0) {
+        return g_cached_latency;
+    }
+
+#ifdef HAVE_MPI
+    // Use MPI_Wtime for MPI communication latency
+    // Measure barrier latency as proxy for communication latency
+    int initialized = 0;
+    MPI_Initialized(&initialized);
+    if (initialized) {
+        double start = MPI_Wtime();
+        MPI_Barrier(MPI_COMM_WORLD);
+        double end = MPI_Wtime();
+        g_cached_latency = end - start;
+        g_last_latency_time = current_time;
+        return g_cached_latency;
+    }
+#endif
+
+    // Measure pipe round-trip latency for local IPC estimation
+    int pipefd[2];
+    if (pipe(pipefd) != 0) {
+        return 0.0;
+    }
+
+    // Measure round-trip time for small message
+    const int NUM_SAMPLES = 10;
+    char buf[1] = {'x'};
+    double total_time = 0.0;
+
+    for (int i = 0; i < NUM_SAMPLES; i++) {
+        struct timespec start, end;
+        clock_gettime(CLOCK_MONOTONIC, &start);
+
+        // Write and read back
+        if (write(pipefd[1], buf, 1) != 1) break;
+        if (read(pipefd[0], buf, 1) != 1) break;
+
+        clock_gettime(CLOCK_MONOTONIC, &end);
+        total_time += (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) * 1e-9;
+    }
+
+    close(pipefd[0]);
+    close(pipefd[1]);
+
+    g_cached_latency = total_time / NUM_SAMPLES;
+    g_last_latency_time = current_time;
+
+    return g_cached_latency;
 }
 
 // NUMA locality ratio - check memory placement
@@ -215,10 +354,56 @@ static double measure_queue_length(void) { return g_queue_length; }
 static double g_wait_time = 0.0;
 static double measure_wait_time(void) { return g_wait_time; }
 
+// Memory pool statistics tracking for allocation efficiency
+static struct {
+    _Atomic(size_t) total_allocations;
+    _Atomic(size_t) cache_hits;
+    _Atomic(size_t) cache_misses;
+    _Atomic(size_t) fragmented_allocations;
+    _Atomic(size_t) total_bytes_requested;
+    _Atomic(size_t) total_bytes_allocated;
+} g_alloc_stats = {0};
+
+// Update allocation statistics (called from memory pool operations)
+void update_allocation_stats(size_t requested, size_t allocated, bool cache_hit) {
+    atomic_fetch_add(&g_alloc_stats.total_allocations, 1);
+    atomic_fetch_add(&g_alloc_stats.total_bytes_requested, requested);
+    atomic_fetch_add(&g_alloc_stats.total_bytes_allocated, allocated);
+    if (cache_hit) {
+        atomic_fetch_add(&g_alloc_stats.cache_hits, 1);
+    } else {
+        atomic_fetch_add(&g_alloc_stats.cache_misses, 1);
+    }
+    // Track internal fragmentation (allocated more than requested)
+    if (allocated > requested * 2) {
+        atomic_fetch_add(&g_alloc_stats.fragmented_allocations, 1);
+    }
+}
+
 // Memory allocation efficiency
+// Measures: (1) cache hit ratio, (2) fragmentation ratio, (3) bytes efficiency
 static double measure_allocation_efficiency(void) {
-    // TODO: Track allocation patterns
-    return 1.0;
+    size_t total = atomic_load(&g_alloc_stats.total_allocations);
+    if (total == 0) return 1.0;  // No allocations yet = perfect efficiency
+
+    // Cache hit ratio (0 to 1, higher is better)
+    size_t hits = atomic_load(&g_alloc_stats.cache_hits);
+    size_t misses = atomic_load(&g_alloc_stats.cache_misses);
+    double cache_ratio = (hits + misses > 0) ?
+                         (double)hits / (double)(hits + misses) : 1.0;
+
+    // Fragmentation ratio (0 to 1, higher is better = less fragmentation)
+    size_t fragmented = atomic_load(&g_alloc_stats.fragmented_allocations);
+    double frag_ratio = 1.0 - ((double)fragmented / (double)total);
+
+    // Bytes efficiency (requested / allocated, 0 to 1)
+    size_t requested = atomic_load(&g_alloc_stats.total_bytes_requested);
+    size_t allocated = atomic_load(&g_alloc_stats.total_bytes_allocated);
+    double bytes_ratio = (allocated > 0) ?
+                         fmin(1.0, (double)requested / (double)allocated) : 1.0;
+
+    // Weighted average: cache hits are most important, then fragmentation, then bytes
+    return cache_ratio * 0.5 + frag_ratio * 0.3 + bytes_ratio * 0.2;
 }
 
 // Resource contention measurement
@@ -234,10 +419,84 @@ static double measure_resource_contention(void) {
     return 0.0;
 }
 
-// Load balance factor (1.0 = perfect balance)
+// Per-thread workload tracking
+#define MAX_TRACKED_THREADS 256
+static struct {
+    pthread_t thread_id;
+    _Atomic(uint64_t) work_units;
+    _Atomic(uint64_t) active_time_ns;
+} g_thread_workload[MAX_TRACKED_THREADS] = {0};
+static _Atomic(size_t) g_num_tracked_threads = 0;
+static pthread_mutex_t g_workload_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// Register thread workload (call from worker threads)
+void register_thread_work(uint64_t work_units, uint64_t active_time_ns) {
+    pthread_t self = pthread_self();
+
+    // Find existing entry or create new one
+    size_t num_threads = atomic_load(&g_num_tracked_threads);
+    for (size_t i = 0; i < num_threads; i++) {
+        if (pthread_equal(g_thread_workload[i].thread_id, self)) {
+            atomic_fetch_add(&g_thread_workload[i].work_units, work_units);
+            atomic_fetch_add(&g_thread_workload[i].active_time_ns, active_time_ns);
+            return;
+        }
+    }
+
+    // New thread - add entry
+    pthread_mutex_lock(&g_workload_mutex);
+    num_threads = atomic_load(&g_num_tracked_threads);
+    if (num_threads < MAX_TRACKED_THREADS) {
+        g_thread_workload[num_threads].thread_id = self;
+        atomic_store(&g_thread_workload[num_threads].work_units, work_units);
+        atomic_store(&g_thread_workload[num_threads].active_time_ns, active_time_ns);
+        atomic_fetch_add(&g_num_tracked_threads, 1);
+    }
+    pthread_mutex_unlock(&g_workload_mutex);
+}
+
+// Load balance factor (1.0 = perfect balance, 0.0 = completely imbalanced)
+// Uses coefficient of variation: CV = stddev / mean
+// Balance = 1 - CV (clamped to [0, 1])
 static double measure_load_balance(void) {
-    // TODO: Track per-thread workload distribution
-    return 1.0;
+    size_t num_threads = atomic_load(&g_num_tracked_threads);
+    if (num_threads < 2) return 1.0;  // Single thread = perfect balance
+
+    // Collect work units
+    double* workloads = malloc(num_threads * sizeof(double));
+    if (!workloads) return 1.0;
+
+    double sum = 0.0;
+    for (size_t i = 0; i < num_threads; i++) {
+        workloads[i] = (double)atomic_load(&g_thread_workload[i].work_units);
+        sum += workloads[i];
+    }
+
+    if (sum == 0.0) {
+        free(workloads);
+        return 1.0;  // No work done yet
+    }
+
+    // Calculate mean
+    double mean = sum / (double)num_threads;
+
+    // Calculate variance
+    double variance = 0.0;
+    for (size_t i = 0; i < num_threads; i++) {
+        double diff = workloads[i] - mean;
+        variance += diff * diff;
+    }
+    variance /= (double)num_threads;
+
+    free(workloads);
+
+    // Coefficient of variation
+    double stddev = sqrt(variance);
+    double cv = (mean > 0) ? stddev / mean : 0.0;
+
+    // Convert to balance metric (1 - CV, clamped)
+    double balance = 1.0 - fmin(cv, 1.0);
+    return balance;
 }
 
 // Overall resource utilization
@@ -262,51 +521,553 @@ double measure_memory_bandwidth(void) {
     return g_transfer_time > 0 ? g_bytes_transferred / g_transfer_time / 1e9 : 0.0;
 }
 
+// Cache performance measurement using perf_event (Linux) or estimates (other platforms)
+#ifdef __linux__
+#include <sys/ioctl.h>
+#include <linux/perf_event.h>
+#include <sys/syscall.h>
+
+// perf_event file descriptors
+static int g_cache_refs_fd = -1;
+static int g_cache_misses_fd = -1;
+static bool g_perf_initialized = false;
+
+static int perf_event_open(struct perf_event_attr *attr, pid_t pid,
+                           int cpu, int group_fd, unsigned long flags) {
+    return syscall(__NR_perf_event_open, attr, pid, cpu, group_fd, flags);
+}
+
+static void init_cache_perf_counters(void) {
+    if (g_perf_initialized) return;
+
+    struct perf_event_attr pe;
+    memset(&pe, 0, sizeof(pe));
+    pe.type = PERF_TYPE_HARDWARE;
+    pe.size = sizeof(pe);
+    pe.disabled = 1;
+    pe.exclude_kernel = 1;
+    pe.exclude_hv = 1;
+
+    // Cache references counter
+    pe.config = PERF_COUNT_HW_CACHE_REFERENCES;
+    g_cache_refs_fd = perf_event_open(&pe, 0, -1, -1, 0);
+
+    // Cache misses counter
+    pe.config = PERF_COUNT_HW_CACHE_MISSES;
+    g_cache_misses_fd = perf_event_open(&pe, 0, -1, g_cache_refs_fd, 0);
+
+    if (g_cache_refs_fd >= 0 && g_cache_misses_fd >= 0) {
+        ioctl(g_cache_refs_fd, PERF_EVENT_IOC_RESET, 0);
+        ioctl(g_cache_misses_fd, PERF_EVENT_IOC_RESET, 0);
+        ioctl(g_cache_refs_fd, PERF_EVENT_IOC_ENABLE, 0);
+        ioctl(g_cache_misses_fd, PERF_EVENT_IOC_ENABLE, 0);
+        g_perf_initialized = true;
+    }
+}
+
+static void cleanup_cache_perf_counters(void) {
+    if (g_cache_refs_fd >= 0) {
+        close(g_cache_refs_fd);
+        g_cache_refs_fd = -1;
+    }
+    if (g_cache_misses_fd >= 0) {
+        close(g_cache_misses_fd);
+        g_cache_misses_fd = -1;
+    }
+    g_perf_initialized = false;
+}
+#endif
+
 // Cache performance (hit rate)
+// Returns cache hit ratio (0.0 to 1.0, higher is better)
 double measure_cache_performance(void) {
-    // TODO: Use PAPI or perf_event on Linux for real cache statistics
-    return 0.95;  // Default assumption
+#ifdef __linux__
+    // Initialize perf counters on first call
+    if (!g_perf_initialized) {
+        init_cache_perf_counters();
+    }
+
+    if (g_perf_initialized && g_cache_refs_fd >= 0 && g_cache_misses_fd >= 0) {
+        uint64_t cache_refs = 0, cache_misses = 0;
+
+        if (read(g_cache_refs_fd, &cache_refs, sizeof(cache_refs)) == sizeof(cache_refs) &&
+            read(g_cache_misses_fd, &cache_misses, sizeof(cache_misses)) == sizeof(cache_misses)) {
+
+            if (cache_refs > 0) {
+                double hit_rate = 1.0 - ((double)cache_misses / (double)cache_refs);
+                return fmax(0.0, fmin(1.0, hit_rate));
+            }
+        }
+    }
+
+    // Fallback: estimate from page faults (rough approximation)
+    double page_faults = measure_page_faults();
+    double memory_used = measure_memory_usage();
+    if (memory_used > 0 && page_faults > 0) {
+        // Approximate: more page faults per byte = worse cache performance
+        double pages = memory_used / 4096.0;
+        double fault_ratio = page_faults / pages;
+        // Heuristic: fault ratio > 0.1 indicates poor cache behavior
+        return fmax(0.5, 1.0 - fmin(fault_ratio, 0.5));
+    }
+#elif defined(__APPLE__)
+    // macOS: Use rusage for rough approximation
+    struct rusage usage;
+    if (getrusage(RUSAGE_SELF, &usage) == 0) {
+        // Ratio of minor (cache hits) to major (cache misses) page faults
+        double minor = (double)usage.ru_minflt;
+        double major = (double)usage.ru_majflt;
+        double total = minor + major;
+        if (total > 0) {
+            return minor / total;
+        }
+    }
+#endif
+
+    // Default: assume good cache performance
+    return 0.95;
+}
+
+// Quantum metrics tracking - updated by error mitigation subsystem
+// These values are set via set_quantum_metrics() from the error mitigation module
+static struct {
+    _Atomic(double) error_rate;           // Current quantum error rate
+    _Atomic(double) fidelity;             // Current state fidelity
+    _Atomic(double) entanglement_fidelity; // Entanglement fidelity
+    _Atomic(double) gate_error_rate;       // Per-gate error rate
+    _Atomic(uint64_t) num_measurements;    // Number of measurements taken
+    _Atomic(uint64_t) last_update_time;    // Timestamp of last update
+    bool initialized;
+} g_quantum_metrics = {
+    .error_rate = 0.001,
+    .fidelity = 0.99,
+    .entanglement_fidelity = 0.98,
+    .gate_error_rate = 0.001,
+    .num_measurements = 0,
+    .last_update_time = 0,
+    .initialized = false
+};
+
+// API for error mitigation module to update quantum metrics
+void set_quantum_error_rate(double rate) {
+    atomic_store(&g_quantum_metrics.error_rate, rate);
+    atomic_fetch_add(&g_quantum_metrics.num_measurements, 1);
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    atomic_store(&g_quantum_metrics.last_update_time,
+                 (uint64_t)(now.tv_sec * 1000000000ULL + now.tv_nsec));
+    g_quantum_metrics.initialized = true;
+}
+
+void set_quantum_fidelity(double fidelity) {
+    atomic_store(&g_quantum_metrics.fidelity, fmin(1.0, fmax(0.0, fidelity)));
+    g_quantum_metrics.initialized = true;
+}
+
+void set_entanglement_fidelity(double fidelity) {
+    atomic_store(&g_quantum_metrics.entanglement_fidelity, fmin(1.0, fmax(0.0, fidelity)));
+    g_quantum_metrics.initialized = true;
+}
+
+void set_gate_error_rate(double rate) {
+    atomic_store(&g_quantum_metrics.gate_error_rate, fmax(0.0, rate));
+    g_quantum_metrics.initialized = true;
+}
+
+// Batch update all quantum metrics at once (more efficient)
+void update_quantum_metrics(double error_rate, double fidelity,
+                            double entanglement_fidelity, double gate_error_rate) {
+    atomic_store(&g_quantum_metrics.error_rate, error_rate);
+    atomic_store(&g_quantum_metrics.fidelity, fmin(1.0, fmax(0.0, fidelity)));
+    atomic_store(&g_quantum_metrics.entanglement_fidelity, fmin(1.0, fmax(0.0, entanglement_fidelity)));
+    atomic_store(&g_quantum_metrics.gate_error_rate, fmax(0.0, gate_error_rate));
+    atomic_fetch_add(&g_quantum_metrics.num_measurements, 1);
+
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    atomic_store(&g_quantum_metrics.last_update_time,
+                 (uint64_t)(now.tv_sec * 1000000000ULL + now.tv_nsec));
+    g_quantum_metrics.initialized = true;
+}
+
+// Check if quantum metrics are stale (older than 1 second)
+static bool quantum_metrics_stale(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    uint64_t current_time = (uint64_t)(now.tv_sec * 1000000000ULL + now.tv_nsec);
+    uint64_t last_update = atomic_load(&g_quantum_metrics.last_update_time);
+
+    // Stale if no update in last second
+    return (current_time - last_update) > 1000000000ULL;
 }
 
 // Quantum error rate - from error mitigation subsystem
+// Returns the current quantum error rate (probability of error per operation)
 double measure_quantum_error_rate(void) {
-    // TODO: Integrate with quantum error mitigation module
-    return 0.001;
+    if (!g_quantum_metrics.initialized) {
+        // Return backend-specific default based on typical hardware
+        // IBM: ~0.001, Rigetti: ~0.01, D-Wave: ~0.05
+        return 0.001;  // Conservative default (IBM-like)
+    }
+
+    double rate = atomic_load(&g_quantum_metrics.error_rate);
+
+    // If metrics are stale, degrade confidence by increasing reported error
+    if (quantum_metrics_stale()) {
+        rate *= 1.1;  // 10% increase for stale data
+    }
+
+    return rate;
 }
 
 // Quantum state fidelity
+// Returns F = |<ψ_ideal|ψ_actual>|² (0.0 to 1.0)
 double measure_quantum_fidelity(void) {
-    // TODO: Integrate with quantum simulator
-    return 0.99;
+    if (!g_quantum_metrics.initialized) {
+        return 0.99;  // Optimistic default
+    }
+
+    double fidelity = atomic_load(&g_quantum_metrics.fidelity);
+
+    // Degrade fidelity if metrics are stale
+    if (quantum_metrics_stale()) {
+        fidelity *= 0.99;  // 1% degradation for stale data
+    }
+
+    return fidelity;
 }
 
 // Entanglement fidelity
+// Measures how well entanglement is preserved through operations
+// F_e = (d * F_avg + 1) / (d + 1) where d is Hilbert space dimension
 double measure_entanglement_fidelity(void) {
-    // TODO: Integrate with quantum state tracking
-    return 0.98;
+    if (!g_quantum_metrics.initialized) {
+        return 0.98;  // Optimistic default
+    }
+
+    double fidelity = atomic_load(&g_quantum_metrics.entanglement_fidelity);
+
+    // Entanglement degrades faster than state fidelity
+    if (quantum_metrics_stale()) {
+        fidelity *= 0.98;  // 2% degradation for stale data
+    }
+
+    return fidelity;
 }
 
 // Gate error rate
+// Returns average error probability per quantum gate
 double measure_gate_error_rate(void) {
-    // TODO: Integrate with quantum gate operations
-    return 0.001;
+    if (!g_quantum_metrics.initialized) {
+        return 0.001;  // Conservative default
+    }
+
+    double rate = atomic_load(&g_quantum_metrics.gate_error_rate);
+
+    if (quantum_metrics_stale()) {
+        rate *= 1.1;  // 10% increase for stale data
+    }
+
+    return rate;
+}
+
+// Thread pool size control
+static _Atomic(int) g_thread_pool_size = 0;
+static _Atomic(int) g_target_thread_pool_size = 0;
+
+// Get number of available CPU cores
+static int get_num_cores(void) {
+#ifdef __APPLE__
+    int num_cores;
+    size_t len = sizeof(num_cores);
+    if (sysctlbyname("hw.ncpu", &num_cores, &len, NULL, 0) == 0) {
+        return num_cores;
+    }
+#else
+    long nprocs = sysconf(_SC_NPROCESSORS_ONLN);
+    if (nprocs > 0) {
+        return (int)nprocs;
+    }
+#endif
+    return 4;  // Default fallback
 }
 
 // Optimization functions - trigger adaptive optimizations
+
+// Optimize computation by adjusting thread pool size based on workload
+// Uses Amdahl's law to estimate optimal parallelism
 static void optimize_computation(void) {
-    // TODO: Adjust thread counts, vectorization strategies
+    double cpu_util = measure_cpu_utilization();
+    double load_balance = measure_load_balance();
+    int num_cores = get_num_cores();
+
+    int current_threads = atomic_load(&g_thread_pool_size);
+    if (current_threads == 0) {
+        current_threads = num_cores;  // Default to number of cores
+        atomic_store(&g_thread_pool_size, current_threads);
+    }
+
+    int target_threads = current_threads;
+
+    // High CPU utilization with good load balance: maintain or slightly reduce
+    if (cpu_util > 0.9 && load_balance > 0.8) {
+        // System is well-utilized, no change needed
+        target_threads = current_threads;
+    }
+    // Low CPU utilization: might need more threads or work is I/O bound
+    else if (cpu_util < 0.5 && current_threads < num_cores * 2) {
+        // Try increasing threads (up to 2x cores for I/O-bound work)
+        target_threads = current_threads + 1;
+    }
+    // Poor load balance: reduce threads to match actual parallelism
+    else if (load_balance < 0.6 && current_threads > 2) {
+        target_threads = (int)(current_threads * load_balance) + 1;
+        if (target_threads < 2) target_threads = 2;
+    }
+    // Moderate utilization: fine-tune based on efficiency
+    else if (cpu_util < 0.7 && cpu_util > 0.3) {
+        double efficiency = load_balance * cpu_util;
+        if (efficiency < 0.5 && current_threads > 2) {
+            target_threads = current_threads - 1;
+        }
+    }
+
+    // Clamp to reasonable bounds
+    if (target_threads < 1) target_threads = 1;
+    if (target_threads > num_cores * 4) target_threads = num_cores * 4;
+
+    atomic_store(&g_target_thread_pool_size, target_threads);
 }
 
+// Get recommended thread pool size (call from thread pool manager)
+int get_recommended_thread_count(void) {
+    int target = atomic_load(&g_target_thread_pool_size);
+    if (target == 0) {
+        return get_num_cores();
+    }
+    return target;
+}
+
+// Memory access optimization state
+static struct {
+    bool prefetch_enabled;
+    size_t block_size;
+    size_t prefetch_distance;
+} g_memory_optimization = {
+    .prefetch_enabled = true,
+    .block_size = 64 * 1024,    // 64KB default block
+    .prefetch_distance = 8      // 8 cache lines ahead
+};
+
+// Optimize memory access patterns based on cache performance
 static void optimize_memory_access(void) {
-    // TODO: Adjust prefetching, blocking strategies
+    double cache_perf = measure_cache_performance();
+    double alloc_eff = measure_allocation_efficiency();
+
+    // Poor cache performance: adjust prefetching and blocking
+    if (cache_perf < 0.8) {
+        // Increase prefetch distance to hide latency
+        if (g_memory_optimization.prefetch_distance < 32) {
+            g_memory_optimization.prefetch_distance *= 2;
+        }
+
+        // Reduce block size to fit in cache
+        if (g_memory_optimization.block_size > 16 * 1024) {
+            g_memory_optimization.block_size /= 2;
+        }
+    }
+    // Good cache performance: can use larger blocks
+    else if (cache_perf > 0.95 && alloc_eff > 0.9) {
+        // Increase block size for better throughput
+        if (g_memory_optimization.block_size < 256 * 1024) {
+            g_memory_optimization.block_size *= 2;
+        }
+
+        // Reduce prefetch distance (not needed with good locality)
+        if (g_memory_optimization.prefetch_distance > 4) {
+            g_memory_optimization.prefetch_distance /= 2;
+        }
+    }
+
+    // Very poor allocation efficiency: disable prefetching
+    if (alloc_eff < 0.5) {
+        g_memory_optimization.prefetch_enabled = false;
+    } else if (alloc_eff > 0.8) {
+        g_memory_optimization.prefetch_enabled = true;
+    }
 }
 
+// Get current memory optimization settings
+void get_memory_optimization_params(size_t* block_size, size_t* prefetch_distance,
+                                    bool* prefetch_enabled) {
+    if (block_size) *block_size = g_memory_optimization.block_size;
+    if (prefetch_distance) *prefetch_distance = g_memory_optimization.prefetch_distance;
+    if (prefetch_enabled) *prefetch_enabled = g_memory_optimization.prefetch_enabled;
+}
+
+// NUMA optimization state
+#ifdef __linux__
+#include <sched.h>
+#include <numaif.h>
+
+static struct {
+    bool numa_available;
+    int preferred_node;
+    unsigned long numa_node_mask;
+} g_numa_state = {
+    .numa_available = false,
+    .preferred_node = -1,
+    .numa_node_mask = 0
+};
+
+// Initialize NUMA detection
+static void init_numa_detection(void) {
+    // Check if NUMA is available by reading /sys/devices/system/node/
+    FILE* f = fopen("/sys/devices/system/node/online", "r");
+    if (f) {
+        char buf[64];
+        if (fgets(buf, sizeof(buf), f)) {
+            // If more than just "0" then NUMA is available
+            if (strchr(buf, '-') || strchr(buf, ',')) {
+                g_numa_state.numa_available = true;
+            }
+        }
+        fclose(f);
+    }
+}
+#endif
+
+// Optimize NUMA memory placement for better locality
 static void optimize_numa_placement(void) {
-    // TODO: Use numa_* APIs on Linux for better placement
+#ifdef __linux__
+    if (!g_numa_state.numa_available) {
+        static bool initialized = false;
+        if (!initialized) {
+            init_numa_detection();
+            initialized = true;
+        }
+        if (!g_numa_state.numa_available) return;
+    }
+
+    double numa_locality = measure_numa_locality();
+
+    // Poor NUMA locality: try to migrate to local node
+    if (numa_locality < 0.7) {
+        // Get current CPU and determine its NUMA node
+        int cpu = sched_getcpu();
+        if (cpu >= 0) {
+            // Read NUMA node from /sys/devices/system/cpu/cpuN/node*
+            char path[128];
+            snprintf(path, sizeof(path),
+                     "/sys/devices/system/cpu/cpu%d/node0", cpu);
+
+            if (access(path, F_OK) == 0) {
+                g_numa_state.preferred_node = 0;
+            } else {
+                snprintf(path, sizeof(path),
+                         "/sys/devices/system/cpu/cpu%d/node1", cpu);
+                if (access(path, F_OK) == 0) {
+                    g_numa_state.preferred_node = 1;
+                }
+            }
+
+            // Set memory policy to prefer local node
+            if (g_numa_state.preferred_node >= 0) {
+                g_numa_state.numa_node_mask = 1UL << g_numa_state.preferred_node;
+                // Note: Actual mbind() calls would be done in memory allocation
+                // This just sets the preference for future allocations
+            }
+        }
+    }
+#endif
+    // On macOS and other platforms, NUMA is typically not exposed
+    // Single-socket systems have uniform memory access
 }
 
+// Get NUMA preferred node for allocations
+int get_numa_preferred_node(void) {
+#ifdef __linux__
+    return g_numa_state.preferred_node;
+#else
+    return 0;  // Non-NUMA systems
+#endif
+}
+
+// Resource allocation optimization state
+static struct {
+    double cpu_weight;      // Weight for CPU-bound tasks
+    double memory_weight;   // Weight for memory-bound tasks
+    double io_weight;       // Weight for I/O-bound tasks
+    size_t max_memory_per_task;
+    int max_threads_per_task;
+} g_resource_allocation = {
+    .cpu_weight = 0.4,
+    .memory_weight = 0.4,
+    .io_weight = 0.2,
+    .max_memory_per_task = 1024 * 1024 * 1024,  // 1GB default
+    .max_threads_per_task = 4
+};
+
+// Optimize resource allocation based on workload characteristics
 static void optimize_resource_allocation(void) {
-    // TODO: Dynamic resource rebalancing
+    double cpu_util = measure_cpu_utilization();
+    double memory_usage = measure_memory_usage();
+    double bandwidth = measure_network_bandwidth();
+    double resource_util = measure_resource_utilization();
+
+    // Detect workload type based on utilization patterns
+    bool cpu_bound = cpu_util > 0.7 && memory_usage < 0.5;
+    bool memory_bound = memory_usage > 0.7 && cpu_util < 0.5;
+    bool io_bound = bandwidth > 0 && cpu_util < 0.3 && memory_usage < 0.3;
+
+    // Adjust weights based on detected workload type
+    if (cpu_bound) {
+        g_resource_allocation.cpu_weight = 0.6;
+        g_resource_allocation.memory_weight = 0.25;
+        g_resource_allocation.io_weight = 0.15;
+        // Increase threads for CPU-bound work
+        g_resource_allocation.max_threads_per_task = get_num_cores();
+    } else if (memory_bound) {
+        g_resource_allocation.cpu_weight = 0.25;
+        g_resource_allocation.memory_weight = 0.6;
+        g_resource_allocation.io_weight = 0.15;
+        // Reduce threads to avoid memory contention
+        g_resource_allocation.max_threads_per_task = get_num_cores() / 2;
+        if (g_resource_allocation.max_threads_per_task < 2)
+            g_resource_allocation.max_threads_per_task = 2;
+    } else if (io_bound) {
+        g_resource_allocation.cpu_weight = 0.2;
+        g_resource_allocation.memory_weight = 0.2;
+        g_resource_allocation.io_weight = 0.6;
+        // More threads for I/O-bound work (overlap waiting)
+        g_resource_allocation.max_threads_per_task = get_num_cores() * 2;
+    }
+
+    // Adjust memory limits based on available memory
+    if (resource_util > 0.9) {
+        // High resource pressure: reduce per-task limits
+        g_resource_allocation.max_memory_per_task /= 2;
+        if (g_resource_allocation.max_memory_per_task < 64 * 1024 * 1024) {
+            g_resource_allocation.max_memory_per_task = 64 * 1024 * 1024;  // 64MB min
+        }
+    } else if (resource_util < 0.5) {
+        // Low resource pressure: can increase limits
+        g_resource_allocation.max_memory_per_task *= 2;
+        if (g_resource_allocation.max_memory_per_task > 4ULL * 1024 * 1024 * 1024) {
+            g_resource_allocation.max_memory_per_task = 4ULL * 1024 * 1024 * 1024;  // 4GB max
+        }
+    }
+}
+
+// Get resource allocation parameters
+void get_resource_allocation_params(double* cpu_weight, double* memory_weight,
+                                    double* io_weight, size_t* max_memory,
+                                    int* max_threads) {
+    if (cpu_weight) *cpu_weight = g_resource_allocation.cpu_weight;
+    if (memory_weight) *memory_weight = g_resource_allocation.memory_weight;
+    if (io_weight) *io_weight = g_resource_allocation.io_weight;
+    if (max_memory) *max_memory = g_resource_allocation.max_memory_per_task;
+    if (max_threads) *max_threads = g_resource_allocation.max_threads_per_task;
 }
 
 // Quantum-specific optimization functions

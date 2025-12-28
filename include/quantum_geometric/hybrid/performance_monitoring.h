@@ -88,6 +88,19 @@ void end_operation(PerformanceMonitor* monitor, MonitoringOperationType type);
 // Analysis
 PerformanceSummary get_performance_summary(const PerformanceMonitor* monitor);
 
+// Quantum hardware state updates (call from quantum execution code)
+void perf_update_quantum_state(size_t active_qubits, size_t circuit_depth,
+                               size_t gates_executed, double coherence_time_used);
+void perf_set_quantum_hardware(size_t max_qubits, double max_coherence_time,
+                               double cryostat_power, double control_power);
+void perf_record_error_rate(double error_rate);
+void perf_record_fidelity(double fidelity);
+
+// Aggregate metrics
+double perf_get_average_error_rate(void);
+double perf_get_average_fidelity(void);
+double perf_get_network_bandwidth_mbps(void);
+
 #ifdef __cplusplus
 }
 #endif

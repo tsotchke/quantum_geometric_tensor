@@ -22,6 +22,26 @@
 #include "quantum_geometric/supercomputer/quantum_distributed_engine.h"
 #include "quantum_geometric/supercomputer/compute_backend.h"
 #include "quantum_geometric/supercomputer/compute_simd.h"
+
+// Performance monitor configuration defaults
+#define PERF_MON_DEFAULT_NUM_DEVICES 1
+#define PERF_MON_DEFAULT_SAMPLE_INTERVAL_MS 100
+#define PERF_MON_DEFAULT_MEMORY_PER_DEVICE (8ULL * 1024 * 1024 * 1024)  // 8GB
+
+// Internal performance monitor structure for distributed engine
+typedef struct DistributedPerfMonitorInternal {
+    double* device_utilization;
+    size_t* device_memory_used;
+    size_t* device_memory_total;
+    size_t num_devices;
+    double total_utilization;
+    double efficiency;
+    bool is_monitoring;
+    bool enable_timing;
+    bool enable_memory_tracking;
+    bool enable_bandwidth_tracking;
+    size_t sample_interval_ms;
+} DistributedPerfMonitorInternal;
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -1528,12 +1548,65 @@ void launch_gpu_kernel(void* buffer, const QuantumOperation* op,
 #endif
 
 PerformanceMonitor* init_performance_monitor_distributed(MonitorConfig* config) {
-    (void)config;
-    // Performance monitor initialization would go here
-    return NULL;
+    if (!config) return NULL;
+
+    // Allocate internal performance monitor structure
+    DistributedPerfMonitorInternal* internal = calloc(1, sizeof(DistributedPerfMonitorInternal));
+    if (!internal) return NULL;
+
+    // Determine number of devices - use system query or default
+    size_t num_devices = PERF_MON_DEFAULT_NUM_DEVICES;
+#ifdef _SC_NPROCESSORS_ONLN
+    long nprocs = sysconf(_SC_NPROCESSORS_ONLN);
+    if (nprocs > 0) {
+        num_devices = (size_t)nprocs;
+    }
+#endif
+
+    internal->num_devices = num_devices;
+    internal->device_utilization = calloc(num_devices, sizeof(double));
+    internal->device_memory_used = calloc(num_devices, sizeof(size_t));
+    internal->device_memory_total = calloc(num_devices, sizeof(size_t));
+
+    if (!internal->device_utilization || !internal->device_memory_used || !internal->device_memory_total) {
+        free(internal->device_utilization);
+        free(internal->device_memory_used);
+        free(internal->device_memory_total);
+        free(internal);
+        return NULL;
+    }
+
+    // Store configuration
+    internal->enable_timing = config->enable_timing;
+    internal->enable_memory_tracking = config->enable_memory_tracking;
+    internal->enable_bandwidth_tracking = config->enable_bandwidth_tracking;
+    internal->sample_interval_ms = config->sample_interval_ms > 0 ?
+                                   config->sample_interval_ms :
+                                   PERF_MON_DEFAULT_SAMPLE_INTERVAL_MS;
+
+    // Initialize device stats
+    for (size_t i = 0; i < num_devices; i++) {
+        internal->device_utilization[i] = 0.0;
+        internal->device_memory_used[i] = 0;
+        internal->device_memory_total[i] = PERF_MON_DEFAULT_MEMORY_PER_DEVICE;
+    }
+
+    internal->total_utilization = 0.0;
+    internal->efficiency = 1.0;
+    internal->is_monitoring = true;
+
+    // Return as opaque PerformanceMonitor pointer
+    return (PerformanceMonitor*)internal;
 }
 
 void cleanup_performance_monitor_distributed(PerformanceMonitor* monitor) {
-    (void)monitor;
-    // Stub - matches init_performance_monitor_distributed
+    if (!monitor) return;
+
+    DistributedPerfMonitorInternal* internal = (DistributedPerfMonitorInternal*)monitor;
+    internal->is_monitoring = false;
+
+    free(internal->device_utilization);
+    free(internal->device_memory_used);
+    free(internal->device_memory_total);
+    free(internal);
 }

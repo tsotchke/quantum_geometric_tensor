@@ -3411,15 +3411,121 @@ void hw_add_gate(QuantumCircuit* circuit, HardwareGate gate) {
 
 /**
  * @brief Internal IBM job submission
+ *
+ * Submits a QASM program to IBM Quantum via the Qiskit Runtime API.
+ * Uses the backend_specific_config field which contains the IBM API handle.
  */
 static bool internal_submit_ibm_job(const struct IBMConfig* config, const char* qasm,
                                     ExecutionResult* result) {
     if (!config || !qasm || !result) return false;
 
-    // For now, return success with a placeholder implementation
-    // TODO: Parse QASM and submit to IBM backend
-    (void)qasm;  // QASM string would be submitted to IBM
+    // Initialize result
+    result->success = false;
+    result->error_message = NULL;
+
+    // Get the IBM API handle from backend_specific_config
+    void* api_handle = config->backend_specific_config;
+    if (!api_handle) {
+        // If no API handle, try to initialize one with the API key
+        if (config->api_key) {
+            api_handle = ibm_api_init(config->api_key);
+            if (api_handle && config->backend_name) {
+                ibm_api_connect_backend(api_handle, config->backend_name);
+            }
+        }
+
+        if (!api_handle) {
+            result->error_message = strdup("IBM API handle not initialized and no API key available");
+            return false;
+        }
+    }
+
+    // Submit job to IBM Quantum
+    char* job_id = ibm_api_submit_job(api_handle, qasm);
+    if (!job_id) {
+        result->error_message = strdup("Failed to submit job to IBM Quantum");
+        return false;
+    }
+
+    // Poll for job completion with timeout
+    const int MAX_POLL_ATTEMPTS = 600;  // 10 minutes at 1 second intervals
+    const int POLL_INTERVAL_MS = 1000;
+    IBMJobStatus status = IBM_STATUS_QUEUED;
+
+    // Track execution time
+    struct timespec exec_start, exec_end;
+    clock_gettime(CLOCK_MONOTONIC, &exec_start);
+
+    for (int attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
+        status = ibm_api_get_job_status(api_handle, job_id);
+
+        if (status == IBM_STATUS_COMPLETED) {
+            break;
+        } else if (status == IBM_STATUS_ERROR || status == IBM_STATUS_CANCELLED) {
+            char* error = ibm_api_get_job_error(api_handle, job_id);
+            result->error_message = error ? error : strdup("Job failed or cancelled");
+            free(job_id);
+            return false;
+        }
+
+        // Sleep for poll interval
+        struct timespec sleep_time = {
+            .tv_sec = POLL_INTERVAL_MS / 1000,
+            .tv_nsec = (POLL_INTERVAL_MS % 1000) * 1000000
+        };
+        nanosleep(&sleep_time, NULL);
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &exec_end);
+
+    if (status != IBM_STATUS_COMPLETED) {
+        result->error_message = strdup("Job timed out waiting for completion");
+        free(job_id);
+        return false;
+    }
+
+    // Get job results
+    IBMJobResult* ibm_result = ibm_api_get_job_result(api_handle, job_id);
+    if (!ibm_result) {
+        result->error_message = strdup("Failed to retrieve job results");
+        free(job_id);
+        return false;
+    }
+
+    // Convert IBM results to ExecutionResult format
     result->success = true;
+    result->num_results = ibm_result->num_counts;
+
+    // Calculate execution time from our timing
+    result->execution_time = (exec_end.tv_sec - exec_start.tv_sec) +
+                             (exec_end.tv_nsec - exec_start.tv_nsec) * 1e-9;
+
+    // Copy probabilities if available
+    if (ibm_result->probabilities && ibm_result->num_counts > 0) {
+        result->probabilities = malloc(ibm_result->num_counts * sizeof(double));
+        if (result->probabilities) {
+            memcpy(result->probabilities, ibm_result->probabilities,
+                   ibm_result->num_counts * sizeof(double));
+        }
+    }
+
+    // Copy measurement counts if available
+    if (ibm_result->counts && ibm_result->num_counts > 0) {
+        result->counts = malloc(ibm_result->num_counts * sizeof(uint64_t));
+        if (result->counts) {
+            memcpy(result->counts, ibm_result->counts,
+                   ibm_result->num_counts * sizeof(uint64_t));
+        }
+    }
+
+    // Use fidelity and error_rate from the result
+    result->fidelity = ibm_result->fidelity > 0 ? ibm_result->fidelity :
+                       (1.0 - (ibm_result->error_rate > 0 ? ibm_result->error_rate : 0.01));
+
+    // Clean up
+    free(job_id);
+    cleanup_ibm_result(ibm_result);
+
     return true;
 }
 

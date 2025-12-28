@@ -17,6 +17,22 @@
 #ifdef __APPLE__
 #include <mach/mach.h>
 #include <mach/mach_host.h>
+#include <TargetConditionals.h>
+#include <AvailabilityMacros.h>
+#include <IOKit/IOKitLib.h>
+#include <CoreFoundation/CoreFoundation.h>
+#include <sys/socket.h>
+#include <net/if.h>
+#include <net/if_dl.h>
+#include <ifaddrs.h>
+#include <sys/sysctl.h>
+#endif
+
+#ifdef __linux__
+#include <sys/sysinfo.h>
+#include <sys/socket.h>
+#include <net/if.h>
+#include <ifaddrs.h>
 #endif
 
 // Internal constants
@@ -190,6 +206,289 @@ static double get_memory_usage(void) {
 #endif
 }
 
+// ============================================================================
+// Real GPU Monitoring via IOKit (macOS) / sysfs (Linux)
+// ============================================================================
+
+#ifdef __APPLE__
+static double get_gpu_usage_iokit(void) {
+    io_iterator_t iterator;
+    CFMutableDictionaryRef matching = IOServiceMatching("IOAccelerator");
+    if (!matching) return 0.0;
+
+    // Handle macOS 12+ deprecation of kIOMasterPortDefault
+#if defined(__MAC_12_0) && __MAC_OS_X_VERSION_MIN_REQUIRED >= __MAC_12_0
+    kern_return_t kr = IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator);
+#else
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    kern_return_t kr = IOServiceGetMatchingServices(kIOMasterPortDefault, matching, &iterator);
+    #pragma clang diagnostic pop
+#endif
+
+    if (kr != KERN_SUCCESS) return 0.0;
+
+    io_object_t accelerator;
+    double max_utilization = 0.0;
+
+    while ((accelerator = IOIteratorNext(iterator)) != 0) {
+        CFMutableDictionaryRef props = NULL;
+        if (IORegistryEntryCreateCFProperties(accelerator, &props, kCFAllocatorDefault, 0) == KERN_SUCCESS && props) {
+            // Get PerformanceStatistics dictionary
+            CFDictionaryRef perf_stats = CFDictionaryGetValue(props, CFSTR("PerformanceStatistics"));
+            if (perf_stats && CFGetTypeID(perf_stats) == CFDictionaryGetTypeID()) {
+                // Try different keys used by different GPU vendors
+                const CFStringRef utilization_keys[] = {
+                    CFSTR("Device Utilization %"),      // Apple Silicon
+                    CFSTR("GPU Activity(%)"),           // AMD
+                    CFSTR("GPU Core Utilization"),      // Intel
+                    CFSTR("hardwareWaitTime"),          // Alternative metric
+                };
+
+                for (size_t i = 0; i < sizeof(utilization_keys)/sizeof(utilization_keys[0]); i++) {
+                    CFNumberRef util_val = CFDictionaryGetValue(perf_stats, utilization_keys[i]);
+                    if (util_val && CFGetTypeID(util_val) == CFNumberGetTypeID()) {
+                        double utilization = 0.0;
+                        if (CFNumberGetValue(util_val, kCFNumberDoubleType, &utilization)) {
+                            // Normalize to 0-1 range
+                            if (utilization > 1.0) {
+                                utilization /= 100.0;
+                            }
+                            if (utilization > max_utilization) {
+                                max_utilization = utilization;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            CFRelease(props);
+        }
+        IOObjectRelease(accelerator);
+    }
+    IOObjectRelease(iterator);
+
+    return max_utilization;
+}
+#endif
+
+#ifdef __linux__
+static double get_gpu_usage_linux(void) {
+    // NVIDIA GPU via nvidia-smi
+    FILE* fp = popen("nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null", "r");
+    if (fp) {
+        double util = 0.0;
+        if (fscanf(fp, "%lf", &util) == 1) {
+            pclose(fp);
+            return util / 100.0;
+        }
+        pclose(fp);
+    }
+
+    // AMD GPU via sysfs
+    FILE* amd = fopen("/sys/class/drm/card0/device/gpu_busy_percent", "r");
+    if (amd) {
+        int percent = 0;
+        if (fscanf(amd, "%d", &percent) == 1) {
+            fclose(amd);
+            return (double)percent / 100.0;
+        }
+        fclose(amd);
+    }
+
+    return 0.0;
+}
+#endif
+
+static double get_gpu_usage(void) {
+#ifdef __APPLE__
+    return get_gpu_usage_iokit();
+#elif defined(__linux__)
+    return get_gpu_usage_linux();
+#else
+    return 0.0;
+#endif
+}
+
+// ============================================================================
+// Network Bandwidth Monitoring
+// ============================================================================
+
+typedef struct {
+    uint64_t bytes_in;
+    uint64_t bytes_out;
+    struct timespec timestamp;
+} NetworkSnapshot;
+
+static NetworkSnapshot last_network_snapshot = {0, 0, {0, 0}};
+
+static double get_network_bandwidth(void) {
+    NetworkSnapshot current = {0, 0, {0, 0}};
+    clock_gettime(CLOCK_MONOTONIC, &current.timestamp);
+
+#if defined(__APPLE__) || defined(__linux__)
+    struct ifaddrs* ifap = NULL;
+    if (getifaddrs(&ifap) == 0) {
+        for (struct ifaddrs* ifa = ifap; ifa != NULL; ifa = ifa->ifa_next) {
+            if (ifa->ifa_data == NULL) continue;
+            if ((ifa->ifa_flags & IFF_LOOPBACK) != 0) continue;
+            if ((ifa->ifa_flags & IFF_UP) == 0) continue;
+
+#ifdef __APPLE__
+            struct if_data* ifd = (struct if_data*)ifa->ifa_data;
+            current.bytes_in += ifd->ifi_ibytes;
+            current.bytes_out += ifd->ifi_obytes;
+#endif
+        }
+        freeifaddrs(ifap);
+    }
+#endif
+
+#ifdef __linux__
+    // Linux: read from /proc/net/dev
+    FILE* fp = fopen("/proc/net/dev", "r");
+    if (fp) {
+        char line[512];
+        // Skip header lines
+        if (fgets(line, sizeof(line), fp) && fgets(line, sizeof(line), fp)) {
+            while (fgets(line, sizeof(line), fp)) {
+                char iface[32];
+                unsigned long long rx_bytes, tx_bytes;
+                unsigned long long dummy;
+                if (sscanf(line, " %31[^:]: %llu %llu %llu %llu %llu %llu %llu %llu %llu",
+                          iface, &rx_bytes, &dummy, &dummy, &dummy, &dummy, &dummy, &dummy, &dummy, &tx_bytes) >= 10) {
+                    // Skip loopback
+                    if (strncmp(iface, "lo", 2) != 0) {
+                        current.bytes_in += rx_bytes;
+                        current.bytes_out += tx_bytes;
+                    }
+                }
+            }
+        }
+        fclose(fp);
+    }
+#endif
+
+    double bandwidth_mbps = 0.0;
+
+    if (last_network_snapshot.timestamp.tv_sec != 0) {
+        double elapsed = (double)(current.timestamp.tv_sec - last_network_snapshot.timestamp.tv_sec) +
+                        (double)(current.timestamp.tv_nsec - last_network_snapshot.timestamp.tv_nsec) / 1e9;
+
+        if (elapsed > 0.01) {
+            uint64_t bytes_delta = (current.bytes_in - last_network_snapshot.bytes_in) +
+                                   (current.bytes_out - last_network_snapshot.bytes_out);
+            bandwidth_mbps = ((double)bytes_delta * 8.0) / (elapsed * 1e6);
+        }
+    }
+
+    last_network_snapshot = current;
+    return bandwidth_mbps;
+}
+
+// ============================================================================
+// Disk I/O Monitoring
+// ============================================================================
+
+typedef struct {
+    uint64_t read_bytes;
+    uint64_t write_bytes;
+    struct timespec timestamp;
+} DiskSnapshot;
+
+static DiskSnapshot last_disk_snapshot = {0, 0, {0, 0}};
+
+static double get_disk_io(void) {
+    DiskSnapshot current = {0, 0, {0, 0}};
+    clock_gettime(CLOCK_MONOTONIC, &current.timestamp);
+
+#ifdef __linux__
+    // Read from /proc/diskstats
+    FILE* fp = fopen("/proc/diskstats", "r");
+    if (fp) {
+        char line[512];
+        while (fgets(line, sizeof(line), fp)) {
+            unsigned int major, minor;
+            char device[64];
+            unsigned long long rd_ios, rd_merges, rd_sectors, rd_ticks;
+            unsigned long long wr_ios, wr_merges, wr_sectors, wr_ticks;
+
+            if (sscanf(line, "%u %u %63s %llu %llu %llu %llu %llu %llu %llu %llu",
+                      &major, &minor, device,
+                      &rd_ios, &rd_merges, &rd_sectors, &rd_ticks,
+                      &wr_ios, &wr_merges, &wr_sectors, &wr_ticks) >= 11) {
+                // Only count whole disk devices (e.g., sda, nvme0n1)
+                if ((strncmp(device, "sd", 2) == 0 && strlen(device) == 3) ||
+                    strncmp(device, "nvme", 4) == 0) {
+                    current.read_bytes += rd_sectors * 512;
+                    current.write_bytes += wr_sectors * 512;
+                }
+            }
+        }
+        fclose(fp);
+    }
+#endif
+
+#ifdef __APPLE__
+    // macOS: use IOKit for disk statistics
+    io_iterator_t iterator;
+    CFMutableDictionaryRef matching = IOServiceMatching("IOBlockStorageDriver");
+    if (matching) {
+#if defined(__MAC_12_0) && __MAC_OS_X_VERSION_MIN_REQUIRED >= __MAC_12_0
+        kern_return_t kr = IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator);
+#else
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        kern_return_t kr = IOServiceGetMatchingServices(kIOMasterPortDefault, matching, &iterator);
+        #pragma clang diagnostic pop
+#endif
+        if (kr == KERN_SUCCESS) {
+            io_object_t disk;
+            while ((disk = IOIteratorNext(iterator)) != 0) {
+                CFMutableDictionaryRef props = NULL;
+                if (IORegistryEntryCreateCFProperties(disk, &props, kCFAllocatorDefault, 0) == KERN_SUCCESS && props) {
+                    CFDictionaryRef stats = CFDictionaryGetValue(props, CFSTR("Statistics"));
+                    if (stats && CFGetTypeID(stats) == CFDictionaryGetTypeID()) {
+                        CFNumberRef read_bytes_ref = CFDictionaryGetValue(stats, CFSTR("Bytes (Read)"));
+                        CFNumberRef write_bytes_ref = CFDictionaryGetValue(stats, CFSTR("Bytes (Write)"));
+
+                        if (read_bytes_ref) {
+                            long long val = 0;
+                            CFNumberGetValue(read_bytes_ref, kCFNumberLongLongType, &val);
+                            current.read_bytes += (uint64_t)val;
+                        }
+                        if (write_bytes_ref) {
+                            long long val = 0;
+                            CFNumberGetValue(write_bytes_ref, kCFNumberLongLongType, &val);
+                            current.write_bytes += (uint64_t)val;
+                        }
+                    }
+                    CFRelease(props);
+                }
+                IOObjectRelease(disk);
+            }
+            IOObjectRelease(iterator);
+        }
+    }
+#endif
+
+    double io_mbps = 0.0;
+
+    if (last_disk_snapshot.timestamp.tv_sec != 0) {
+        double elapsed = (double)(current.timestamp.tv_sec - last_disk_snapshot.timestamp.tv_sec) +
+                        (double)(current.timestamp.tv_nsec - last_disk_snapshot.timestamp.tv_nsec) / 1e9;
+
+        if (elapsed > 0.01) {
+            uint64_t bytes_delta = (current.read_bytes - last_disk_snapshot.read_bytes) +
+                                   (current.write_bytes - last_disk_snapshot.write_bytes);
+            io_mbps = (double)bytes_delta / (elapsed * 1e6);
+        }
+    }
+
+    last_disk_snapshot = current;
+    return io_mbps;
+}
+
 // Analyze device state based on metrics
 static DeviceState analyze_device_state(const DeviceMetrics* metrics) {
     if (!metrics) return DEVICE_STATE_UNKNOWN;
@@ -224,17 +523,18 @@ static void collect_system_metrics(PerformanceMonitor* monitor) {
     // Memory usage
     metrics.memory_usage = get_memory_usage();
 
-    // GPU usage (stub - would need GPU-specific code)
-    metrics.gpu_usage = 0.0;
+    // GPU usage (real implementation via IOKit/sysfs)
+    metrics.gpu_usage = get_gpu_usage();
 
-    // Quantum usage (stub)
+    // Quantum usage (tracked separately via quantum hardware state)
+    // This is populated by quantum execution callbacks
     metrics.quantum_usage = 0.0;
 
-    // Network bandwidth (stub)
-    metrics.network_bandwidth = 0.0;
+    // Network bandwidth (real implementation via getifaddrs/proc)
+    metrics.network_bandwidth = get_network_bandwidth();
 
-    // Disk I/O (stub)
-    metrics.disk_io = 0.0;
+    // Disk I/O (real implementation via IOKit/proc)
+    metrics.disk_io = get_disk_io();
 
     // Update current metrics
     pthread_mutex_lock(&monitor->metrics_mutex);

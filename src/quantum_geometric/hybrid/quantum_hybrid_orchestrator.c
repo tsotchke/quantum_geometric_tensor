@@ -331,12 +331,161 @@ static int execute_annealing_only(HybridQuantumSystem* sys,
     HybridQUBO* qubo = hybrid_op_to_qubo(op);
     if (!qubo) return -1;
 
-    // For now, return success placeholder
-    result->success = true;
-    result->fidelity = 0.95;
+    // Convert HybridQUBO to DWaveProblem
+    size_t num_interactions = 0;
+    for (size_t i = 0; i < qubo->num_vars; i++) {
+        for (size_t j = i + 1; j < qubo->num_vars; j++) {
+            size_t idx = i * qubo->num_vars + j;
+            if (qubo->Q && qubo->Q[idx] != 0.0) {
+                num_interactions++;
+            }
+        }
+    }
 
+    DWaveProblem* problem = create_dwave_problem(qubo->num_vars, num_interactions);
+    if (!problem) {
+        hybrid_qubo_cleanup(qubo);
+        return -1;
+    }
+
+    // Add linear terms
+    if (qubo->linear) {
+        for (size_t i = 0; i < qubo->num_vars; i++) {
+            if (qubo->linear[i] != 0.0) {
+                add_linear_term(problem, i, qubo->linear[i]);
+            }
+        }
+    }
+
+    // Add quadratic terms from upper triangular QUBO matrix
+    if (qubo->Q) {
+        for (size_t i = 0; i < qubo->num_vars; i++) {
+            for (size_t j = i + 1; j < qubo->num_vars; j++) {
+                size_t idx = i * qubo->num_vars + j;
+                if (qubo->Q[idx] != 0.0) {
+                    add_quadratic_term(problem, i, j, qubo->Q[idx]);
+                }
+            }
+        }
+    }
+
+    problem->offset = qubo->offset;
+
+    // Create job configuration
+    DWaveJobConfig job_config = {0};
+    job_config.problem = problem;
+    job_config.params.num_reads = 1000;
+    job_config.params.annealing_time = 20.0;  // 20 microseconds typical
+    job_config.params.auto_scale = true;
+    job_config.use_embedding = true;
+    job_config.use_error_mitigation = true;
+
+    // Submit job to D-Wave backend
+    char* job_id = submit_dwave_job(sys->dwave, &job_config);
+    if (!job_id) {
+        result->success = false;
+        result->error_message = strdup("Failed to submit D-Wave job");
+        cleanup_dwave_problem(problem);
+        hybrid_qubo_cleanup(qubo);
+        return -1;
+    }
+
+    // Wait for job completion with polling
+    DWaveJobStatus status = get_dwave_job_status(sys->dwave, job_id);
+    int poll_count = 0;
+    const int max_polls = 600;  // 60 second timeout with 100ms polls
+
+    while ((status == DWAVE_STATUS_QUEUED || status == DWAVE_STATUS_RUNNING) &&
+           poll_count < max_polls) {
+        // Small delay between polls (100ms)
+        struct timespec delay = {0, 100000000};
+        nanosleep(&delay, NULL);
+        status = get_dwave_job_status(sys->dwave, job_id);
+        poll_count++;
+    }
+
+    if (status == DWAVE_STATUS_COMPLETED) {
+        DWaveJobResult* job_result = get_dwave_job_result(sys->dwave, job_id);
+        if (job_result) {
+            result->success = true;
+
+            // Copy energies as probabilities (for annealing, lower energy = higher probability)
+            if (job_result->probabilities && job_result->num_samples > 0) {
+                result->probabilities = malloc(job_result->num_samples * sizeof(double));
+                if (result->probabilities) {
+                    memcpy(result->probabilities, job_result->probabilities,
+                           job_result->num_samples * sizeof(double));
+                    result->num_probabilities = job_result->num_samples;
+                }
+            }
+
+            // Store best solution variables as measurements
+            if (job_result->samples && job_result->num_samples > 0) {
+                // Find minimum energy sample
+                size_t best_idx = 0;
+                double min_energy = job_result->samples[0].energy;
+                for (size_t s = 1; s < job_result->num_samples; s++) {
+                    if (job_result->samples[s].energy < min_energy) {
+                        min_energy = job_result->samples[s].energy;
+                        best_idx = s;
+                    }
+                }
+
+                // Store best solution as measurements (cast int32 -> double)
+                if (job_result->samples[best_idx].variables) {
+                    result->measurements = malloc(qubo->num_vars * sizeof(double));
+                    if (result->measurements) {
+                        for (size_t v = 0; v < qubo->num_vars; v++) {
+                            result->measurements[v] = (double)job_result->samples[best_idx].variables[v];
+                        }
+                        result->num_measurements = qubo->num_vars;
+                    }
+                }
+            }
+
+            // Estimate fidelity from energy distribution
+            if (job_result->num_samples > 0) {
+                double energy_range = job_result->max_energy - job_result->min_energy;
+                if (energy_range > 0) {
+                    // Count solutions at minimum energy
+                    size_t optimal_count = 0;
+                    for (size_t s = 0; s < job_result->num_samples; s++) {
+                        if (job_result->samples[s].energy <= job_result->min_energy + 0.01) {
+                            optimal_count++;
+                        }
+                    }
+                    result->fidelity = (double)optimal_count / (double)job_result->num_samples;
+                } else {
+                    result->fidelity = 1.0;  // All samples at same energy
+                }
+            }
+
+            // Store execution time from timing info
+            if (job_result->timing_info[0] > 0) {
+                result->execution_time = job_result->timing_info[0] / 1e6;  // Convert μs to seconds
+            }
+
+            cleanup_dwave_result(job_result);
+        } else {
+            result->success = false;
+            result->error_message = strdup("Failed to retrieve D-Wave job result");
+        }
+    } else if (status == DWAVE_STATUS_CANCELLED) {
+        result->success = false;
+        result->error_message = strdup("D-Wave job was cancelled");
+    } else if (status == DWAVE_STATUS_ERROR) {
+        result->success = false;
+        result->error_message = strdup("D-Wave job failed with error");
+    } else {
+        result->success = false;
+        result->error_message = strdup("D-Wave job timed out");
+    }
+
+    free(job_id);
+    cleanup_dwave_problem(problem);
     hybrid_qubo_cleanup(qubo);
-    return 0;
+
+    return result->success ? 0 : -1;
 }
 
 static void prepare_rigetti_resources(HybridQuantumSystem* sys, size_t num_qubits) {

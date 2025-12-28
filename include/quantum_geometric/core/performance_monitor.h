@@ -61,6 +61,29 @@ void reset_performance_counters(void);
 // Clean up performance monitoring
 void cleanup_performance_monitor(void);
 
+// Allocation statistics tracking (call from memory pool)
+void update_allocation_stats(size_t requested, size_t allocated, bool cache_hit);
+
+// Thread workload tracking (call from worker threads)
+void register_thread_work(uint64_t work_units, uint64_t active_time_ns);
+
+// Quantum metrics update API (call from error mitigation module)
+void set_quantum_error_rate(double rate);
+void set_quantum_fidelity(double fidelity);
+void set_entanglement_fidelity(double fidelity);
+void set_gate_error_rate(double rate);
+void update_quantum_metrics(double error_rate, double fidelity,
+                            double entanglement_fidelity, double gate_error_rate);
+
+// Optimization parameter accessors
+int get_recommended_thread_count(void);
+void get_memory_optimization_params(size_t* block_size, size_t* prefetch_distance,
+                                    bool* prefetch_enabled);
+int get_numa_preferred_node(void);
+void get_resource_allocation_params(double* cpu_weight, double* memory_weight,
+                                    double* io_weight, size_t* max_memory,
+                                    int* max_threads);
+
 // Performance monitoring control
 int start_performance_monitoring(void);
 int stop_performance_monitoring(void);

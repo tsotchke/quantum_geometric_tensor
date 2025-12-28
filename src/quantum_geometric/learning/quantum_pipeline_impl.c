@@ -11,6 +11,15 @@
 #include <stdio.h>
 #include <math.h>
 #include <float.h>
+#include <stdint.h>
+#include <time.h>
+
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <mach/task.h>
+#elif defined(__linux__)
+#include <unistd.h>
+#endif
 
 // Internal pipeline state structure
 typedef struct {
@@ -238,10 +247,90 @@ int quantum_pipeline_evaluate_impl(void* pipeline, const float* data, const int*
     return result ? QG_SUCCESS : QG_ERROR_RUNTIME;
 }
 
+// Magic number for pipeline file format: "QGTL" as uint32
+#define PIPELINE_MAGIC 0x4C544751
+#define PIPELINE_VERSION 1
+
 int quantum_pipeline_save_impl(void* pipeline, const char* filename) {
-    (void)pipeline;  // Unused parameter
-    (void)filename;  // Unused parameter
-    // Not implemented for minimal version
+    if (!pipeline || !filename) {
+        geometric_log_error("Invalid arguments to pipeline save");
+        return QG_ERROR_INVALID_ARGUMENT;
+    }
+
+    quantum_pipeline_state_t* state = (quantum_pipeline_state_t*)pipeline;
+
+    FILE* f = fopen(filename, "wb");
+    if (!f) {
+        geometric_log_error("Failed to open file for writing: %s", filename);
+        return QGT_ERROR_IO;
+    }
+
+    // Write header
+    uint32_t magic = PIPELINE_MAGIC;
+    uint32_t version = PIPELINE_VERSION;
+    if (fwrite(&magic, sizeof(uint32_t), 1, f) != 1 ||
+        fwrite(&version, sizeof(uint32_t), 1, f) != 1) {
+        geometric_log_error("Failed to write header");
+        fclose(f);
+        return QGT_ERROR_IO;
+    }
+
+    // Write configuration
+    if (fwrite(state->config, sizeof(float), QG_CONFIG_SIZE, f) != QG_CONFIG_SIZE) {
+        geometric_log_error("Failed to write configuration");
+        fclose(f);
+        return QGT_ERROR_IO;
+    }
+
+    // Write training state
+    if (fwrite(&state->current_epoch, sizeof(size_t), 1, f) != 1 ||
+        fwrite(&state->current_loss, sizeof(float), 1, f) != 1 ||
+        fwrite(&state->current_accuracy, sizeof(float), 1, f) != 1) {
+        geometric_log_error("Failed to write training state");
+        fclose(f);
+        return QGT_ERROR_IO;
+    }
+
+    // Save learning task parameters if available
+    if (state->learning_task) {
+        size_t num_params = 0;
+        float* params = NULL;
+
+        // Get parameters from learning task
+        if (quantum_get_task_parameters(state->learning_task, &params, &num_params) && params) {
+            // Write parameter count and data
+            if (fwrite(&num_params, sizeof(size_t), 1, f) != 1) {
+                geometric_log_error("Failed to write parameter count");
+                free(params);
+                fclose(f);
+                return QGT_ERROR_IO;
+            }
+
+            if (num_params > 0 && fwrite(params, sizeof(float), num_params, f) != num_params) {
+                geometric_log_error("Failed to write parameters");
+                free(params);
+                fclose(f);
+                return QGT_ERROR_IO;
+            }
+            free(params);
+        } else {
+            // No parameters - write zero count
+            num_params = 0;
+            if (fwrite(&num_params, sizeof(size_t), 1, f) != 1) {
+                fclose(f);
+                return QGT_ERROR_IO;
+            }
+        }
+    } else {
+        size_t zero = 0;
+        if (fwrite(&zero, sizeof(size_t), 1, f) != 1) {
+            fclose(f);
+            return QGT_ERROR_IO;
+        }
+    }
+
+    fclose(f);
+    geometric_log_info("Pipeline saved to %s", filename);
     return QG_SUCCESS;
 }
 
@@ -283,19 +372,108 @@ bool quantum_pipeline_validate_config(const float* config) {
 }
 
 quantum_pipeline_handle_t quantum_pipeline_load(const char* filename) {
-    if (!filename) return NULL;
+    if (!filename) {
+        geometric_log_error("Null filename in pipeline load");
+        return NULL;
+    }
 
     FILE* f = fopen(filename, "rb");
-    if (!f) return NULL;
+    if (!f) {
+        geometric_log_error("Failed to open file for reading: %s", filename);
+        return NULL;
+    }
 
-    // Load configuration
+    // Read and validate header
+    uint32_t magic, version;
+    if (fread(&magic, sizeof(uint32_t), 1, f) != 1 ||
+        fread(&version, sizeof(uint32_t), 1, f) != 1) {
+        geometric_log_error("Failed to read header");
+        fclose(f);
+        return NULL;
+    }
+
+    if (magic != PIPELINE_MAGIC) {
+        geometric_log_error("Invalid file format (magic: 0x%X, expected: 0x%X)", magic, PIPELINE_MAGIC);
+        fclose(f);
+        return NULL;
+    }
+
+    if (version > PIPELINE_VERSION) {
+        geometric_log_error("Unsupported file version: %u (max: %u)", version, PIPELINE_VERSION);
+        fclose(f);
+        return NULL;
+    }
+
+    // Read configuration
     float config[QG_CONFIG_SIZE];
-    size_t read = fread(config, sizeof(float), QG_CONFIG_SIZE, f);
+    if (fread(config, sizeof(float), QG_CONFIG_SIZE, f) != QG_CONFIG_SIZE) {
+        geometric_log_error("Failed to read configuration");
+        fclose(f);
+        return NULL;
+    }
+
+    // Read training state
+    size_t saved_epoch;
+    float saved_loss, saved_accuracy;
+    if (fread(&saved_epoch, sizeof(size_t), 1, f) != 1 ||
+        fread(&saved_loss, sizeof(float), 1, f) != 1 ||
+        fread(&saved_accuracy, sizeof(float), 1, f) != 1) {
+        geometric_log_error("Failed to read training state");
+        fclose(f);
+        return NULL;
+    }
+
+    // Read parameters
+    size_t num_params = 0;
+    float* params = NULL;
+    if (fread(&num_params, sizeof(size_t), 1, f) != 1) {
+        geometric_log_error("Failed to read parameter count");
+        fclose(f);
+        return NULL;
+    }
+
+    if (num_params > 0) {
+        params = malloc(num_params * sizeof(float));
+        if (!params) {
+            geometric_log_error("Failed to allocate parameter buffer");
+            fclose(f);
+            return NULL;
+        }
+
+        if (fread(params, sizeof(float), num_params, f) != num_params) {
+            geometric_log_error("Failed to read parameters");
+            free(params);
+            fclose(f);
+            return NULL;
+        }
+    }
+
     fclose(f);
 
-    if (read != QG_CONFIG_SIZE) return NULL;
+    // Create pipeline with loaded configuration
+    quantum_pipeline_handle_t pipeline = quantum_pipeline_create(config);
+    if (!pipeline) {
+        geometric_log_error("Failed to create pipeline from loaded config");
+        free(params);
+        return NULL;
+    }
 
-    return quantum_pipeline_create(config);
+    // Restore training state
+    quantum_pipeline_state_t* state = (quantum_pipeline_state_t*)pipeline;
+    state->current_epoch = saved_epoch;
+    state->current_loss = saved_loss;
+    state->current_accuracy = saved_accuracy;
+
+    // Restore parameters if available
+    if (params && num_params > 0 && state->learning_task) {
+        quantum_set_task_parameters(state->learning_task, params, num_params);
+    }
+    free(params);
+
+    geometric_log_info("Pipeline loaded from %s (epoch %zu, loss %.4f, accuracy %.4f)",
+                       filename, saved_epoch, saved_loss, saved_accuracy);
+
+    return pipeline;
 }
 
 int quantum_pipeline_get_progress(quantum_pipeline_handle_t pipeline,
@@ -358,22 +536,409 @@ int quantum_pipeline_predict(quantum_pipeline_handle_t pipeline,
     return success ? QG_SUCCESS : QG_ERROR_RUNTIME;
 }
 
+// ============================================================================
+// Classical MLP Baseline Implementation for Comparison
+// ============================================================================
+
+typedef struct {
+    float** weights;      // weights[layer][input * output_dim + output]
+    float** biases;       // biases[layer][neuron]
+    size_t* layer_sizes;  // Number of neurons in each layer
+    size_t num_layers;    // Total layers (including input/output)
+    float** activations;  // Cache for forward pass
+    float** gradients;    // Gradients for each layer
+} ClassicalMLP;
+
+static float relu(float x) {
+    return x > 0.0f ? x : 0.0f;
+}
+
+static float relu_derivative(float x) {
+    return x > 0.0f ? 1.0f : 0.0f;
+}
+
+static void softmax(float* values, size_t size) {
+    float max_val = values[0];
+    for (size_t i = 1; i < size; i++) {
+        if (values[i] > max_val) max_val = values[i];
+    }
+
+    float sum = 0.0f;
+    for (size_t i = 0; i < size; i++) {
+        values[i] = expf(values[i] - max_val);  // Subtract max for numerical stability
+        sum += values[i];
+    }
+
+    for (size_t i = 0; i < size; i++) {
+        values[i] /= sum;
+    }
+}
+
+static ClassicalMLP* create_classical_mlp(size_t input_dim, size_t hidden_dim,
+                                          size_t output_dim, size_t num_hidden_layers) {
+    ClassicalMLP* mlp = calloc(1, sizeof(ClassicalMLP));
+    if (!mlp) return NULL;
+
+    // Total layers = input + hidden + output
+    mlp->num_layers = num_hidden_layers + 2;
+    mlp->layer_sizes = malloc(mlp->num_layers * sizeof(size_t));
+    if (!mlp->layer_sizes) {
+        free(mlp);
+        return NULL;
+    }
+
+    mlp->layer_sizes[0] = input_dim;
+    for (size_t i = 1; i < mlp->num_layers - 1; i++) {
+        mlp->layer_sizes[i] = hidden_dim;
+    }
+    mlp->layer_sizes[mlp->num_layers - 1] = output_dim;
+
+    // Allocate weights and biases (num_layers - 1 sets of weights)
+    mlp->weights = calloc(mlp->num_layers - 1, sizeof(float*));
+    mlp->biases = calloc(mlp->num_layers - 1, sizeof(float*));
+    mlp->activations = calloc(mlp->num_layers, sizeof(float*));
+    mlp->gradients = calloc(mlp->num_layers - 1, sizeof(float*));
+
+    if (!mlp->weights || !mlp->biases || !mlp->activations || !mlp->gradients) {
+        goto cleanup;
+    }
+
+    for (size_t i = 0; i < mlp->num_layers - 1; i++) {
+        size_t fan_in = mlp->layer_sizes[i];
+        size_t fan_out = mlp->layer_sizes[i + 1];
+
+        mlp->weights[i] = malloc(fan_in * fan_out * sizeof(float));
+        mlp->biases[i] = calloc(fan_out, sizeof(float));
+        mlp->gradients[i] = calloc(fan_in * fan_out + fan_out, sizeof(float));
+
+        if (!mlp->weights[i] || !mlp->biases[i] || !mlp->gradients[i]) {
+            goto cleanup;
+        }
+
+        // Xavier/Glorot initialization
+        float scale = sqrtf(6.0f / (float)(fan_in + fan_out));
+        for (size_t j = 0; j < fan_in * fan_out; j++) {
+            mlp->weights[i][j] = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * scale;
+        }
+    }
+
+    for (size_t i = 0; i < mlp->num_layers; i++) {
+        mlp->activations[i] = malloc(mlp->layer_sizes[i] * sizeof(float));
+        if (!mlp->activations[i]) {
+            goto cleanup;
+        }
+    }
+
+    return mlp;
+
+cleanup:
+    if (mlp->weights) {
+        for (size_t i = 0; i < mlp->num_layers - 1; i++) {
+            free(mlp->weights[i]);
+        }
+        free(mlp->weights);
+    }
+    if (mlp->biases) {
+        for (size_t i = 0; i < mlp->num_layers - 1; i++) {
+            free(mlp->biases[i]);
+        }
+        free(mlp->biases);
+    }
+    if (mlp->activations) {
+        for (size_t i = 0; i < mlp->num_layers; i++) {
+            free(mlp->activations[i]);
+        }
+        free(mlp->activations);
+    }
+    if (mlp->gradients) {
+        for (size_t i = 0; i < mlp->num_layers - 1; i++) {
+            free(mlp->gradients[i]);
+        }
+        free(mlp->gradients);
+    }
+    free(mlp->layer_sizes);
+    free(mlp);
+    return NULL;
+}
+
+static void destroy_classical_mlp(ClassicalMLP* mlp) {
+    if (!mlp) return;
+
+    for (size_t i = 0; i < mlp->num_layers - 1; i++) {
+        free(mlp->weights[i]);
+        free(mlp->biases[i]);
+        free(mlp->gradients[i]);
+    }
+    for (size_t i = 0; i < mlp->num_layers; i++) {
+        free(mlp->activations[i]);
+    }
+    free(mlp->weights);
+    free(mlp->biases);
+    free(mlp->activations);
+    free(mlp->gradients);
+    free(mlp->layer_sizes);
+    free(mlp);
+}
+
+static void mlp_forward(ClassicalMLP* mlp, const float* input) {
+    // Copy input to first activation
+    memcpy(mlp->activations[0], input, mlp->layer_sizes[0] * sizeof(float));
+
+    // Forward through each layer
+    for (size_t l = 0; l < mlp->num_layers - 1; l++) {
+        size_t in_size = mlp->layer_sizes[l];
+        size_t out_size = mlp->layer_sizes[l + 1];
+
+        for (size_t j = 0; j < out_size; j++) {
+            float sum = mlp->biases[l][j];
+            for (size_t i = 0; i < in_size; i++) {
+                sum += mlp->activations[l][i] * mlp->weights[l][i * out_size + j];
+            }
+            mlp->activations[l + 1][j] = sum;
+        }
+
+        // Apply activation (ReLU for hidden, softmax for output)
+        if (l < mlp->num_layers - 2) {
+            for (size_t j = 0; j < out_size; j++) {
+                mlp->activations[l + 1][j] = relu(mlp->activations[l + 1][j]);
+            }
+        } else {
+            softmax(mlp->activations[l + 1], out_size);
+        }
+    }
+}
+
+static float mlp_backward(ClassicalMLP* mlp, const float* target, float learning_rate) {
+    size_t output_size = mlp->layer_sizes[mlp->num_layers - 1];
+    float* output = mlp->activations[mlp->num_layers - 1];
+
+    // Compute cross-entropy loss and output gradients
+    float loss = 0.0f;
+    float* delta = malloc(output_size * sizeof(float));
+    if (!delta) return loss;
+
+    for (size_t i = 0; i < output_size; i++) {
+        float pred = fmaxf(output[i], 1e-7f);
+        loss -= target[i] * logf(pred);
+        delta[i] = output[i] - target[i];  // Softmax + cross-entropy derivative
+    }
+
+    // Backpropagate through layers
+    for (int l = (int)mlp->num_layers - 2; l >= 0; l--) {
+        size_t in_size = mlp->layer_sizes[l];
+        size_t out_size = mlp->layer_sizes[l + 1];
+
+        float* next_delta = NULL;
+        if (l > 0) {
+            next_delta = calloc(in_size, sizeof(float));
+            if (!next_delta) {
+                free(delta);
+                return loss;
+            }
+        }
+
+        // Compute gradients and backpropagate
+        for (size_t j = 0; j < out_size; j++) {
+            // Bias gradient
+            mlp->biases[l][j] -= learning_rate * delta[j];
+
+            for (size_t i = 0; i < in_size; i++) {
+                // Weight gradient
+                float grad = delta[j] * mlp->activations[l][i];
+                mlp->weights[l][i * out_size + j] -= learning_rate * grad;
+
+                // Propagate delta to previous layer
+                if (next_delta) {
+                    next_delta[i] += delta[j] * mlp->weights[l][i * out_size + j];
+                }
+            }
+        }
+
+        // Apply ReLU derivative to delta for hidden layers
+        if (next_delta && l > 0) {
+            for (size_t i = 0; i < in_size; i++) {
+                next_delta[i] *= relu_derivative(mlp->activations[l][i]);
+            }
+        }
+
+        free(delta);
+        delta = next_delta;
+    }
+
+    free(delta);
+    return loss;
+}
+
+static int mlp_predict(ClassicalMLP* mlp, const float* input) {
+    mlp_forward(mlp, input);
+
+    size_t output_size = mlp->layer_sizes[mlp->num_layers - 1];
+    float* output = mlp->activations[mlp->num_layers - 1];
+
+    int prediction = 0;
+    float max_prob = output[0];
+    for (size_t i = 1; i < output_size; i++) {
+        if (output[i] > max_prob) {
+            max_prob = output[i];
+            prediction = (int)i;
+        }
+    }
+
+    return prediction;
+}
+
+static size_t get_memory_usage(void) {
+#ifdef __APPLE__
+    struct mach_task_basic_info info;
+    mach_msg_type_number_t size = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &size) == KERN_SUCCESS) {
+        return info.resident_size;
+    }
+#elif defined(__linux__)
+    FILE* fp = fopen("/proc/self/statm", "r");
+    if (fp) {
+        unsigned long size, resident;
+        if (fscanf(fp, "%lu %lu", &size, &resident) == 2) {
+            fclose(fp);
+            return resident * sysconf(_SC_PAGESIZE);
+        }
+        fclose(fp);
+    }
+#endif
+    return 0;
+}
+
 int quantum_pipeline_compare_classical(quantum_pipeline_handle_t pipeline,
                                       const float* data,
                                       const int* labels,
                                       size_t num_samples,
                                       float* results) {
-    (void)pipeline;
-    (void)data;
-    (void)labels;
-    (void)num_samples;
-
-    // Classical comparison - return placeholder results
-    if (results) {
-        results[0] = 0.0f;  // Classical accuracy (not implemented)
-        results[1] = 0.0f;  // Classical time
-        results[2] = 0.0f;  // Classical memory
+    if (!pipeline || !data || !labels || num_samples == 0 || !results) {
+        return QG_ERROR_INVALID_ARGUMENT;
     }
+
+    quantum_pipeline_state_t* state = (quantum_pipeline_state_t*)pipeline;
+
+    // Get dimensions from pipeline config
+    size_t input_dim = (size_t)state->config[QG_CONFIG_INPUT_DIM];
+    size_t output_dim = (size_t)state->config[QG_CONFIG_NUM_CLASSES];
+    size_t num_qubits = (size_t)state->config[QG_CONFIG_NUM_QUBITS];
+    size_t num_layers = (size_t)state->config[QG_CONFIG_NUM_LAYERS];
+    float learning_rate = state->config[QG_CONFIG_LEARNING_RATE];
+    size_t batch_size = (size_t)state->config[QG_CONFIG_BATCH_SIZE];
+
+    // Create a classical MLP with comparable capacity to the quantum circuit
+    // Quantum circuit has ~num_qubits * num_layers * 3 parameters
+    // Use hidden dimension to achieve similar parameter count
+    size_t quantum_params = num_qubits * num_layers * 3;
+    size_t hidden_dim = (size_t)sqrtf((float)quantum_params);
+    if (hidden_dim < 32) hidden_dim = 32;
+    if (hidden_dim > 256) hidden_dim = 256;
+
+    ClassicalMLP* mlp = create_classical_mlp(input_dim, hidden_dim, output_dim, 2);
+    if (!mlp) {
+        geometric_log_error("Failed to create classical MLP for comparison");
+        return QG_ERROR_MEMORY_ALLOCATION;
+    }
+
+    // Record start time and memory
+    size_t start_memory = get_memory_usage();
+    struct timespec start_time, end_time;
+    clock_gettime(CLOCK_MONOTONIC, &start_time);
+
+    // Convert one-hot labels back to class indices for comparison
+    int* class_labels = malloc(num_samples * sizeof(int));
+    if (!class_labels) {
+        destroy_classical_mlp(mlp);
+        return QG_ERROR_MEMORY_ALLOCATION;
+    }
+
+    for (size_t i = 0; i < num_samples; i++) {
+        class_labels[i] = 0;
+        for (size_t j = 0; j < output_dim; j++) {
+            if (labels[i * output_dim + j] > 0) {
+                class_labels[i] = (int)j;
+                break;
+            }
+        }
+    }
+
+    // Create float target buffer
+    float* target = malloc(output_dim * sizeof(float));
+    if (!target) {
+        free(class_labels);
+        destroy_classical_mlp(mlp);
+        return QG_ERROR_MEMORY_ALLOCATION;
+    }
+
+    // Training loop - use same number of epochs as quantum (default 10)
+    size_t num_epochs = 10;
+
+    for (size_t epoch = 0; epoch < num_epochs; epoch++) {
+        // Mini-batch SGD
+        for (size_t batch_start = 0; batch_start < num_samples; batch_start += batch_size) {
+            size_t batch_end = batch_start + batch_size;
+            if (batch_end > num_samples) batch_end = num_samples;
+
+            for (size_t i = batch_start; i < batch_end; i++) {
+                const float* sample = data + i * input_dim;
+
+                // Create one-hot target
+                memset(target, 0, output_dim * sizeof(float));
+                target[class_labels[i]] = 1.0f;
+
+                // Forward and backward pass
+                mlp_forward(mlp, sample);
+                mlp_backward(mlp, target, learning_rate);
+            }
+        }
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &end_time);
+    size_t end_memory = get_memory_usage();
+
+    // Calculate training time
+    double elapsed_time = (double)(end_time.tv_sec - start_time.tv_sec) +
+                         (double)(end_time.tv_nsec - start_time.tv_nsec) / 1e9;
+
+    // Evaluate accuracy on the same data (training accuracy for comparison)
+    size_t correct = 0;
+    for (size_t i = 0; i < num_samples; i++) {
+        const float* sample = data + i * input_dim;
+        int prediction = mlp_predict(mlp, sample);
+        if (prediction == class_labels[i]) {
+            correct++;
+        }
+    }
+    float accuracy = (float)correct / (float)num_samples;
+
+    // Calculate memory used (in MB)
+    float memory_mb = (float)(end_memory - start_memory) / (1024.0f * 1024.0f);
+    if (memory_mb < 0) memory_mb = 0;  // In case of measurement issues
+
+    // Add estimated MLP memory: weights + biases + activations
+    size_t mlp_memory = 0;
+    for (size_t i = 0; i < mlp->num_layers - 1; i++) {
+        mlp_memory += mlp->layer_sizes[i] * mlp->layer_sizes[i + 1] * sizeof(float);  // weights
+        mlp_memory += mlp->layer_sizes[i + 1] * sizeof(float);  // biases
+    }
+    for (size_t i = 0; i < mlp->num_layers; i++) {
+        mlp_memory += mlp->layer_sizes[i] * sizeof(float);  // activations
+    }
+    memory_mb += (float)mlp_memory / (1024.0f * 1024.0f);
+
+    // Store results
+    results[0] = accuracy;              // Classical accuracy
+    results[1] = (float)elapsed_time;   // Training time in seconds
+    results[2] = memory_mb;             // Memory usage in MB
+
+    geometric_log_info("Classical comparison: accuracy=%.4f, time=%.3fs, memory=%.2fMB",
+                       accuracy, elapsed_time, memory_mb);
+
+    // Cleanup
+    free(target);
+    free(class_labels);
+    destroy_classical_mlp(mlp);
 
     return QG_SUCCESS;
 }
@@ -882,6 +1447,305 @@ static int compute_gradients_finite_difference(quantum_pipeline_t* pipeline,
 }
 
 // Apply gradient clipping
+// ============================================================================
+// Quantum Fisher Information Matrix (QFIM) Natural Gradient
+// ============================================================================
+
+// Compute fidelity |<ψ(θ)|ψ(θ')>|² between two parameter configurations
+static float compute_state_fidelity(quantum_pipeline_t* pipeline,
+                                    const float* params1, const float* params2,
+                                    size_t num_params) {
+    // Get output dimension
+    size_t output_dim = (size_t)pipeline->state->config[QG_CONFIG_NUM_CLASSES];
+    float* probs1 = calloc(output_dim, sizeof(float));
+    float* probs2 = calloc(output_dim, sizeof(float));
+
+    if (!probs1 || !probs2) {
+        free(probs1);
+        free(probs2);
+        return 0.0f;
+    }
+
+    // Run circuit with params1 to get output probabilities
+    quantum_set_task_parameters(pipeline->state->learning_task, (float*)params1, num_params);
+    dist_pipeline_forward(pipeline, pipeline->cached_input, pipeline->current_batch_size);
+    if (pipeline->cached_output && pipeline->cached_output_size >= output_dim * sizeof(float)) {
+        memcpy(probs1, pipeline->cached_output, output_dim * sizeof(float));
+    }
+
+    // Run circuit with params2 to get output probabilities
+    quantum_set_task_parameters(pipeline->state->learning_task, (float*)params2, num_params);
+    dist_pipeline_forward(pipeline, pipeline->cached_input, pipeline->current_batch_size);
+    if (pipeline->cached_output && pipeline->cached_output_size >= output_dim * sizeof(float)) {
+        memcpy(probs2, pipeline->cached_output, output_dim * sizeof(float));
+    }
+
+    // Compute fidelity as |<ψ1|ψ2>|² ≈ Σ_i √(p1_i * p2_i)
+    // This is the Bhattacharyya coefficient for probability distributions
+    float fidelity = 0.0f;
+    for (size_t i = 0; i < output_dim; i++) {
+        if (probs1[i] > 0 && probs2[i] > 0) {
+            fidelity += sqrtf(probs1[i] * probs2[i]);
+        }
+    }
+    fidelity *= fidelity;  // Square for fidelity
+
+    free(probs1);
+    free(probs2);
+
+    return fidelity;
+}
+
+// Compute the Quantum Fisher Information Matrix using finite differences on fidelity
+// F_ij = -2 * ∂²F/∂θ_i∂θ_j where F = |<ψ(θ)|ψ(θ')>|² evaluated at θ'=θ
+static int compute_qfim(quantum_pipeline_t* pipeline, float* qfim, size_t num_params) {
+    if (!pipeline || !qfim || num_params == 0) return -1;
+
+    float* params = NULL;
+    size_t actual_params = 0;
+
+    if (!quantum_get_task_parameters(pipeline->state->learning_task, &params, &actual_params)) {
+        return -1;
+    }
+
+    if (actual_params != num_params) {
+        free(params);
+        return -1;
+    }
+
+    // Allocate shifted parameter arrays
+    float* params_pi = malloc(num_params * sizeof(float));
+    float* params_pj = malloc(num_params * sizeof(float));
+    float* params_pipj = malloc(num_params * sizeof(float));
+    float* params_minj = malloc(num_params * sizeof(float));
+
+    if (!params_pi || !params_pj || !params_pipj || !params_minj) {
+        free(params);
+        free(params_pi);
+        free(params_pj);
+        free(params_pipj);
+        free(params_minj);
+        return -1;
+    }
+
+    const float epsilon = 0.01f;  // Shift amount for QFIM estimation
+
+    // Initialize QFIM to zero
+    memset(qfim, 0, num_params * num_params * sizeof(float));
+
+    // Compute QFIM elements using finite differences on fidelity
+    // F_ij = -2 * (F(θ+εi+εj) - F(θ+εi-εj) - F(θ-εi+εj) + F(θ-εi-εj)) / (4ε²)
+    for (size_t i = 0; i < num_params; i++) {
+        for (size_t j = i; j < num_params; j++) {
+            // Reset all shifted params to original
+            memcpy(params_pipj, params, num_params * sizeof(float));
+            memcpy(params_pi, params, num_params * sizeof(float));
+            memcpy(params_pj, params, num_params * sizeof(float));
+            memcpy(params_minj, params, num_params * sizeof(float));
+
+            // θ + ε_i + ε_j
+            params_pipj[i] += epsilon;
+            params_pipj[j] += epsilon;
+
+            // θ + ε_i - ε_j
+            params_pi[i] += epsilon;
+            params_pi[j] -= epsilon;
+
+            // θ - ε_i + ε_j
+            params_pj[i] -= epsilon;
+            params_pj[j] += epsilon;
+
+            // θ - ε_i - ε_j
+            params_minj[i] -= epsilon;
+            params_minj[j] -= epsilon;
+
+            // Compute fidelities relative to original state
+            float f_pp = compute_state_fidelity(pipeline, params, params_pipj, num_params);
+            float f_pm = compute_state_fidelity(pipeline, params, params_pi, num_params);
+            float f_mp = compute_state_fidelity(pipeline, params, params_pj, num_params);
+            float f_mm = compute_state_fidelity(pipeline, params, params_minj, num_params);
+
+            // Second derivative via finite differences
+            // ∂²F/∂θ_i∂θ_j ≈ (f_pp - f_pm - f_mp + f_mm) / (4ε²)
+            float d2f = (f_pp - f_pm - f_mp + f_mm) / (4.0f * epsilon * epsilon);
+
+            // QFIM element: F_ij = -2 * ∂²ln(F)/∂θ_i∂θ_j ≈ -2 * ∂²F/∂θ_i∂θ_j (for F near 1)
+            // For numerical stability, use F_ij = 2(1 - F) expansion
+            float fij = -2.0f * d2f;
+
+            // Ensure positive semi-definiteness
+            if (i == j) {
+                fij = fabsf(fij) + 1e-6f;  // Diagonal must be positive
+            }
+
+            qfim[i * num_params + j] = fij;
+            if (i != j) {
+                qfim[j * num_params + i] = fij;  // Symmetric matrix
+            }
+        }
+    }
+
+    // Restore original parameters
+    quantum_set_task_parameters(pipeline->state->learning_task, params, num_params);
+
+    free(params);
+    free(params_pi);
+    free(params_pj);
+    free(params_pipj);
+    free(params_minj);
+
+    return 0;
+}
+
+// Invert QFIM with Tikhonov regularization: (F + λI)^{-1}
+static int invert_qfim_regularized(const float* qfim, float* qfim_inv,
+                                    size_t n, float lambda) {
+    if (!qfim || !qfim_inv || n == 0) return -1;
+
+    // Copy QFIM and add regularization
+    float* A = malloc(n * n * sizeof(float));
+    float* L = calloc(n * n, sizeof(float));  // Lower triangular for Cholesky
+
+    if (!A || !L) {
+        free(A);
+        free(L);
+        return -1;
+    }
+
+    for (size_t i = 0; i < n * n; i++) {
+        A[i] = qfim[i];
+    }
+
+    // Add Tikhonov regularization: A = F + λI
+    for (size_t i = 0; i < n; i++) {
+        A[i * n + i] += lambda;
+    }
+
+    // Cholesky decomposition: A = L * L^T
+    for (size_t i = 0; i < n; i++) {
+        for (size_t j = 0; j <= i; j++) {
+            float sum = A[i * n + j];
+
+            for (size_t k = 0; k < j; k++) {
+                sum -= L[i * n + k] * L[j * n + k];
+            }
+
+            if (i == j) {
+                if (sum <= 0) {
+                    // Not positive definite - increase regularization
+                    free(A);
+                    free(L);
+                    return invert_qfim_regularized(qfim, qfim_inv, n, lambda * 10.0f);
+                }
+                L[i * n + j] = sqrtf(sum);
+            } else {
+                L[i * n + j] = sum / L[j * n + j];
+            }
+        }
+    }
+
+    // Solve L * L^T * X = I for X = A^{-1}
+    // First solve L * Y = I for Y
+    float* Y = calloc(n * n, sizeof(float));
+    if (!Y) {
+        free(A);
+        free(L);
+        return -1;
+    }
+
+    for (size_t col = 0; col < n; col++) {
+        for (size_t i = 0; i < n; i++) {
+            float sum = (i == col) ? 1.0f : 0.0f;
+            for (size_t j = 0; j < i; j++) {
+                sum -= L[i * n + j] * Y[j * n + col];
+            }
+            Y[i * n + col] = sum / L[i * n + i];
+        }
+    }
+
+    // Then solve L^T * X = Y for X
+    for (size_t col = 0; col < n; col++) {
+        for (int i = (int)n - 1; i >= 0; i--) {
+            float sum = Y[i * n + col];
+            for (size_t j = i + 1; j < n; j++) {
+                sum -= L[j * n + i] * qfim_inv[j * n + col];
+            }
+            qfim_inv[i * n + col] = sum / L[i * n + i];
+        }
+    }
+
+    free(A);
+    free(L);
+    free(Y);
+
+    return 0;
+}
+
+// Natural gradient computation using QFIM
+static int compute_gradients_natural_gradient(quantum_pipeline_t* pipeline,
+                                               float* gradients) {
+    if (!pipeline || !gradients) return -1;
+
+    // First compute standard gradients using parameter shift
+    int result = compute_gradients_parameter_shift(pipeline, gradients);
+    if (result != 0) return result;
+
+    size_t num_params = pipeline->parameter_count;
+    if (num_params == 0) return -1;
+
+    // Allocate QFIM and its inverse
+    float* qfim = malloc(num_params * num_params * sizeof(float));
+    float* qfim_inv = malloc(num_params * num_params * sizeof(float));
+    float* natural_grads = malloc(num_params * sizeof(float));
+
+    if (!qfim || !qfim_inv || !natural_grads) {
+        free(qfim);
+        free(qfim_inv);
+        free(natural_grads);
+        return -1;
+    }
+
+    // Compute the Quantum Fisher Information Matrix
+    result = compute_qfim(pipeline, qfim, num_params);
+    if (result != 0) {
+        // Fall back to standard gradient if QFIM computation fails
+        geometric_log_warning("QFIM computation failed, using standard gradient");
+        free(qfim);
+        free(qfim_inv);
+        free(natural_grads);
+        return 0;
+    }
+
+    // Invert QFIM with regularization (λ = 0.01)
+    float regularization = 0.01f;
+    result = invert_qfim_regularized(qfim, qfim_inv, num_params, regularization);
+    if (result != 0) {
+        // Fall back to standard gradient
+        geometric_log_warning("QFIM inversion failed, using standard gradient");
+        free(qfim);
+        free(qfim_inv);
+        free(natural_grads);
+        return 0;
+    }
+
+    // Compute natural gradient: g_nat = F^{-1} * g
+    for (size_t i = 0; i < num_params; i++) {
+        natural_grads[i] = 0.0f;
+        for (size_t j = 0; j < num_params; j++) {
+            natural_grads[i] += qfim_inv[i * num_params + j] * gradients[j];
+        }
+    }
+
+    // Copy natural gradients back
+    memcpy(gradients, natural_grads, num_params * sizeof(float));
+
+    free(qfim);
+    free(qfim_inv);
+    free(natural_grads);
+
+    return 0;
+}
+
 static void clip_gradients(float* gradients, size_t num_params, float clip_value) {
     float norm = 0.0f;
     for (size_t i = 0; i < num_params; i++) {
@@ -950,9 +1814,8 @@ int dist_pipeline_backward(quantum_pipeline_t* pipeline) {
             break;
 
         case GRADIENT_METHOD_NATURAL_GRADIENT:
-            // Natural gradient requires Quantum Fisher Information Matrix
-            // Fall back to parameter shift for now
-            result = compute_gradients_parameter_shift(pipeline, grads);
+            // Natural gradient using Quantum Fisher Information Matrix
+            result = compute_gradients_natural_gradient(pipeline, grads);
             break;
 
         default:

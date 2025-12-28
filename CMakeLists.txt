@@ -299,6 +299,159 @@ endif()
 # =============================================================================
 set(QGT_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include)
 include_directories(${QGT_INCLUDE_DIR})
+include_directories(${CMAKE_BINARY_DIR}/include)
+
+# =============================================================================
+# Feature Detection Header Generation
+# =============================================================================
+# Set feature detection variables for qgtl_features.h
+
+# Platform detection for feature header (QGTL_ prefix for template)
+# Set defaults
+set(QGTL_PLATFORM_MACOS 0)
+set(QGTL_PLATFORM_LINUX 0)
+set(QGTL_PLATFORM_WINDOWS 0)
+
+if(QGT_PLATFORM_MACOS)
+    set(QGTL_PLATFORM_MACOS 1)
+elseif(QGT_PLATFORM_LINUX)
+    set(QGTL_PLATFORM_LINUX 1)
+elseif(QGT_PLATFORM_WINDOWS)
+    set(QGTL_PLATFORM_WINDOWS 1)
+endif()
+
+# Architecture for feature header
+set(QGTL_ARCH_ARM64 0)
+set(QGTL_ARCH_X86_64 0)
+
+if(QGT_ARCH_ARM64)
+    set(QGTL_ARCH_ARM64 1)
+elseif(QGT_ARCH_X86_64)
+    set(QGTL_ARCH_X86_64 1)
+endif()
+
+# SIMD capabilities for feature header
+set(QGTL_SIMD_NEON 0)
+set(QGTL_SIMD_AVX 0)
+set(QGTL_SIMD_AVX2 0)
+set(QGTL_SIMD_AVX512 0)
+set(QGTL_SIMD_FMA 0)
+
+# Set SIMD from detected capabilities
+if(QGT_HAS_AVX512F)
+    set(QGTL_SIMD_AVX512 1)
+endif()
+if(QGT_HAS_AVX2)
+    set(QGTL_SIMD_AVX2 1)
+endif()
+if(QGT_HAS_AVX)
+    set(QGTL_SIMD_AVX 1)
+endif()
+if(QGT_HAS_FMA)
+    set(QGTL_SIMD_FMA 1)
+endif()
+
+# Apple Silicon NEON
+if(QGT_ARCH_ARM64)
+    set(QGTL_SIMD_NEON 1)
+endif()
+
+# GPU features
+if(QGT_ENABLE_METAL)
+    set(QGTL_HAS_METAL 1)
+else()
+    set(QGTL_HAS_METAL 0)
+endif()
+
+if(QGT_ENABLE_CUDA)
+    set(QGTL_HAS_CUDA 1)
+else()
+    set(QGTL_HAS_CUDA 0)
+endif()
+
+# Distributed features
+if(QGT_ENABLE_MPI)
+    set(QGTL_HAS_MPI 1)
+else()
+    set(QGTL_HAS_MPI 0)
+endif()
+
+if(HWLOC_FOUND)
+    set(QGTL_HAS_HWLOC 1)
+else()
+    set(QGTL_HAS_HWLOC 0)
+endif()
+
+# External libraries
+if(CURL_FOUND)
+    set(QGTL_HAS_CURL 1)
+else()
+    set(QGTL_HAS_CURL 0)
+endif()
+
+if(JSON_C_FOUND)
+    set(QGTL_HAS_JSON_C 1)
+else()
+    set(QGTL_HAS_JSON_C 0)
+endif()
+
+if(ZLIB_FOUND)
+    set(QGTL_HAS_ZLIB 1)
+else()
+    set(QGTL_HAS_ZLIB 0)
+endif()
+
+if(BLAS_FOUND)
+    set(QGTL_HAS_BLAS 1)
+else()
+    set(QGTL_HAS_BLAS 0)
+endif()
+
+if(LAPACK_FOUND)
+    set(QGTL_HAS_LAPACK 1)
+else()
+    set(QGTL_HAS_LAPACK 0)
+endif()
+
+# On Apple, Accelerate provides BLAS/LAPACK
+if(APPLE)
+    set(QGTL_HAS_BLAS 1)
+    set(QGTL_HAS_LAPACK 1)
+endif()
+
+# Format parsers
+if(QEQASM_FOUND)
+    set(QGTL_HAS_QEQASM 1)
+else()
+    set(QGTL_HAS_QEQASM 0)
+endif()
+
+if(LIBQUIL_FOUND)
+    set(QGTL_HAS_LIBQUIL 1)
+else()
+    set(QGTL_HAS_LIBQUIL 0)
+endif()
+
+# Build configuration
+if(QGT_BUILD_SHARED)
+    set(QGTL_BUILD_SHARED 1)
+else()
+    set(QGTL_BUILD_SHARED 0)
+endif()
+
+if(QGT_BUILD_STATIC)
+    set(QGTL_BUILD_STATIC 1)
+else()
+    set(QGTL_BUILD_STATIC 0)
+endif()
+
+# Generate the features header
+file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/include/quantum_geometric/core)
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/quantum_geometric/core/qgtl_features.h.in
+    ${CMAKE_BINARY_DIR}/include/quantum_geometric/core/qgtl_features.h
+    @ONLY
+)
 
 # =============================================================================
 # Source Files Collection
@@ -430,7 +583,155 @@ endif()
 list(FILTER QGT_ALL_SOURCES EXCLUDE REGEX ".*\\.s$")
 
 # =============================================================================
-# Library Targets
+# Modular Build System (Optional)
+# =============================================================================
+# When QGT_MODULAR_BUILD is ON, builds separate libraries for each module
+# that can be linked independently. Otherwise, builds a single monolithic library.
+
+option(QGT_MODULAR_BUILD "Build separate library modules" OFF)
+
+if(QGT_MODULAR_BUILD)
+    message(STATUS "")
+    message(STATUS "Building modular libraries...")
+
+    # Helper function to apply platform-specific exclusions
+    function(qgt_filter_platform_sources SOURCES_VAR)
+        if(NOT APPLE)
+            list(FILTER ${SOURCES_VAR} EXCLUDE REGEX ".*_macos\\.c$")
+            list(FILTER ${SOURCES_VAR} EXCLUDE REGEX ".*accelerate.*\\.c$")
+        else()
+            list(FILTER ${SOURCES_VAR} EXCLUDE REGEX ".*/memory_optimization\\.c$")
+        endif()
+        if(NOT UNIX OR APPLE)
+            list(FILTER ${SOURCES_VAR} EXCLUDE REGEX ".*_linux\\.c$")
+        endif()
+        if(UNIX AND NOT APPLE)
+            list(FILTER ${SOURCES_VAR} EXCLUDE REGEX ".*/memory_optimization\\.c$")
+        endif()
+        set(${SOURCES_VAR} ${${SOURCES_VAR}} PARENT_SCOPE)
+    endfunction()
+
+    # Helper function to create a module library
+    function(qgt_add_module MODULE_NAME SOURCES)
+        if(QGT_BUILD_STATIC)
+            add_library(qgtl_${MODULE_NAME} STATIC ${SOURCES})
+            target_include_directories(qgtl_${MODULE_NAME} PUBLIC ${QGT_INCLUDE_DIR})
+            target_include_directories(qgtl_${MODULE_NAME} PUBLIC ${CMAKE_BINARY_DIR}/include)
+            set_target_properties(qgtl_${MODULE_NAME} PROPERTIES
+                ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib/modules
+            )
+        endif()
+    endfunction()
+
+    # Core module - basic tensor operations, memory, no external deps
+    set(QGT_CORE_MINIMAL_SOURCES ${QGT_CORE_SOURCES})
+    list(FILTER QGT_CORE_MINIMAL_SOURCES EXCLUDE REGEX ".*_gpu\\.c$")
+    list(FILTER QGT_CORE_MINIMAL_SOURCES EXCLUDE REGEX ".*_cuda\\.c$")
+    list(FILTER QGT_CORE_MINIMAL_SOURCES EXCLUDE REGEX ".*_metal\\.c$")
+    qgt_filter_platform_sources(QGT_CORE_MINIMAL_SOURCES)
+    qgt_add_module(core "${QGT_CORE_MINIMAL_SOURCES}")
+    if(TARGET qgtl_core)
+        target_link_libraries(qgtl_core PUBLIC Threads::Threads m)
+        if(APPLE)
+            target_link_libraries(qgtl_core PUBLIC ${ACCELERATE_FRAMEWORK})
+        elseif(BLAS_FOUND AND LAPACK_FOUND)
+            target_link_libraries(qgtl_core PUBLIC ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES})
+        endif()
+    endif()
+
+    # Physics module - quantum physics operations
+    qgt_add_module(physics "${QGT_PHYSICS_SOURCES}")
+    if(TARGET qgtl_physics)
+        target_link_libraries(qgtl_physics PUBLIC qgtl_core)
+    endif()
+
+    # Algorithms module - QAOA, Grover, etc.
+    qgt_add_module(algorithms "${QGT_ALGORITHMS_SOURCES}")
+    if(TARGET qgtl_algorithms)
+        target_link_libraries(qgtl_algorithms PUBLIC qgtl_core)
+    endif()
+
+    # Learning module - ML/training pipeline
+    qgt_add_module(learning "${QGT_LEARNING_SOURCES}")
+    if(TARGET qgtl_learning)
+        target_link_libraries(qgtl_learning PUBLIC qgtl_core)
+    endif()
+
+    # Hybrid module - quantum-classical integration
+    qgt_add_module(hybrid "${QGT_HYBRID_SOURCES}")
+    if(TARGET qgtl_hybrid)
+        target_link_libraries(qgtl_hybrid PUBLIC qgtl_core qgtl_learning)
+    endif()
+
+    # Simulator backend - always available, no cloud deps
+    set(QGT_HARDWARE_SIM_SOURCES ${QGT_HARDWARE_SOURCES})
+    list(FILTER QGT_HARDWARE_SIM_SOURCES EXCLUDE REGEX "quantum_ibm.*\\.c$")
+    list(FILTER QGT_HARDWARE_SIM_SOURCES EXCLUDE REGEX "quantum_dwave.*\\.c$")
+    list(FILTER QGT_HARDWARE_SIM_SOURCES EXCLUDE REGEX "quantum_rigetti.*\\.c$")
+    # Exclude files that require MPI
+    list(FILTER QGT_HARDWARE_SIM_SOURCES EXCLUDE REGEX "quantum_distributed_execution\\.c$")
+    list(FILTER QGT_HARDWARE_SIM_SOURCES EXCLUDE REGEX "quantum_error_correction\\.c$")
+    list(FILTER QGT_HARDWARE_SIM_SOURCES EXCLUDE REGEX "quantum_error_mitigation\\.c$")
+    # Exclude GPU-specific files (these have missing type definitions)
+    list(FILTER QGT_HARDWARE_SIM_SOURCES EXCLUDE REGEX "quantum_field_gpu\\.c$")
+    list(FILTER QGT_HARDWARE_SIM_SOURCES EXCLUDE REGEX ".*_gpu\\.c$")
+    qgt_filter_platform_sources(QGT_HARDWARE_SIM_SOURCES)
+    qgt_add_module(hardware_sim "${QGT_HARDWARE_SIM_SOURCES}")
+    if(TARGET qgtl_hardware_sim)
+        target_link_libraries(qgtl_hardware_sim PUBLIC qgtl_core)
+    endif()
+
+    # IBM Quantum backend - requires CURL
+    if(CURL_FOUND)
+        file(GLOB QGT_IBM_SOURCES "${CMAKE_SOURCE_DIR}/src/quantum_geometric/hardware/quantum_ibm*.c")
+        if(QGT_IBM_SOURCES)
+            qgt_add_module(hardware_ibm "${QGT_IBM_SOURCES}")
+            if(TARGET qgtl_hardware_ibm)
+                target_link_libraries(qgtl_hardware_ibm PUBLIC qgtl_core qgtl_hardware_sim ${CURL_LIBRARIES})
+            endif()
+        endif()
+    endif()
+
+    # D-Wave backend - requires CURL and JSON-C
+    if(CURL_FOUND AND JSON_C_FOUND)
+        file(GLOB QGT_DWAVE_SOURCES "${CMAKE_SOURCE_DIR}/src/quantum_geometric/hardware/quantum_dwave*.c")
+        if(QGT_DWAVE_SOURCES)
+            qgt_add_module(hardware_dwave "${QGT_DWAVE_SOURCES}")
+            if(TARGET qgtl_hardware_dwave)
+                target_link_libraries(qgtl_hardware_dwave PUBLIC qgtl_core ${CURL_LIBRARIES} ${JSON_C_LIBRARIES})
+            endif()
+        endif()
+
+        # Rigetti backend - requires CURL and JSON-C
+        file(GLOB QGT_RIGETTI_SOURCES "${CMAKE_SOURCE_DIR}/src/quantum_geometric/hardware/quantum_rigetti*.c")
+        if(QGT_RIGETTI_SOURCES)
+            qgt_add_module(hardware_rigetti "${QGT_RIGETTI_SOURCES}")
+            if(TARGET qgtl_hardware_rigetti)
+                target_link_libraries(qgtl_hardware_rigetti PUBLIC qgtl_core ${CURL_LIBRARIES} ${JSON_C_LIBRARIES})
+            endif()
+        endif()
+    endif()
+
+    # Distributed module - requires MPI
+    if(QGT_ENABLE_MPI)
+        set(QGT_DISTRIBUTED_MODULE_SOURCES ${QGT_DISTRIBUTED_SOURCES})
+        qgt_filter_platform_sources(QGT_DISTRIBUTED_MODULE_SOURCES)
+        qgt_add_module(distributed "${QGT_DISTRIBUTED_MODULE_SOURCES}")
+        if(TARGET qgtl_distributed)
+            target_link_libraries(qgtl_distributed PUBLIC qgtl_core MPI::MPI_C)
+            if(HWLOC_FOUND)
+                target_link_libraries(qgtl_distributed PUBLIC ${HWLOC_LIBRARIES})
+            endif()
+        endif()
+    endif()
+
+    # List all built modules
+    message(STATUS "Module libraries built in: ${CMAKE_BINARY_DIR}/lib/modules/")
+    message(STATUS "")
+endif()
+
+# =============================================================================
+# Library Targets (Monolithic)
 # =============================================================================
 
 # Static library
@@ -593,29 +894,68 @@ endif()
 install(DIRECTORY ${QGT_INCLUDE_DIR}/quantum_geometric
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
     FILES_MATCHING PATTERN "*.h"
+    PATTERN "*.h.in" EXCLUDE
+)
+
+# Install generated feature header
+install(FILES ${CMAKE_BINARY_DIR}/include/quantum_geometric/core/qgtl_features.h
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/quantum_geometric/core
 )
 
 # =============================================================================
 # Summary
 # =============================================================================
 message(STATUS "")
-message(STATUS "=== Quantum Geometric Tensor Library Configuration ===")
+message(STATUS "===============================================================")
+message(STATUS "  Quantum Geometric Tensor Library (QGTL) Configuration")
+message(STATUS "===============================================================")
+message(STATUS "")
 message(STATUS "Version: ${PROJECT_VERSION}")
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "Platform: ${CMAKE_SYSTEM_NAME} ${CMAKE_SYSTEM_PROCESSOR}")
 message(STATUS "")
-message(STATUS "Options:")
-message(STATUS "  Build tests: ${QGT_BUILD_TESTS}")
-message(STATUS "  Build shared lib: ${QGT_BUILD_SHARED}")
-message(STATUS "  Build static lib: ${QGT_BUILD_STATIC}")
-message(STATUS "  MPI support: ${QGT_ENABLE_MPI}")
-message(STATUS "  CUDA support: ${QGT_ENABLE_CUDA}")
-message(STATUS "  Metal support: ${QGT_ENABLE_METAL}")
-message(STATUS "  hwloc support: ${HWLOC_FOUND}")
+message(STATUS "Build Options:")
+message(STATUS "  Static library:     ${QGT_BUILD_STATIC}")
+message(STATUS "  Shared library:     ${QGT_BUILD_SHARED}")
+message(STATUS "  Modular build:      ${QGT_MODULAR_BUILD}")
+message(STATUS "  Tests:              ${QGT_BUILD_TESTS}")
 message(STATUS "")
+message(STATUS "GPU Acceleration:")
+message(STATUS "  CUDA:               ${QGT_ENABLE_CUDA}")
+message(STATUS "  Metal:              ${QGT_ENABLE_METAL}")
+message(STATUS "")
+message(STATUS "Distributed Computing:")
+message(STATUS "  MPI:                ${QGT_ENABLE_MPI}")
+message(STATUS "  hwloc:              ${HWLOC_FOUND}")
+message(STATUS "")
+message(STATUS "Hardware Backends:")
+if(CURL_FOUND)
+    message(STATUS "  IBM Quantum:        YES (CURL found)")
+else()
+    message(STATUS "  IBM Quantum:        NO (requires CURL)")
+endif()
+if(CURL_FOUND AND JSON_C_FOUND)
+    message(STATUS "  D-Wave:             YES (CURL + JSON-C found)")
+    message(STATUS "  Rigetti:            YES (CURL + JSON-C found)")
+else()
+    message(STATUS "  D-Wave:             NO (requires CURL + JSON-C)")
+    message(STATUS "  Rigetti:            NO (requires CURL + JSON-C)")
+endif()
+message(STATUS "  Simulator:          YES (always available)")
+message(STATUS "")
+message(STATUS "External Libraries:")
+message(STATUS "  CURL:               ${CURL_FOUND}")
+message(STATUS "  JSON-C:             ${JSON_C_FOUND}")
+message(STATUS "  zlib:               ${ZLIB_FOUND}")
 if(APPLE)
-    message(STATUS "Frameworks: Accelerate")
+    message(STATUS "  BLAS/LAPACK:        YES (Accelerate framework)")
+else()
+    message(STATUS "  BLAS:               ${BLAS_FOUND}")
+    message(STATUS "  LAPACK:             ${LAPACK_FOUND}")
 endif()
 message(STATUS "")
-message(STATUS "Source files: ${QGT_ALL_SOURCES}")
+message(STATUS "Feature header generated at:")
+message(STATUS "  ${CMAKE_BINARY_DIR}/include/quantum_geometric/core/qgtl_features.h")
+message(STATUS "")
+message(STATUS "===============================================================")
 message(STATUS "")
