@@ -2378,3 +2378,135 @@ static void local_multiply_matrices(double* C, const double* A, const double* B,
         }
     }
 }
+
+// Include for quantum_result type
+#include "quantum_geometric/core/quantum_circuit.h"
+
+/**
+ * Create a new quantum result structure.
+ * All fields are initialized to zero/NULL for safe cleanup.
+ */
+quantum_result* create_quantum_result(void) {
+    quantum_result* result = calloc(1, sizeof(quantum_result));
+    if (!result) {
+        return NULL;
+    }
+
+    // All fields initialized to zero by calloc:
+    // result->measurements = NULL
+    // result->num_measurements = 0
+    // result->probabilities = NULL
+    // result->shots = 0
+    // result->backend_data = NULL
+
+    return result;
+}
+
+/**
+ * Clean up a quantum result structure and free all allocated memory.
+ * Safe to call with NULL pointer.
+ */
+void cleanup_quantum_result(quantum_result* result) {
+    if (!result) {
+        return;
+    }
+
+    // Free dynamically allocated arrays
+    if (result->measurements) {
+        free(result->measurements);
+        result->measurements = NULL;
+    }
+
+    if (result->probabilities) {
+        free(result->probabilities);
+        result->probabilities = NULL;
+    }
+
+    // backend_data cleanup: The backend is responsible for providing a cleanup
+    // function for backend-specific data. We set to NULL here but the actual
+    // cleanup should be done by the backend before calling this function.
+    // This is documented in the API - backends must clean their own data.
+    result->backend_data = NULL;
+
+    result->num_measurements = 0;
+    result->shots = 0;
+
+    free(result);
+}
+
+/**
+ * Process raw measurement data into a quantum result structure.
+ * Allocates memory for measurements array if needed.
+ *
+ * @param result The result structure to populate
+ * @param raw_measurements Array of raw measurement values
+ * @param num_measurements Number of measurements in the array
+ * @return QGT_SUCCESS on success, error code otherwise
+ */
+qgt_error_t process_measurement_results(quantum_result* result,
+                                       const double* raw_measurements,
+                                       size_t num_measurements) {
+    if (!result) {
+        return QGT_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (num_measurements == 0) {
+        // Valid case: no measurements
+        result->num_measurements = 0;
+        return QGT_SUCCESS;
+    }
+
+    if (!raw_measurements) {
+        return QGT_ERROR_INVALID_ARGUMENT;
+    }
+
+    // Free existing measurements if any
+    if (result->measurements) {
+        free(result->measurements);
+        result->measurements = NULL;
+    }
+
+    // Allocate new measurements array
+    result->measurements = malloc(num_measurements * sizeof(double));
+    if (!result->measurements) {
+        result->num_measurements = 0;
+        return QGT_ERROR_ALLOCATION_FAILED;
+    }
+
+    // Copy measurement data
+    memcpy(result->measurements, raw_measurements, num_measurements * sizeof(double));
+    result->num_measurements = num_measurements;
+
+    // Allocate probabilities array (same size as measurements)
+    if (result->probabilities) {
+        free(result->probabilities);
+    }
+    result->probabilities = calloc(num_measurements, sizeof(double));
+    if (!result->probabilities) {
+        // Cleanup and fail
+        free(result->measurements);
+        result->measurements = NULL;
+        result->num_measurements = 0;
+        return QGT_ERROR_ALLOCATION_FAILED;
+    }
+
+    // Compute probabilities from measurements
+    // For standard quantum measurements, normalize to get probability distribution
+    double total = 0.0;
+    for (size_t i = 0; i < num_measurements; i++) {
+        // Measurements are typically counts or raw values
+        double val = raw_measurements[i];
+        if (val < 0) val = 0;  // Clamp negative values
+        result->probabilities[i] = val;
+        total += val;
+    }
+
+    // Normalize to probabilities if total > 0
+    if (total > 0) {
+        for (size_t i = 0; i < num_measurements; i++) {
+            result->probabilities[i] /= total;
+        }
+    }
+
+    return QGT_SUCCESS;
+}

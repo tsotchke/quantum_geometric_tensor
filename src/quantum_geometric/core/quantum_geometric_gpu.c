@@ -2,13 +2,38 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Metal device singleton to prevent repeated device creation and leaks
+// MTLCreateSystemDefaultDevice() returns a retained device that must be
+// released. Creating a new one on every call leaks memory.
+#ifdef QGT_ENABLE_METAL
+static MTLDevice* g_metal_device = NULL;
+static bool g_metal_device_initialized = false;
+
+static MTLDevice* get_metal_device(void) {
+    if (!g_metal_device_initialized) {
+        g_metal_device = MTLCreateSystemDefaultDevice();
+        g_metal_device_initialized = true;
+    }
+    return g_metal_device;
+}
+
+// Call this during cleanup to release the Metal device
+static void release_metal_device(void) {
+    if (g_metal_device) {
+        [g_metal_device release];
+        g_metal_device = NULL;
+        g_metal_device_initialized = false;
+    }
+}
+#endif
+
 qgt_error_t gpu_malloc(void** ptr, size_t size) {
     if (!ptr || size == 0) {
         return QGT_ERROR_INVALID_PARAMETER;
     }
 
     #ifdef QGT_ENABLE_METAL
-    MTLDevice* device = MTLCreateSystemDefaultDevice();
+    MTLDevice* device = get_metal_device();
     if (device) {
         *ptr = [device newBufferWithLength:size options:MTLResourceStorageModeShared].contents;
         if (!*ptr) {
@@ -41,7 +66,7 @@ qgt_error_t gpu_free(void* ptr) {
     }
 
     #ifdef QGT_ENABLE_METAL
-    MTLDevice* device = MTLCreateSystemDefaultDevice();
+    MTLDevice* device = get_metal_device();
     if (device) {
         MTLBuffer* buffer = (__bridge MTLBuffer*)ptr;
         [buffer release];
@@ -66,7 +91,7 @@ void gpu_free_pooled(MemoryPool* pool, void* ptr) {
     if (!pool || !ptr) return;
 
     #ifdef QGT_ENABLE_METAL
-    MTLDevice* device = MTLCreateSystemDefaultDevice();
+    MTLDevice* device = get_metal_device();
     if (device) {
         MTLBuffer* buffer = (__bridge MTLBuffer*)ptr;
         [buffer release];
@@ -89,7 +114,7 @@ qgt_error_t gpu_memcpy_host_to_device(void* dst, const void* src, size_t size) {
     }
 
     #ifdef QGT_ENABLE_METAL
-    MTLDevice* device = MTLCreateSystemDefaultDevice();
+    MTLDevice* device = get_metal_device();
     if (device) {
         MTLBuffer* buffer = (__bridge MTLBuffer*)dst;
         void* contents = [buffer contents];
@@ -117,7 +142,7 @@ qgt_error_t gpu_memcpy_device_to_host(void* dst, const void* src, size_t size) {
     }
 
     #ifdef QGT_ENABLE_METAL
-    MTLDevice* device = MTLCreateSystemDefaultDevice();
+    MTLDevice* device = get_metal_device();
     if (device) {
         MTLBuffer* buffer = (__bridge MTLBuffer*)src;
         void* contents = [buffer contents];
@@ -168,7 +193,7 @@ int qg_gpu_init(void) {
 
     // Initialize Metal
 #ifdef QGT_ENABLE_METAL
-    MTLDevice* device = MTLCreateSystemDefaultDevice();
+    MTLDevice* device = get_metal_device();
     if (device) {
         gpu_state.num_devices = 1;
         gpu_state.devices = calloc(1, sizeof(gpu_device_state_t));
@@ -295,6 +320,7 @@ void qg_gpu_cleanup(void) {
     // Clean up device resources
     #ifdef QGT_ENABLE_METAL
     qgt_metal_cleanup();
+    release_metal_device();  // Release singleton Metal device
     #endif
 
     #ifdef QGT_ENABLE_CUDA

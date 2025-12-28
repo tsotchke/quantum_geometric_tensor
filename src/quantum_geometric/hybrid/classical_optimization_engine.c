@@ -107,23 +107,35 @@ OptimizationContext* init_classical_optimizer(optimizer_type_t type,
     ctx->gradients = aligned_alloc(64, num_parameters * sizeof(double));
     ctx->momentum = aligned_alloc(64, num_parameters * sizeof(double));
     ctx->velocity = aligned_alloc(64, num_parameters * sizeof(double));
-    
+
     if (!ctx->gradients || !ctx->momentum || !ctx->velocity) {
-        cleanup_classical_optimizer(ctx);
+        // SAFE CLEANUP: Free only what was successfully allocated, then free ctx
+        // Do NOT call cleanup_classical_optimizer as ctx->optimizer_state is not set yet
+        free(ctx->gradients);  // free(NULL) is safe
+        free(ctx->momentum);
+        free(ctx->velocity);
+        free(ctx);
         free(ext);
         return NULL;
     }
-    
+
     // Initialize extension
     ext->iteration = 0;
     ext->converged = false;
     ext->parameters = aligned_alloc(64, num_parameters * sizeof(double));
     ext->momentum_buffer = aligned_alloc(64, num_parameters * sizeof(double));
-    
+
     if (!ext->parameters || !ext->momentum_buffer) {
-        cleanup_classical_optimizer(ctx);
+        // SAFE CLEANUP: Free all allocated resources carefully to avoid double-free
+        // Free ctx fields
+        free(ctx->gradients);
+        free(ctx->momentum);
+        free(ctx->velocity);
+        // Free ext fields (free(NULL) is safe per C standard)
         free(ext->parameters);
         free(ext->momentum_buffer);
+        // Free structures
+        free(ctx);
         free(ext);
         return NULL;
     }

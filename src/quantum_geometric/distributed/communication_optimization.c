@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <unistd.h>
 #include <pthread.h>
 #include <time.h>
@@ -46,6 +47,50 @@ static inline int LZ4_compressBound(int inputSize) { return inputSize; }
 #define MAX_PENDING_REQUESTS 32
 #define AGGREGATION_TIMEOUT 100  // ms
 #define MAX_AGGREGATION_SIZE (1024 * 1024)  // 1MB
+
+// RDMA buffer tracking to prevent mmap/malloc confusion
+#define MAX_TRACKED_RDMA_BUFFERS 64
+
+typedef struct {
+    void* buffer;
+    size_t size;
+    bool is_mmap;
+} RDMABufferInfo;
+
+static RDMABufferInfo g_rdma_buffers[MAX_TRACKED_RDMA_BUFFERS];
+static size_t g_num_rdma_buffers = 0;
+static pthread_mutex_t g_rdma_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void track_rdma_buffer(void* buffer, size_t size, bool is_mmap) {
+    pthread_mutex_lock(&g_rdma_mutex);
+    if (g_num_rdma_buffers < MAX_TRACKED_RDMA_BUFFERS) {
+        g_rdma_buffers[g_num_rdma_buffers].buffer = buffer;
+        g_rdma_buffers[g_num_rdma_buffers].size = size;
+        g_rdma_buffers[g_num_rdma_buffers].is_mmap = is_mmap;
+        g_num_rdma_buffers++;
+    }
+    pthread_mutex_unlock(&g_rdma_mutex);
+}
+
+static bool untrack_rdma_buffer(void* buffer, size_t* size_out, bool* is_mmap_out) {
+    pthread_mutex_lock(&g_rdma_mutex);
+    for (size_t i = 0; i < g_num_rdma_buffers; i++) {
+        if (g_rdma_buffers[i].buffer == buffer) {
+            *size_out = g_rdma_buffers[i].size;
+            *is_mmap_out = g_rdma_buffers[i].is_mmap;
+            // Remove by shifting
+            if (i < g_num_rdma_buffers - 1) {
+                memmove(&g_rdma_buffers[i], &g_rdma_buffers[i + 1],
+                       (g_num_rdma_buffers - i - 1) * sizeof(RDMABufferInfo));
+            }
+            g_num_rdma_buffers--;
+            pthread_mutex_unlock(&g_rdma_mutex);
+            return true;
+        }
+    }
+    pthread_mutex_unlock(&g_rdma_mutex);
+    return false;
+}
 
 // Forward declarations for helper functions
 static double get_time_ms(void);
@@ -541,6 +586,7 @@ void* allocate_rdma_buffer(size_t size) {
     // Requirements: Page-aligned, locked in physical memory, registered
 
     void* buffer = NULL;
+    bool is_mmap = false;
 
     // Use mmap for page-aligned allocation with MAP_LOCKED if available
 #ifdef __linux__
@@ -554,11 +600,13 @@ void* allocate_rdma_buffer(size_t size) {
     }
 
     if (buffer != MAP_FAILED) {
+        is_mmap = true;
         // Lock memory to prevent paging
         if (mlock(buffer, size) != 0) {
             // mlock failed but continue with warning
             // The buffer is still usable, just may not be optimal for RDMA
         }
+        track_rdma_buffer(buffer, size, is_mmap);
         return buffer;
     }
 #endif
@@ -572,31 +620,42 @@ void* allocate_rdma_buffer(size_t size) {
 #ifdef __linux__
         mlock(buffer, size);
 #endif
+        track_rdma_buffer(buffer, size, false);  // Not mmap
         return buffer;
     }
 
     // Last resort: regular aligned allocation
-    return aligned_alloc(64, size);
+    buffer = aligned_alloc(64, size);
+    if (buffer) {
+        track_rdma_buffer(buffer, size, false);  // Not mmap
+    }
+    return buffer;
 }
 
 void free_rdma_buffer(void* buffer) {
     if (!buffer) return;
 
-    // For mmap'd buffers, we need munmap. For malloc'd, we use free.
-    // Since we can't easily tell which was used, we use a simple heuristic:
-    // If the pointer is page-aligned and we have RDMA support, assume mmap
-    size_t page_size = sysconf(_SC_PAGESIZE);
-    if (page_size == 0) page_size = 4096;
+    // Look up the buffer in our tracking table to determine the correct free method
+    size_t size = 0;
+    bool is_mmap = false;
 
-    if (((uintptr_t)buffer % page_size) == 0 && check_zero_copy_support()) {
+    if (untrack_rdma_buffer(buffer, &size, &is_mmap)) {
+        // Found in tracking table - use the correct free method
+        if (is_mmap) {
 #ifdef __linux__
-        munlock(buffer, MAX_BUFFER_SIZE);  // Unlock first
-        munmap(buffer, MAX_BUFFER_SIZE);   // Then unmap
-        return;
+            munlock(buffer, size);
+            munmap(buffer, size);
 #endif
+        } else {
+            free(buffer);
+        }
+    } else {
+        // Buffer not in tracking table - this is an error condition
+        // but we must not crash. Log and use free as fallback (safest guess)
+        // In production, this indicates a programming error.
+        fprintf(stderr, "WARNING: free_rdma_buffer called on untracked buffer %p\n", buffer);
+        free(buffer);
     }
-
-    free(buffer);
 }
 
 static double get_time_ms(void) {

@@ -377,7 +377,10 @@ qgt_error_t geometric_tensor_clone(quantum_geometric_tensor_t** dest,
     (*dest)->is_unitary = src->is_unitary;
     (*dest)->is_hermitian = src->is_hermitian;
     (*dest)->hardware = src->hardware;
-    (*dest)->auxiliary_data = src->auxiliary_data;
+    // SAFETY: Do NOT shallow copy auxiliary_data - this causes use-after-free
+    // when either tensor is destroyed. Set to NULL; caller must explicitly
+    // copy auxiliary_data if needed.
+    (*dest)->auxiliary_data = NULL;
     (*dest)->total_elements = src->total_elements;
     (*dest)->aligned_elements = src->aligned_elements;
 

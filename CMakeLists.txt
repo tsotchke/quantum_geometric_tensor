@@ -374,6 +374,11 @@ file(GLOB QGT_SUPERCOMPUTER_SOURCES
     ${CMAKE_SOURCE_DIR}/src/quantum_geometric/supercomputer/*.c
 )
 
+# Algorithms module sources (QAOA, Grover, VQE, etc.)
+file(GLOB QGT_ALGORITHMS_SOURCES
+    ${CMAKE_SOURCE_DIR}/src/quantum_geometric/algorithms/*.c
+)
+
 # Combine all sources
 set(QGT_ALL_SOURCES
     ${QGT_CORE_SOURCES}
@@ -386,6 +391,7 @@ set(QGT_ALL_SOURCES
     ${QGT_MONITORING_SOURCES}
     ${QGT_CONFIG_SOURCES}
     ${QGT_SUPERCOMPUTER_SOURCES}
+    ${QGT_ALGORITHMS_SOURCES}
 )
 
 # Platform-specific exclusions

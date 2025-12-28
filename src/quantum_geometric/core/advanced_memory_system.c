@@ -165,29 +165,48 @@ void destroy_memory_system(advanced_memory_system_t* system) {
     
     // Only clean up if this is the last reference
     if (get_global_memory_system() != system) {
-        // Clean up the memory pool directly
-        for (size_t i = 0; i < system->pool.num_layouts; i++) {
-#ifdef __linux__
-            numa_free(system->pool.layouts[i].base_ptr,
-                     system->pool.layouts[i].total_size);
-#else
-            free(system->pool.layouts[i].base_ptr);
-#endif
-        }
-        
-        // Clean up buffers
+        // Clean up buffers FIRST (reverse of allocation order)
+        // Buffer contents in reverse order: quantum_ptr, gpu_ptr, cpu_ptr
         for (size_t i = 0; i < system->pool.num_buffers; i++) {
-            if (system->pool.buffers[i].gpu_ptr)
-                free(system->pool.buffers[i].gpu_ptr);
-            if (system->pool.buffers[i].cpu_ptr)
-                free(system->pool.buffers[i].cpu_ptr);
-            if (system->pool.buffers[i].quantum_ptr)
+            if (system->pool.buffers[i].quantum_ptr) {
                 free(system->pool.buffers[i].quantum_ptr);
+                system->pool.buffers[i].quantum_ptr = NULL;
+            }
+            if (system->pool.buffers[i].gpu_ptr) {
+                free(system->pool.buffers[i].gpu_ptr);
+                system->pool.buffers[i].gpu_ptr = NULL;
+            }
+            if (system->pool.buffers[i].cpu_ptr) {
+                free(system->pool.buffers[i].cpu_ptr);
+                system->pool.buffers[i].cpu_ptr = NULL;
+            }
         }
-        free(system->pool.fast_path_cache);
-        free(system->pool.layouts);
+
+        // Clean up layout contents
+        for (size_t i = 0; i < system->pool.num_layouts; i++) {
+            if (system->pool.layouts[i].base_ptr) {
+#ifdef __linux__
+                numa_free(system->pool.layouts[i].base_ptr,
+                         system->pool.layouts[i].total_size);
+#else
+                free(system->pool.layouts[i].base_ptr);
+#endif
+                system->pool.layouts[i].base_ptr = NULL;
+            }
+        }
+
+        // Free container arrays in reverse allocation order: buffers, layouts, fast_path_cache
         free(system->pool.buffers);
-        
+        system->pool.buffers = NULL;
+        system->pool.num_buffers = 0;
+
+        free(system->pool.layouts);
+        system->pool.layouts = NULL;
+        system->pool.num_layouts = 0;
+
+        free(system->pool.fast_path_cache);
+        system->pool.fast_path_cache = NULL;
+
         free(system);
     }
 }
@@ -485,32 +504,52 @@ void advanced_destroy_memory_pool(advanced_memory_system_t* system, void* pool_p
         printf("DEBUG: Invalid arguments to destroy_memory_pool\n");
         return;
     }
-    
+
     // Cast to the correct type and destroy
     MemoryPool* pool = (MemoryPool*)pool_ptr;
-    
-    // Clean up geometric layouts
-    for (size_t i = 0; i < pool->num_layouts; i++) {
-#ifdef __linux__
-        numa_free(pool->layouts[i].base_ptr,
-                 pool->layouts[i].total_size);
-#else
-        free(pool->layouts[i].base_ptr);
-#endif
-    }
-    
-    // Clean up buffers
+
+    // Clean up buffers FIRST (reverse of allocation order)
+    // Buffer contents in reverse order: quantum_ptr, gpu_ptr, cpu_ptr
     for (size_t i = 0; i < pool->num_buffers; i++) {
-        if (pool->buffers[i].gpu_ptr)
-            free(pool->buffers[i].gpu_ptr);
-        if (pool->buffers[i].cpu_ptr)
-            free(pool->buffers[i].cpu_ptr);
-        if (pool->buffers[i].quantum_ptr)
+        if (pool->buffers[i].quantum_ptr) {
             free(pool->buffers[i].quantum_ptr);
+            pool->buffers[i].quantum_ptr = NULL;
+        }
+        if (pool->buffers[i].gpu_ptr) {
+            free(pool->buffers[i].gpu_ptr);
+            pool->buffers[i].gpu_ptr = NULL;
+        }
+        if (pool->buffers[i].cpu_ptr) {
+            free(pool->buffers[i].cpu_ptr);
+            pool->buffers[i].cpu_ptr = NULL;
+        }
     }
-    free(pool->fast_path_cache);
-    free(pool->layouts);
+
+    // Clean up layout contents
+    for (size_t i = 0; i < pool->num_layouts; i++) {
+        if (pool->layouts[i].base_ptr) {
+#ifdef __linux__
+            numa_free(pool->layouts[i].base_ptr,
+                     pool->layouts[i].total_size);
+#else
+            free(pool->layouts[i].base_ptr);
+#endif
+            pool->layouts[i].base_ptr = NULL;
+        }
+    }
+
+    // Free container arrays in reverse allocation order: buffers, layouts, fast_path_cache
     free(pool->buffers);
+    pool->buffers = NULL;
+    pool->num_buffers = 0;
+
+    free(pool->layouts);
+    pool->layouts = NULL;
+    pool->num_layouts = 0;
+
+    free(pool->fast_path_cache);
+    pool->fast_path_cache = NULL;
+
     free(pool);
 }
 

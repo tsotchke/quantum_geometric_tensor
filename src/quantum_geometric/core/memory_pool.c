@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdatomic.h>
+#include <pthread.h>
 
 // Magic number for validation
 #define BLOCK_MAGIC 0xDEADBEEF
@@ -11,15 +12,79 @@
 static __thread ThreadCache thread_cache = {0};
 static __thread bool thread_cache_initialized = false;
 
+// Thread-specific key for automatic cleanup when threads exit
+static pthread_key_t thread_cache_key;
+static pthread_once_t thread_cache_key_once = PTHREAD_ONCE_INIT;
+static atomic_bool thread_cache_key_created = false;
+
 // Size class lookup table
 static _Atomic(size_t) size_class_table[QG_NUM_SIZE_CLASSES];
 static atomic_bool size_classes_initialized = false;
 
-// Initialize thread cache
+// Forward declaration for thread destructor
+static void thread_cache_destructor(void* arg);
+
+// Create the thread-specific key for cleanup
+static void create_thread_cache_key(void) {
+    if (pthread_key_create(&thread_cache_key, thread_cache_destructor) == 0) {
+        atomic_store(&thread_cache_key_created, true);
+    } else {
+        geometric_log_error("Failed to create thread cache key");
+    }
+}
+
+// Thread destructor - called automatically when a thread exits
+// This properly frees both the cached memory blocks AND the entry structures
+static void thread_cache_destructor(void* arg) {
+    (void)arg;  // Unused, we use thread-local storage directly
+
+    if (!thread_cache_initialized) {
+        return;
+    }
+
+    // Clean up all cached entries for this thread
+    for (int i = 0; i < QG_NUM_SIZE_CLASSES; i++) {
+        ThreadCacheEntry* entry = thread_cache.entries[i];
+        while (entry) {
+            ThreadCacheEntry* next = entry->next;
+
+            // CRITICAL FIX: Free the cached memory block itself, not just the entry
+            if (entry->ptr) {
+                // The cached ptr points to block->data, we need to get the Block header
+                // and free the entire block
+                Block* block = (Block*)((uintptr_t)((char*)entry->ptr - sizeof(Block)) & ~(QG_POOL_ALIGNMENT - 1));
+                if (block->magic == BLOCK_MAGIC) {
+                    free(block);
+                } else {
+                    // If magic doesn't match, it might be a raw allocation
+                    free(entry->ptr);
+                }
+            }
+
+            // Free the entry structure itself
+            free(entry);
+            entry = next;
+        }
+        thread_cache.entries[i] = NULL;
+        thread_cache.count[i] = 0;
+    }
+
+    thread_cache_initialized = false;
+}
+
+// Initialize thread cache with proper cleanup registration
 static void init_thread_cache(void) {
     if (!thread_cache_initialized) {
+        // Ensure thread-specific key is created (once per process)
+        pthread_once(&thread_cache_key_once, create_thread_cache_key);
+
         memset(&thread_cache, 0, sizeof(ThreadCache));
         thread_cache_initialized = true;
+
+        // Register this thread for cleanup when it exits
+        if (atomic_load(&thread_cache_key_created)) {
+            pthread_setspecific(thread_cache_key, (void*)1);  // Non-NULL to trigger destructor
+        }
     }
 }
 
@@ -79,19 +144,32 @@ static void init_lookup_table(void) {
 }
 
 // Optimized size class lookup using power-of-2 table
+// SAFETY: Always returns a valid index in range [0, QG_NUM_SIZE_CLASSES-1]
 static uint16_t get_size_class(size_t size) {
     if (!atomic_load_explicit(&lookup_table_initialized, memory_order_acquire)) {
         init_lookup_table();
     }
-    
-    if (size <= 8192) {  // Handle common case quickly
-        return size_class_lookup[(size + 31) >> 5];
+
+    // Handle zero size edge case
+    if (size == 0) {
+        return 0;
     }
-    
+
+    if (size <= 8192) {  // Handle common case quickly
+        uint16_t result = size_class_lookup[(size + 31) >> 5];
+        // Bounds check for lookup table result
+        return (result < QG_NUM_SIZE_CLASSES) ? result : (QG_NUM_SIZE_CLASSES - 1);
+    }
+
     // Fall back to binary search for large sizes
     uint16_t left = size_class_lookup[255];
     uint16_t right = QG_NUM_SIZE_CLASSES - 1;
-    
+
+    // Ensure left is valid before binary search
+    if (left >= QG_NUM_SIZE_CLASSES) {
+        left = QG_NUM_SIZE_CLASSES - 1;
+    }
+
     while (left < right) {
         uint16_t mid = left + ((right - left) >> 1);
         if (atomic_load_explicit(&size_class_table[mid], memory_order_acquire) < size) {
@@ -100,7 +178,14 @@ static uint16_t get_size_class(size_t size) {
             right = mid;
         }
     }
-    
+
+    // CRITICAL BOUNDS CHECK: Ensure we never return out-of-bounds index
+    // This prevents buffer overflow when used as pool->size_classes[size_class]
+    if (left >= QG_NUM_SIZE_CLASSES) {
+        geometric_log_error("Size class overflow for size %zu, clamping to max class", size);
+        return QG_NUM_SIZE_CLASSES - 1;
+    }
+
     return left;
 }
 
@@ -529,12 +614,26 @@ void destroy_memory_pool(MemoryPool* pool) {
     }
     pthread_mutex_unlock(&pool->mutex);
     
-    // Cleanup thread caches
+    // Cleanup thread caches - MUST free both cached blocks AND entry structures
     if (thread_cache_initialized) {
         for (int i = 0; i < QG_NUM_SIZE_CLASSES; i++) {
             ThreadCacheEntry* entry = thread_cache.entries[i];
             while (entry) {
                 ThreadCacheEntry* next = entry->next;
+
+                // CRITICAL FIX: Free the cached memory block, not just the entry
+                if (entry->ptr) {
+                    // Get the Block header from the data pointer
+                    Block* cached_block = (Block*)((uintptr_t)((char*)entry->ptr - sizeof(Block)) & ~(QG_POOL_ALIGNMENT - 1));
+                    if (cached_block->magic == BLOCK_MAGIC) {
+                        free(cached_block);
+                    } else {
+                        // Fallback if magic doesn't match
+                        free(entry->ptr);
+                    }
+                }
+
+                // Free the entry structure itself
                 free(entry);
                 entry = next;
             }

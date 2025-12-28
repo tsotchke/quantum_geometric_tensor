@@ -23,6 +23,29 @@
 #include <float.h>
 
 // ============================================================================
+// D-Wave SAPI API Support (auto-detected)
+// ============================================================================
+
+#ifdef __has_include
+#if __has_include(<curl/curl.h>)
+#define DWAVE_HAS_CURL 1
+#include <curl/curl.h>
+#endif
+#endif
+
+#ifndef DWAVE_HAS_CURL
+#define DWAVE_HAS_CURL 0
+#endif
+
+// D-Wave SAPI API endpoints
+#define DWAVE_SAPI_URL "https://cloud.dwavesys.com/sapi/v2"
+#define DWAVE_PROBLEMS_ENDPOINT DWAVE_SAPI_URL "/problems"
+#define DWAVE_SOLVERS_ENDPOINT DWAVE_SAPI_URL "/solvers/remote"
+
+// API timeout in seconds
+#define DWAVE_API_TIMEOUT 120
+
+// ============================================================================
 // Constants for D-Wave Advantage (Pegasus Topology)
 // ============================================================================
 
@@ -106,6 +129,16 @@ typedef struct {
 
     // Random state for reproducibility
     unsigned int random_seed;
+
+    // D-Wave SAPI API state
+    char* api_token;               // D-Wave API token
+    bool api_available;            // True if API connection succeeded
+    bool use_real_hardware;        // True to prefer real hardware over simulation
+#if DWAVE_HAS_CURL
+    CURL* curl_handle;
+    struct curl_slist* headers;
+#endif
+    char api_error[256];           // Last API error message
 } DWaveOptimizedState;
 
 // Global state
@@ -138,6 +171,424 @@ static double get_time_seconds(void) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec + ts.tv_nsec * 1e-9;
 }
+
+// ============================================================================
+// D-Wave SAPI API Functions
+// ============================================================================
+
+#if DWAVE_HAS_CURL
+
+// Response buffer for HTTP responses
+typedef struct {
+    char* data;
+    size_t size;
+} DWaveResponseBuffer;
+
+// CURL write callback
+static size_t dwave_curl_write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
+    DWaveResponseBuffer* buf = (DWaveResponseBuffer*)userdata;
+    size_t total_size = size * nmemb;
+
+    char* new_data = realloc(buf->data, buf->size + total_size + 1);
+    if (!new_data) return 0;
+
+    buf->data = new_data;
+    memcpy(buf->data + buf->size, ptr, total_size);
+    buf->size += total_size;
+    buf->data[buf->size] = '\0';
+
+    return total_size;
+}
+
+// Initialize D-Wave API connection
+static bool dwave_api_init(const char* api_token) {
+    if (!api_token || strlen(api_token) == 0) {
+        return false;
+    }
+
+    // Initialize CURL
+    g_state.curl_handle = curl_easy_init();
+    if (!g_state.curl_handle) {
+        snprintf(g_state.api_error, sizeof(g_state.api_error),
+                 "Failed to initialize CURL");
+        return false;
+    }
+
+    // Setup headers
+    char auth_header[512];
+    snprintf(auth_header, sizeof(auth_header), "X-Auth-Token: %s", api_token);
+
+    g_state.headers = curl_slist_append(NULL, auth_header);
+    g_state.headers = curl_slist_append(g_state.headers, "Content-Type: application/json");
+    g_state.headers = curl_slist_append(g_state.headers, "Accept: application/json");
+
+    // Test connection by fetching solvers
+    DWaveResponseBuffer response = {0};
+
+    curl_easy_setopt(g_state.curl_handle, CURLOPT_URL, DWAVE_SOLVERS_ENDPOINT);
+    curl_easy_setopt(g_state.curl_handle, CURLOPT_HTTPHEADER, g_state.headers);
+    curl_easy_setopt(g_state.curl_handle, CURLOPT_WRITEFUNCTION, dwave_curl_write_cb);
+    curl_easy_setopt(g_state.curl_handle, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(g_state.curl_handle, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(g_state.curl_handle, CURLOPT_SSL_VERIFYPEER, 1L);
+
+    CURLcode res = curl_easy_perform(g_state.curl_handle);
+    free(response.data);
+
+    if (res != CURLE_OK) {
+        snprintf(g_state.api_error, sizeof(g_state.api_error),
+                 "D-Wave API connection failed: %s", curl_easy_strerror(res));
+        return false;
+    }
+
+    long http_code = 0;
+    curl_easy_getinfo(g_state.curl_handle, CURLINFO_RESPONSE_CODE, &http_code);
+
+    if (http_code == 401) {
+        snprintf(g_state.api_error, sizeof(g_state.api_error),
+                 "D-Wave API authentication failed: invalid token");
+        return false;
+    }
+
+    if (http_code >= 400) {
+        snprintf(g_state.api_error, sizeof(g_state.api_error),
+                 "D-Wave API error: HTTP %ld", http_code);
+        return false;
+    }
+
+    g_state.api_available = true;
+    return true;
+}
+
+// Submit problem to D-Wave SAPI
+static char* dwave_api_submit(quantum_problem* problem) {
+    if (!g_state.api_available || !g_state.curl_handle) {
+        return NULL;
+    }
+
+    // Build QUBO JSON payload
+    size_t payload_size = 8192 + problem->num_terms * 64;
+    char* payload = malloc(payload_size);
+    if (!payload) return NULL;
+
+    // Start JSON
+    int offset = snprintf(payload, payload_size,
+        "{"
+        "\"solver\": \"%s\","
+        "\"type\": \"ising\","
+        "\"data\": {"
+        "\"format\": \"qp\","
+        "\"lin\": [",
+        g_state.solver_name);
+
+    // Add linear terms (biases)
+    bool first = true;
+    for (size_t i = 0; i < problem->num_terms; i++) {
+        if (problem->terms[i].num_qubits == 1) {
+            if (!first) offset += snprintf(payload + offset, payload_size - offset, ",");
+            offset += snprintf(payload + offset, payload_size - offset,
+                              "[%zu, %.6f]",
+                              problem->terms[i].qubits[0],
+                              problem->terms[i].coefficient);
+            first = false;
+        }
+    }
+
+    offset += snprintf(payload + offset, payload_size - offset, "],\"quad\": [");
+
+    // Add quadratic terms (couplings)
+    first = true;
+    for (size_t i = 0; i < problem->num_terms; i++) {
+        if (problem->terms[i].num_qubits == 2) {
+            if (!first) offset += snprintf(payload + offset, payload_size - offset, ",");
+            offset += snprintf(payload + offset, payload_size - offset,
+                              "[%zu, %zu, %.6f]",
+                              problem->terms[i].qubits[0],
+                              problem->terms[i].qubits[1],
+                              problem->terms[i].coefficient);
+            first = false;
+        }
+    }
+
+    offset += snprintf(payload + offset, payload_size - offset,
+        "]},"
+        "\"params\": {"
+        "\"num_reads\": %u,"
+        "\"annealing_time\": %.1f"
+        "}}",
+        g_state.num_reads,
+        g_state.annealing_time_us);
+
+    // Submit to API
+    DWaveResponseBuffer response = {0};
+
+    curl_easy_reset(g_state.curl_handle);
+    curl_easy_setopt(g_state.curl_handle, CURLOPT_URL, DWAVE_PROBLEMS_ENDPOINT);
+    curl_easy_setopt(g_state.curl_handle, CURLOPT_HTTPHEADER, g_state.headers);
+    curl_easy_setopt(g_state.curl_handle, CURLOPT_POSTFIELDS, payload);
+    curl_easy_setopt(g_state.curl_handle, CURLOPT_WRITEFUNCTION, dwave_curl_write_cb);
+    curl_easy_setopt(g_state.curl_handle, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(g_state.curl_handle, CURLOPT_TIMEOUT, DWAVE_API_TIMEOUT);
+
+    CURLcode res = curl_easy_perform(g_state.curl_handle);
+    free(payload);
+
+    if (res != CURLE_OK || !response.data) {
+        free(response.data);
+        return NULL;
+    }
+
+    // Parse job ID from response (simple extraction)
+    char* job_id = NULL;
+    char* id_start = strstr(response.data, "\"id\"");
+    if (id_start) {
+        id_start = strchr(id_start, ':');
+        if (id_start) {
+            id_start = strchr(id_start, '"');
+            if (id_start) {
+                id_start++;
+                char* id_end = strchr(id_start, '"');
+                if (id_end) {
+                    size_t id_len = id_end - id_start;
+                    job_id = malloc(id_len + 1);
+                    if (job_id) {
+                        memcpy(job_id, id_start, id_len);
+                        job_id[id_len] = '\0';
+                    }
+                }
+            }
+        }
+    }
+
+    free(response.data);
+    return job_id;
+}
+
+// Poll D-Wave job status
+static bool dwave_api_poll_job(const char* job_id, dwave_result* result) {
+    if (!g_state.api_available || !job_id || !result) {
+        return false;
+    }
+
+    char url[512];
+    snprintf(url, sizeof(url), "%s/%s", DWAVE_PROBLEMS_ENDPOINT, job_id);
+
+    DWaveResponseBuffer response = {0};
+
+    // Poll until complete (with timeout)
+    for (int attempt = 0; attempt < 60; attempt++) {  // 60 * 2s = 2 minute timeout
+        response.data = NULL;
+        response.size = 0;
+
+        curl_easy_reset(g_state.curl_handle);
+        curl_easy_setopt(g_state.curl_handle, CURLOPT_URL, url);
+        curl_easy_setopt(g_state.curl_handle, CURLOPT_HTTPHEADER, g_state.headers);
+        curl_easy_setopt(g_state.curl_handle, CURLOPT_WRITEFUNCTION, dwave_curl_write_cb);
+        curl_easy_setopt(g_state.curl_handle, CURLOPT_WRITEDATA, &response);
+        curl_easy_setopt(g_state.curl_handle, CURLOPT_TIMEOUT, 30L);
+
+        CURLcode res = curl_easy_perform(g_state.curl_handle);
+
+        if (res != CURLE_OK || !response.data) {
+            free(response.data);
+            return false;
+        }
+
+        // Check job status
+        bool is_completed = (strstr(response.data, "\"status\": \"COMPLETED\"") != NULL) ||
+                           (strstr(response.data, "\"status\":\"COMPLETED\"") != NULL);
+
+        if (is_completed) {
+            // Parse D-Wave SAPI response
+            // Response format: {"answer": {"energies": [...], "solutions": [[...]], "num_occurrences": [...]}}
+
+            // Count solutions from num_occurrences array
+            size_t num_solutions = 0;
+            char* num_occ_ptr = strstr(response.data, "\"num_occurrences\"");
+            if (num_occ_ptr) {
+                num_occ_ptr = strchr(num_occ_ptr, '[');
+                if (num_occ_ptr) {
+                    const char* scan = num_occ_ptr + 1;
+                    while (*scan && *scan != ']') {
+                        while (*scan && (*scan == ' ' || *scan == '\n' || *scan == '\t')) scan++;
+                        if (*scan >= '0' && *scan <= '9') {
+                            num_solutions++;
+                            while (*scan >= '0' && *scan <= '9') scan++;
+                        }
+                        if (*scan == ',') scan++;
+                    }
+                }
+            }
+            if (num_solutions == 0) num_solutions = g_state.num_reads;
+
+            result->num_solutions = num_solutions;
+            result->num_qubits = g_state.topology ? g_state.topology->num_active : 64;
+
+            result->energies = calloc(num_solutions, sizeof(double));
+            result->solutions = calloc(num_solutions, sizeof(int32_t*));
+            result->probabilities = calloc(num_solutions, sizeof(double));
+
+            if (!result->energies || !result->solutions || !result->probabilities) {
+                free(result->energies);
+                free(result->solutions);
+                free(result->probabilities);
+                result->energies = NULL;
+                result->solutions = NULL;
+                result->probabilities = NULL;
+                free(response.data);
+                return false;
+            }
+
+            // Parse energies array
+            char* energy_ptr = strstr(response.data, "\"energies\"");
+            if (energy_ptr) {
+                energy_ptr = strchr(energy_ptr, '[');
+                if (energy_ptr) {
+                    char* ptr = energy_ptr + 1;
+                    for (size_t i = 0; i < num_solutions; i++) {
+                        while (*ptr && (*ptr == ' ' || *ptr == '\n' || *ptr == '\t')) ptr++;
+                        if (*ptr == ']') break;
+                        result->energies[i] = strtod(ptr, &ptr);
+                        while (*ptr && *ptr != ',' && *ptr != ']') ptr++;
+                        if (*ptr == ',') ptr++;
+                    }
+                }
+            }
+
+            // Parse solutions (binary spin values: +1/-1 or 0/1)
+            char* sol_ptr = strstr(response.data, "\"solutions\"");
+            if (sol_ptr) {
+                sol_ptr = strchr(sol_ptr, '[');
+                if (sol_ptr) {
+                    sol_ptr++;  // Skip outer '['
+                    for (size_t i = 0; i < num_solutions; i++) {
+                        while (*sol_ptr && *sol_ptr != '[' && *sol_ptr != ']') sol_ptr++;
+                        if (*sol_ptr != '[') break;
+                        sol_ptr++;
+
+                        result->solutions[i] = calloc(result->num_qubits, sizeof(int32_t));
+                        if (result->solutions[i]) {
+                            for (size_t q = 0; q < result->num_qubits; q++) {
+                                while (*sol_ptr && (*sol_ptr == ' ' || *sol_ptr == '\n')) sol_ptr++;
+                                if (*sol_ptr == ']') break;
+                                result->solutions[i][q] = (int32_t)strtol(sol_ptr, &sol_ptr, 10);
+                                while (*sol_ptr && *sol_ptr != ',' && *sol_ptr != ']') sol_ptr++;
+                                if (*sol_ptr == ',') sol_ptr++;
+                            }
+                        }
+                        while (*sol_ptr && *sol_ptr != ']') sol_ptr++;
+                        if (*sol_ptr == ']') sol_ptr++;
+                        while (*sol_ptr && *sol_ptr != ',' && *sol_ptr != ']') sol_ptr++;
+                        if (*sol_ptr == ',') sol_ptr++;
+                    }
+                }
+            }
+
+            // Parse num_occurrences for probabilities
+            uint64_t total_occ = 0;
+            uint64_t* occurrences = calloc(num_solutions, sizeof(uint64_t));
+            if (occurrences) {
+                num_occ_ptr = strstr(response.data, "\"num_occurrences\"");
+                if (num_occ_ptr) {
+                    num_occ_ptr = strchr(num_occ_ptr, '[');
+                    if (num_occ_ptr) {
+                        char* ptr = num_occ_ptr + 1;
+                        for (size_t i = 0; i < num_solutions; i++) {
+                            while (*ptr && (*ptr == ' ' || *ptr == '\n')) ptr++;
+                            if (*ptr == ']') break;
+                            occurrences[i] = (uint64_t)strtoul(ptr, &ptr, 10);
+                            total_occ += occurrences[i];
+                            while (*ptr && *ptr != ',' && *ptr != ']') ptr++;
+                            if (*ptr == ',') ptr++;
+                        }
+                    }
+                }
+                for (size_t i = 0; i < num_solutions; i++) {
+                    result->probabilities[i] = (total_occ > 0) ?
+                        (double)occurrences[i] / (double)total_occ :
+                        1.0 / (double)num_solutions;
+                }
+                free(occurrences);
+            }
+
+            // Find best solution
+            result->best_energy = DBL_MAX;
+            size_t best_idx = 0;
+            for (size_t i = 0; i < num_solutions; i++) {
+                if (result->energies[i] < result->best_energy) {
+                    result->best_energy = result->energies[i];
+                    best_idx = i;
+                }
+            }
+            if (result->solutions[best_idx]) {
+                result->best_solution = calloc(result->num_qubits, sizeof(int32_t));
+                if (result->best_solution) {
+                    memcpy(result->best_solution, result->solutions[best_idx],
+                           result->num_qubits * sizeof(int32_t));
+                }
+            }
+
+            free(response.data);
+            return true;
+        }
+
+        if (strstr(response.data, "\"status\": \"FAILED\"") ||
+            strstr(response.data, "\"status\":\"FAILED\"")) {
+            free(response.data);
+            return false;
+        }
+
+        free(response.data);
+
+        // Wait before next poll
+        struct timespec ts = {2, 0};  // 2 seconds
+        nanosleep(&ts, NULL);
+    }
+
+    return false;
+}
+
+// Cleanup D-Wave API resources
+static void dwave_api_cleanup(void) {
+    if (g_state.headers) {
+        curl_slist_free_all(g_state.headers);
+        g_state.headers = NULL;
+    }
+    if (g_state.curl_handle) {
+        curl_easy_cleanup(g_state.curl_handle);
+        g_state.curl_handle = NULL;
+    }
+    free(g_state.api_token);
+    g_state.api_token = NULL;
+    g_state.api_available = false;
+}
+
+#else // No CURL - stub functions
+
+static bool dwave_api_init(const char* api_token) {
+    (void)api_token;
+    snprintf(g_state.api_error, sizeof(g_state.api_error),
+             "D-Wave API unavailable: CURL not compiled in");
+    return false;
+}
+
+static char* dwave_api_submit(quantum_problem* problem) {
+    (void)problem;
+    return NULL;
+}
+
+static bool dwave_api_poll_job(const char* job_id, dwave_result* result) {
+    (void)job_id;
+    (void)result;
+    return false;
+}
+
+static void dwave_api_cleanup(void) {
+    free(g_state.api_token);
+    g_state.api_token = NULL;
+}
+
+#endif // DWAVE_HAS_CURL
 
 // ============================================================================
 // Pegasus Topology Implementation
@@ -949,10 +1400,12 @@ static double detect_chain_breaks(dwave_result* result, MinorEmbedding* embeddin
 // Public API Implementation
 // ============================================================================
 
-bool init_dwave_optimized_backend(const char* solver_name,
-                                  uint32_t num_reads,
-                                  double annealing_time,
-                                  double chain_strength) {
+// Extended init with API token support
+bool init_dwave_optimized_backend_with_token(const char* solver_name,
+                                              const char* api_token,
+                                              uint32_t num_reads,
+                                              double annealing_time,
+                                              double chain_strength) {
     if (!solver_name || strlen(solver_name) == 0) {
         return false;
     }
@@ -963,7 +1416,7 @@ bool init_dwave_optimized_backend(const char* solver_name,
     // Initialize random seed
     g_state.random_seed = (unsigned int)time(NULL);
 
-    // Create Pegasus topology
+    // Create Pegasus topology for simulation fallback
     g_state.topology = create_pegasus_graph(PEGASUS_MAX_QUBITS);
     if (!g_state.topology) {
         return false;
@@ -975,13 +1428,42 @@ bool init_dwave_optimized_backend(const char* solver_name,
     g_state.chain_strength = chain_strength;  // 0 = auto-calculate
     g_state.temperature_kelvin = 0.015;  // 15 mK typical operating temperature
 
+    // Try to connect to D-Wave API if token provided
+    if (api_token && strlen(api_token) > 0) {
+        g_state.api_token = strdup(api_token);
+        if (dwave_api_init(api_token)) {
+            g_state.use_real_hardware = true;
+            fprintf(stderr, "[D-Wave] Connected to D-Wave SAPI\n");
+        } else {
+            fprintf(stderr, "[D-Wave] API unavailable (%s), using SQA simulation\n",
+                    g_state.api_error);
+            g_state.use_real_hardware = false;
+        }
+    } else {
+        g_state.use_real_hardware = false;
+    }
+
     g_state.initialized = true;
     return true;
+}
+
+// Legacy init without token (uses simulation only)
+bool init_dwave_optimized_backend(const char* solver_name,
+                                  uint32_t num_reads,
+                                  double annealing_time,
+                                  double chain_strength) {
+    return init_dwave_optimized_backend_with_token(solver_name, NULL,
+                                                   num_reads, annealing_time,
+                                                   chain_strength);
 }
 
 void cleanup_dwave_optimized_backend(void) {
     if (!g_state.initialized) return;
 
+    // Clean up D-Wave API resources
+    dwave_api_cleanup();
+
+    // Clean up simulation resources
     destroy_pegasus_graph(g_state.topology);
     destroy_embedding(g_state.current_embedding);
 
@@ -1000,6 +1482,30 @@ bool execute_dwave_optimized(quantum_problem* problem, dwave_result* result) {
 
     double start_time = get_time_seconds();
     g_state.metrics.timing_data[0] = start_time;
+
+    // Try real D-Wave hardware first if available
+    if (g_state.use_real_hardware && g_state.api_available) {
+        char* job_id = dwave_api_submit(problem);
+        if (job_id) {
+            fprintf(stderr, "[D-Wave] Submitted job %s to real hardware\n", job_id);
+
+            // Poll for results
+            if (dwave_api_poll_job(job_id, result)) {
+                result->execution_time = get_time_seconds() - start_time;
+                g_state.metrics.timing_data[3] = get_time_seconds();
+                free(job_id);
+                fprintf(stderr, "[D-Wave] Job completed on real hardware\n");
+                return true;
+            }
+
+            fprintf(stderr, "[D-Wave] Real hardware job failed, falling back to SQA\n");
+            free(job_id);
+        } else {
+            fprintf(stderr, "[D-Wave] API submission failed, falling back to SQA\n");
+        }
+    }
+
+    // Fallback to Simulated Quantum Annealing (SQA)
 
     // Step 1: Find minor embedding
     destroy_embedding(g_state.current_embedding);

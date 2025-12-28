@@ -4,6 +4,8 @@
 #include <string.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdint.h>
+#include <stdbool.h>
 
 // Platform-specific includes for memory trimming
 #if defined(__linux__)
@@ -506,26 +508,54 @@ static void unified_reset_stats(memory_allocator_t* allocator) {
     }
 }
 
+// Safe multiplication with overflow detection for dimension calculations
+static bool safe_multiply_dimensions(const size_t* dimensions, size_t num_dimensions, size_t* result) {
+    if (!dimensions || num_dimensions == 0 || !result) {
+        return false;
+    }
+
+    size_t total = 1;
+    for (size_t i = 0; i < num_dimensions; i++) {
+        // Check for zero dimensions
+        if (dimensions[i] == 0) {
+            geometric_log_error("Dimension %zu is zero", i);
+            return false;
+        }
+
+        // Check for overflow before multiplication
+        if (total > SIZE_MAX / dimensions[i]) {
+            geometric_log_error("Integer overflow in dimension calculation at dimension %zu "
+                              "(current=%zu, multiplier=%zu)", i, total, dimensions[i]);
+            return false;
+        }
+        total *= dimensions[i];
+    }
+
+    *result = total;
+    return true;
+}
+
 // Helper functions implementation
 static void* unified_allocate_tensor_impl(unified_memory_interface_t* memory,
                                         size_t* dimensions,
                                         size_t num_dimensions) {
     if (!memory || !dimensions || num_dimensions == 0) return NULL;
-    
+
+    // Safely calculate total size with overflow detection
+    size_t total_size;
+    if (!safe_multiply_dimensions(dimensions, num_dimensions, &total_size)) {
+        geometric_log_error("Failed to calculate tensor size: overflow or invalid dimensions");
+        return NULL;
+    }
+
     memory_properties_t props = {
         .flags = MEM_FLAG_GEOMETRIC | MEM_FLAG_TRACK,
         .dimensions = dimensions,
         .num_dimensions = num_dimensions,
-        .alignment = 64
+        .alignment = 64,
+        .size = total_size
     };
-    
-    // Calculate total size
-    size_t total_size = 1;
-    for (size_t i = 0; i < num_dimensions; i++) {
-        total_size *= dimensions[i];
-    }
-    props.size = total_size;
-    
+
     void* ptr = memory->allocator->allocate(memory->allocator, &props);
     if (!ptr) {
         geometric_log_error("Failed to allocate tensor memory of size %zu with %zu dimensions", total_size, num_dimensions);

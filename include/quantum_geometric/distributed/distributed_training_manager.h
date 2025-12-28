@@ -49,6 +49,25 @@ typedef struct training_metrics_t {
     double compute_time;         // Time spent in compute (seconds)
 } training_metrics_t;
 
+// Gradient estimation methods for variational quantum circuits
+typedef enum {
+    GRADIENT_METHOD_PARAMETER_SHIFT,  // Standard parameter shift rule (exact for Pauli rotations)
+    GRADIENT_METHOD_SPSA,             // Simultaneous Perturbation Stochastic Approximation
+    GRADIENT_METHOD_FINITE_DIFFERENCE,// Classical finite difference (fallback)
+    GRADIENT_METHOD_NATURAL_GRADIENT  // Quantum natural gradient (uses QFIM)
+} gradient_method_t;
+
+// Configuration for gradient estimation
+typedef struct gradient_config_t {
+    gradient_method_t method;         // Gradient estimation method to use
+    double shift_amount;              // For parameter shift (default: π/2)
+    double finite_diff_epsilon;       // For finite difference
+    double spsa_perturbation;         // For SPSA
+    bool use_gradient_clipping;       // Whether to clip gradients
+    double clip_value;                // Maximum gradient norm
+    size_t spsa_averaging_samples;    // Number of SPSA samples to average
+} gradient_config_t;
+
 // Workload configuration
 typedef struct workload_config_t {
     int world_size;
@@ -139,6 +158,23 @@ int dist_pipeline_save_state(quantum_pipeline_t* pipeline, const char* path);
 int dist_pipeline_load_state(quantum_pipeline_t* pipeline, const char* path);
 int dist_pipeline_serialize(quantum_pipeline_t* pipeline, void** buffer, size_t* size);
 int dist_pipeline_deserialize(quantum_pipeline_t* pipeline, void* buffer, size_t size);
+
+// Additional gradient and training functions
+int dist_pipeline_set_labels(quantum_pipeline_t* pipeline, const void* labels, size_t batch_size);
+int dist_pipeline_set_gradient_config(quantum_pipeline_t* pipeline,
+                                       gradient_method_t method,
+                                       double shift_amount,
+                                       double finite_diff_epsilon,
+                                       double spsa_perturbation,
+                                       bool use_gradient_clipping,
+                                       double clip_value,
+                                       size_t spsa_averaging_samples);
+float dist_pipeline_get_loss(quantum_pipeline_t* pipeline);
+int dist_pipeline_get_loss_history(quantum_pipeline_t* pipeline,
+                                    float** history,
+                                    size_t* num_entries);
+void dist_pipeline_cleanup(quantum_pipeline_t* pipeline);
+int dist_pipeline_init(quantum_pipeline_t* pipeline);
 
 #ifdef __cplusplus
 }

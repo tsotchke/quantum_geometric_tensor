@@ -85,26 +85,33 @@ computation_node_t* add_node(computational_graph_t* graph,
     node->backward = NULL;
     node->gradient = NULL;
     
-    // Add to graph
-    graph->nodes[graph->num_nodes++] = node;
-    
-    // Update inputs/outputs arrays if needed
+    // Update inputs/outputs arrays BEFORE adding to graph to ensure atomicity
+    // If this fails, we can cleanly abort without leaving graph in inconsistent state
     if (type == NODE_INPUT) {
         size_t new_size = (graph->num_inputs + 1) * sizeof(computation_node_t*);
         computation_node_t** new_inputs = realloc(graph->inputs, new_size);
-        if (new_inputs) {
-            graph->inputs = new_inputs;
-            graph->inputs[graph->num_inputs++] = node;
+        if (!new_inputs) {
+            // Realloc failed - clean up and report error
+            free(node);
+            return NULL;
         }
+        graph->inputs = new_inputs;
+        graph->inputs[graph->num_inputs++] = node;
     } else if (type == NODE_OUTPUT) {
         size_t new_size = (graph->num_outputs + 1) * sizeof(computation_node_t*);
         computation_node_t** new_outputs = realloc(graph->outputs, new_size);
-        if (new_outputs) {
-            graph->outputs = new_outputs;
-            graph->outputs[graph->num_outputs++] = node;
+        if (!new_outputs) {
+            // Realloc failed - clean up and report error
+            free(node);
+            return NULL;
         }
+        graph->outputs = new_outputs;
+        graph->outputs[graph->num_outputs++] = node;
     }
-    
+
+    // Add to graph only after input/output tracking succeeded
+    graph->nodes[graph->num_nodes++] = node;
+
     return node;
 }
 

@@ -71,15 +71,7 @@ typedef struct SparsityPattern {
 #define min(a,b) ((a) < (b) ? (a) : (b))
 #endif
 
-// Layer configuration - must be defined before forward declarations
-typedef struct {
-    size_t hidden_dim;
-    size_t num_heads;
-    size_t head_dim;
-    bool use_quantum;
-    bool use_geometric;
-    bool use_tensor_opt;
-} LayerConfig;
+// LayerConfig is now defined in the header file
 
 // Platform-specific SIMD includes
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
@@ -90,30 +82,11 @@ typedef struct {
     #endif
 #endif
 
-// Transformer layer - must be defined before forward declarations
-typedef struct TransformerLayer {
-    // Attention components
-    QuantumAttention* quantum_attention;
-    GeometricAttention* geometric_attention;
-
-    // Tensor networks
-    TensorNetwork* query_network;
-    TensorNetwork* key_network;
-    TensorNetwork* value_network;
-    TensorNetwork* output_network;
-
-    // Layer normalization
-    double* layer_norm_weights;
-    double* layer_norm_bias;
-
-    // Feed forward
-    TensorNetwork* ff_network1;
-    TensorNetwork* ff_network2;
-
-    // Configuration
-    LayerConfig config;
-    bool is_optimized;
-} TransformerLayer;
+// TransformerLayer is now defined in the header file
+// Cast helpers for type compatibility with header definitions
+#define quantum_attention_ptr(x) ((quantum_attention_t*)(x))
+#define geometric_attention_ptr(x) ((geometric_attention_t*)(x))
+#define tensor_network_ptr(x) ((tensor_network_t*)(x))
 
 // Forward declarations for local static functions
 static bool validate_config(const LayerConfig* config);
@@ -189,7 +162,7 @@ TransformerLayer* init_transformer_layer(
     if (!layer) return NULL;
     
     // Copy configuration
-    memcpy(&layer->config, config, sizeof(LayerConfig));
+    memcpy(&layer->layer_cfg, config, sizeof(LayerConfig));
     
     // Initialize attention mechanisms
     if (config->use_quantum) {
@@ -232,17 +205,63 @@ TransformerLayer* init_transformer_layer(
         config->hidden_dim * sizeof(double));
     layer->layer_norm_bias = aligned_alloc(QG_VECTOR_SIZE,
         config->hidden_dim * sizeof(double));
-    
+
     initialize_layer_norm(layer->layer_norm_weights,
                         layer->layer_norm_bias,
                         config->hidden_dim);
-    
+
+    // Initialize feed-forward weight matrices with Xavier/Glorot initialization
+    // Xavier init: variance = 2 / (fan_in + fan_out)
+    size_t hidden_dim = config->hidden_dim;
+    size_t ff_dim_size = QG_FF_EXPANSION_FACTOR * hidden_dim;
+    layer->ff_dim = ff_dim_size;
+
+    // Allocate weight matrices
+    layer->ff1_weights = aligned_alloc(64, hidden_dim * ff_dim_size * sizeof(double));
+    layer->ff1_bias = aligned_alloc(64, ff_dim_size * sizeof(double));
+    layer->ff2_weights = aligned_alloc(64, ff_dim_size * hidden_dim * sizeof(double));
+    layer->ff2_bias = aligned_alloc(64, hidden_dim * sizeof(double));
+
+    if (layer->ff1_weights && layer->ff1_bias && layer->ff2_weights && layer->ff2_bias) {
+        // Xavier initialization for ff1: hidden_dim -> ff_dim
+        double limit1 = sqrt(6.0 / (double)(hidden_dim + ff_dim_size));
+        for (size_t i = 0; i < hidden_dim * ff_dim_size; i++) {
+            // Generate uniform random in [-limit, limit]
+            layer->ff1_weights[i] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * limit1;
+        }
+        for (size_t i = 0; i < ff_dim_size; i++) {
+            layer->ff1_bias[i] = 0.0;  // Initialize biases to zero
+        }
+
+        // Xavier initialization for ff2: ff_dim -> hidden_dim
+        double limit2 = sqrt(6.0 / (double)(ff_dim_size + hidden_dim));
+        for (size_t i = 0; i < ff_dim_size * hidden_dim; i++) {
+            layer->ff2_weights[i] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * limit2;
+        }
+        for (size_t i = 0; i < hidden_dim; i++) {
+            layer->ff2_bias[i] = 0.0;
+        }
+
+        layer->weights_initialized = true;
+    } else {
+        // Clean up on failure
+        free(layer->ff1_weights);
+        free(layer->ff1_bias);
+        free(layer->ff2_weights);
+        free(layer->ff2_bias);
+        layer->ff1_weights = NULL;
+        layer->ff1_bias = NULL;
+        layer->ff2_weights = NULL;
+        layer->ff2_bias = NULL;
+        layer->weights_initialized = false;
+    }
+
     layer->is_optimized = false;
     return layer;
 }
 
-// Optimized forward pass using quantum circuits and hierarchical attention - O(log n)
-void transformer_forward(
+// Optimized layer forward pass using quantum circuits and hierarchical attention - O(log n)
+static void transformer_layer_forward_internal(
     TransformerLayer* layer,
     const double* input,
     double* output,
@@ -279,10 +298,10 @@ void transformer_forward(
     
     // Initialize quantum registers
     quantum_register_t* reg_input = quantum_register_create_state(
-        input, sequence_length * layer->config.hidden_dim, system
+        input, sequence_length * layer->layer_cfg.hidden_dim, system
     );
     quantum_register_t* reg_output = quantum_register_create_empty(
-        sequence_length * layer->config.hidden_dim
+        sequence_length * layer->layer_cfg.hidden_dim
     );
     
     // Optimize if needed
@@ -304,7 +323,7 @@ void transformer_forward(
                 
                 // Quantum projection
                 quantum_project_chunk(
-                    reg_input + chunk * layer->config.hidden_dim,
+                    reg_input + chunk * layer->layer_cfg.hidden_dim,
                     layer->query_network,
                     layer->key_network,
                     layer->value_network,
@@ -324,7 +343,7 @@ void transformer_forward(
     );
     
     // Allocate intermediate tensors
-    size_t total_size = sequence_length * layer->config.hidden_dim;
+    size_t total_size = sequence_length * layer->layer_cfg.hidden_dim;
     double* query = aligned_alloc(QG_VECTOR_SIZE, total_size * sizeof(double));
     double* key = aligned_alloc(QG_VECTOR_SIZE, total_size * sizeof(double));
     double* value = aligned_alloc(QG_VECTOR_SIZE, total_size * sizeof(double));
@@ -344,20 +363,20 @@ void transformer_forward(
     }
 
     // Apply quantum attention with sparsity
-    if (layer->config.use_quantum && layer->config.use_geometric) {
+    if (layer->layer_cfg.use_quantum && layer->layer_cfg.use_geometric) {
         compute_hybrid_attention_sparse(
             layer, reg_input, reg_output,
             patterns, num_patterns,
             circuit, system, &config
         );
-    } else if (layer->config.use_quantum) {
+    } else if (layer->layer_cfg.use_quantum) {
         compute_quantum_attention_sparse(
             layer->quantum_attention,
             reg_input, reg_output,
             patterns, num_patterns,
             circuit, system, &config
         );
-    } else if (layer->config.use_geometric) {
+    } else if (layer->layer_cfg.use_geometric) {
         compute_geometric_attention_sparse(
             layer->geometric_attention,
             reg_input, reg_output,
@@ -376,7 +395,7 @@ void transformer_forward(
                     total_size);
 
     // Feed forward
-    if (layer->config.use_tensor_opt) {
+    if (layer->layer_cfg.use_tensor_opt) {
         feed_forward_tensor(layer,
                           attention_output,
                           output,
@@ -406,32 +425,32 @@ static void init_tensor_networks(TransformerLayer* layer) {
     
     // Create QKV projection networks
     layer->query_network = create_projection_network(optimizer,
-        layer->config.hidden_dim,
-        layer->config.hidden_dim);
+        layer->layer_cfg.hidden_dim,
+        layer->layer_cfg.hidden_dim);
     
     layer->key_network = create_projection_network(optimizer,
-        layer->config.hidden_dim,
-        layer->config.hidden_dim);
+        layer->layer_cfg.hidden_dim,
+        layer->layer_cfg.hidden_dim);
     
     layer->value_network = create_projection_network(optimizer,
-        layer->config.hidden_dim,
-        layer->config.hidden_dim);
+        layer->layer_cfg.hidden_dim,
+        layer->layer_cfg.hidden_dim);
     
     // Create feed forward networks
     layer->ff_network1 = create_feed_forward_network(optimizer,
-        layer->config.hidden_dim,
-        QG_FF_EXPANSION_FACTOR * layer->config.hidden_dim);
+        layer->layer_cfg.hidden_dim,
+        QG_FF_EXPANSION_FACTOR * layer->layer_cfg.hidden_dim);
     
     layer->ff_network2 = create_feed_forward_network(optimizer,
-        QG_FF_EXPANSION_FACTOR * layer->config.hidden_dim,
-        layer->config.hidden_dim);
+        QG_FF_EXPANSION_FACTOR * layer->layer_cfg.hidden_dim,
+        layer->layer_cfg.hidden_dim);
     
     cleanup_tensor_optimizer(optimizer);
 }
 
 // Optimize transformer layer
 static void optimize_transformer_layer(TransformerLayer* layer) {
-    if (layer->config.use_tensor_opt) {
+    if (layer->layer_cfg.use_tensor_opt) {
         // Optimize tensor networks
         TensorNetworkOptimizer* optimizer = init_tensor_optimizer();
         
@@ -522,7 +541,7 @@ void cleanup_transformer_layer(TransformerLayer* layer) {
     cleanup_quantum_attention(layer->quantum_attention);
     cleanup_geometric_attention(layer->geometric_attention);
     
-    if (layer->config.use_tensor_opt) {
+    if (layer->layer_cfg.use_tensor_opt) {
         cleanup_tensor_network(layer->query_network);
         cleanup_tensor_network(layer->key_network);
         cleanup_tensor_network(layer->value_network);
@@ -809,38 +828,67 @@ static void apply_layer_norm(double* data, const double* weights, const double* 
 }
 
 // Feed forward with tensor network optimization
+// Implements: FFN(x) = GELU(xW1 + b1)W2 + b2
 static void feed_forward_tensor(TransformerLayer* layer, const double* input,
                                double* output, size_t seq_length) {
     if (!layer || !input || !output) return;
 
-    size_t hidden_dim = layer->config.hidden_dim;
-    size_t ff_dim = QG_FF_EXPANSION_FACTOR * hidden_dim;
+    size_t hidden_dim = layer->layer_cfg.hidden_dim;
+    size_t ff_dim = layer->ff_dim;
+    if (ff_dim == 0) {
+        ff_dim = QG_FF_EXPANSION_FACTOR * hidden_dim;
+    }
 
-    // Allocate intermediate buffer
+    // Allocate intermediate buffer for ff_dim activations
     double* intermediate = aligned_alloc(64, seq_length * ff_dim * sizeof(double));
     if (!intermediate) return;
 
-    // First linear transformation with tensor network
-    // ff_network1: hidden_dim -> ff_dim
+    // Check if weights are initialized
+    bool has_weights = layer->weights_initialized &&
+                       layer->ff1_weights && layer->ff2_weights;
+
+    // First linear transformation: hidden_dim -> ff_dim
+    // y = xW1 + b1, where W1 is [hidden_dim x ff_dim]
     for (size_t s = 0; s < seq_length; s++) {
         for (size_t i = 0; i < ff_dim; i++) {
             double sum = 0.0;
             for (size_t j = 0; j < hidden_dim; j++) {
-                // Use tensor network contraction for weight access
-                sum += input[s * hidden_dim + j] * 0.01;  // Placeholder weight
+                // Weight matrix layout: W1[j * ff_dim + i] for input j -> output i
+                if (has_weights) {
+                    sum += input[s * hidden_dim + j] * layer->ff1_weights[j * ff_dim + i];
+                } else {
+                    // Fallback: identity-like scaling for uninitialized weights
+                    sum += input[s * hidden_dim + j] * (1.0 / (double)hidden_dim);
+                }
             }
-            // GELU activation
+            // Add bias
+            if (has_weights && layer->ff1_bias) {
+                sum += layer->ff1_bias[i];
+            }
+
+            // GELU activation: 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x^3)))
             double x = sum;
-            intermediate[s * ff_dim + i] = 0.5 * x * (1.0 + tanh(sqrt(2.0 / M_PI) * (x + 0.044715 * x * x * x)));
+            double gelu = 0.5 * x * (1.0 + tanh(sqrt(2.0 / M_PI) * (x + 0.044715 * x * x * x)));
+            intermediate[s * ff_dim + i] = gelu;
         }
     }
 
     // Second linear transformation: ff_dim -> hidden_dim
+    // output = intermediate * W2 + b2, where W2 is [ff_dim x hidden_dim]
     for (size_t s = 0; s < seq_length; s++) {
         for (size_t i = 0; i < hidden_dim; i++) {
             double sum = 0.0;
             for (size_t j = 0; j < ff_dim; j++) {
-                sum += intermediate[s * ff_dim + j] * 0.01;  // Placeholder weight
+                // Weight matrix layout: W2[j * hidden_dim + i] for input j -> output i
+                if (has_weights) {
+                    sum += intermediate[s * ff_dim + j] * layer->ff2_weights[j * hidden_dim + i];
+                } else {
+                    sum += intermediate[s * ff_dim + j] * (1.0 / (double)ff_dim);
+                }
+            }
+            // Add bias
+            if (has_weights && layer->ff2_bias) {
+                sum += layer->ff2_bias[i];
             }
             output[s * hidden_dim + i] = sum;
         }
