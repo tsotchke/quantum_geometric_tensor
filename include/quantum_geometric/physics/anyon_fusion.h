@@ -14,57 +14,41 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// Include unified types first - these provide canonical definitions
+#include "quantum_geometric/physics/anyon_types.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-// Maximum number of fusion channels
-#define MAX_FUSION_CHANNELS 256
+// Use unified MAX_FUSION_CHANNELS from anyon_types.h (1024)
+// Legacy compatibility - tests expect 1024
+#ifdef MAX_FUSION_CHANNELS
+#undef MAX_FUSION_CHANNELS
+#endif
+#define MAX_FUSION_CHANNELS 1024
+
+#ifndef MAX_MEASUREMENTS
 #define MAX_MEASUREMENTS 1024
+#endif
 
 // ============================================================================
-// Fusion Configuration
+// Fusion Configuration - Use unified FusionConfig from anyon_types.h
 // ============================================================================
 
-/**
- * @brief Configuration for fusion rule calculations
- */
-typedef struct {
-    size_t lattice_width;     /**< Width of the lattice */
-    size_t lattice_height;    /**< Height of the lattice */
-    size_t history_length;    /**< Length of fusion history to track */
-    bool track_statistics;    /**< Enable braiding statistics tracking */
-    double probability_threshold; /**< Minimum probability threshold */
-} FusionConfig;
+// FusionConfig is defined in anyon_types.h with all required fields
 
 // ============================================================================
-// Measurement Types
+// Measurement Types - Use unified ChargeMeasurements from anyon_types.h
 // ============================================================================
 
-/**
- * @brief Charge measurements from the lattice
- */
-typedef struct {
-    int* charges;             /**< Measured charge values */
-    size_t* locations;        /**< Lattice locations of measurements */
-    double* probabilities;    /**< Measurement confidence values */
-    size_t num_measurements;  /**< Number of measurements */
-} ChargeMeasurements;
+// ChargeMeasurements is defined in anyon_types.h with static arrays
 
 // ============================================================================
-// Fusion Output Types
+// Fusion Output Types - Use unified FusionChannels from anyon_types.h
 // ============================================================================
 
-/**
- * @brief Output fusion channels after fusion operation
- */
-typedef struct {
-    size_t locations[MAX_FUSION_CHANNELS];       /**< Fusion channel locations */
-    int input_charges[MAX_FUSION_CHANNELS][2];   /**< Input charge pairs */
-    int output_charge[MAX_FUSION_CHANNELS];      /**< Output charges */
-    double probabilities[MAX_FUSION_CHANNELS];   /**< Channel probabilities */
-    size_t num_channels;                         /**< Number of active channels */
-} FusionChannels;
+// FusionChannels is defined in anyon_types.h
 
 // ============================================================================
 // Internal Cache Structure

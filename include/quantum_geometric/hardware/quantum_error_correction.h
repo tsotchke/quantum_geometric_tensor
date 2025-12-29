@@ -93,14 +93,16 @@ typedef struct ErrorCorrectionStats {
 // ============================================================================
 
 /**
- * @brief Initialize error correction system
+ * @brief Initialize hardware error correction system
+ * @note Named with _hardware_ prefix to distinguish from anyon_correction.h APIs
  */
-ErrorCorrectionConfig* init_error_correction(bool use_gpu, bool use_distributed);
+ErrorCorrectionConfig* init_hardware_error_correction(bool use_gpu, bool use_distributed);
 
 /**
- * @brief Cleanup error correction resources
+ * @brief Cleanup hardware error correction resources
+ * @note Named with _hardware_ prefix to distinguish from anyon_correction.h APIs
  */
-void cleanup_error_correction(ErrorCorrectionConfig* config);
+void cleanup_hardware_error_correction(ErrorCorrectionConfig* config);
 
 /**
  * @brief Measure error syndromes

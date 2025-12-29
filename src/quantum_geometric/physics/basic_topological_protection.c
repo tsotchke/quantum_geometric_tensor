@@ -20,6 +20,212 @@
 #define PAIR_END_MARKER ((size_t)-1)
 
 // ============================================================================
+// State Initialization
+// ============================================================================
+
+/**
+ * Apply a single stabilizer projector (1 + S)/2 to the state.
+ * This projects onto the +1 eigenspace of stabilizer S.
+ * For X-type stabilizers: S = X_i1 ⊗ X_i2 ⊗ ... ⊗ X_ik
+ * For Z-type stabilizers: S = Z_i1 ⊗ Z_i2 ⊗ ... ⊗ Z_ik
+ */
+static void apply_stabilizer_projector(quantum_state_t* state,
+                                        StabilizerType type,
+                                        const size_t* qubits,
+                                        size_t num_qubits_in_stab) {
+    if (!state || !state->coordinates || !qubits || num_qubits_in_stab == 0) return;
+
+    size_t dim = state->dimension;
+
+    // Allocate temporary storage for |Sψ⟩
+    ComplexFloat* s_psi = calloc(dim, sizeof(ComplexFloat));
+    if (!s_psi) return;
+
+    if (type == VERTEX_STABILIZER) {
+        // X-type stabilizer: X_i1 ⊗ X_i2 ⊗ ... ⊗ X_ik
+        // Action: flips all qubits in the stabilizer support
+
+        // Build the flip mask for all qubits in stabilizer
+        size_t flip_mask = 0;
+        for (size_t i = 0; i < num_qubits_in_stab; i++) {
+            if (qubits[i] < state->num_qubits) {
+                flip_mask |= (1UL << qubits[i]);
+            }
+        }
+
+        // Compute S|ψ⟩ where S is the X-type stabilizer
+        for (size_t i = 0; i < dim; i++) {
+            size_t j = i ^ flip_mask;  // Apply X to all qubits in stabilizer
+            s_psi[i] = state->coordinates[j];
+        }
+    } else {
+        // Z-type stabilizer: Z_i1 ⊗ Z_i2 ⊗ ... ⊗ Z_ik
+        // Action: multiplies by (-1)^(parity of qubits in support)
+
+        for (size_t i = 0; i < dim; i++) {
+            // Count parity of qubits in stabilizer support
+            int parity = 0;
+            for (size_t q = 0; q < num_qubits_in_stab; q++) {
+                if (qubits[q] < state->num_qubits) {
+                    parity ^= ((i >> qubits[q]) & 1);
+                }
+            }
+
+            // S|i⟩ = (-1)^parity |i⟩
+            if (parity) {
+                s_psi[i].real = -state->coordinates[i].real;
+                s_psi[i].imag = -state->coordinates[i].imag;
+            } else {
+                s_psi[i] = state->coordinates[i];
+            }
+        }
+    }
+
+    // Apply projector: |ψ'⟩ = (|ψ⟩ + S|ψ⟩) / 2
+    // (Normalization happens after all projectors are applied)
+    for (size_t i = 0; i < dim; i++) {
+        state->coordinates[i].real = (state->coordinates[i].real + s_psi[i].real) / 2.0f;
+        state->coordinates[i].imag = (state->coordinates[i].imag + s_psi[i].imag) / 2.0f;
+    }
+
+    free(s_psi);
+}
+
+void initialize_ground_state(quantum_state_t* state) {
+    if (!state || !state->coordinates) return;
+
+    // The ground state of a topological stabilizer code is the unique state
+    // in the +1 eigenspace of ALL stabilizer operators:
+    //
+    // |ψ_0⟩ = P_G |ψ_init⟩ / ||P_G |ψ_init⟩||
+    //
+    // where P_G is the projector onto the ground space:
+    // P_G = Π_S (1 + S)/2 for all stabilizers S
+    //
+    // We start with |00...0⟩ and successively project onto each stabilizer's
+    // +1 eigenspace, then normalize.
+
+    size_t dim = state->dimension;
+
+    // Step 1: Initialize to |00...0⟩
+    for (size_t i = 0; i < dim; i++) {
+        state->coordinates[i].real = 0.0f;
+        state->coordinates[i].imag = 0.0f;
+    }
+    state->coordinates[0].real = 1.0f;
+
+    // Step 2: Apply projector for each plaquette (Z-type) stabilizer
+    // Plaquette B_p = Π_{e∈p} Z_e acts on edges around plaquette p
+    size_t plaq_qubits[4];
+    for (size_t p = 0; p < state->num_plaquettes; p++) {
+        get_plaquette_vertices(state, p, plaq_qubits);
+        apply_stabilizer_projector(state, PLAQUETTE_STABILIZER, plaq_qubits, 4);
+    }
+
+    // Step 3: Apply projector for each vertex (X-type) stabilizer
+    // Vertex A_v = Π_{e∈v} X_e acts on edges incident to vertex v
+    size_t vert_qubits[4];
+    for (size_t v = 0; v < state->num_vertices; v++) {
+        get_vertex_edges(state, v, vert_qubits);
+        // Count valid edges (not boundary)
+        size_t num_valid = 0;
+        size_t valid_qubits[4];
+        for (int i = 0; i < 4; i++) {
+            if (vert_qubits[i] != (size_t)-1 && vert_qubits[i] < state->num_qubits) {
+                valid_qubits[num_valid++] = vert_qubits[i];
+            }
+        }
+        if (num_valid > 0) {
+            apply_stabilizer_projector(state, VERTEX_STABILIZER, valid_qubits, num_valid);
+        }
+    }
+
+    // Step 4: Normalize the resulting state
+    double norm_sq = 0.0;
+    for (size_t i = 0; i < dim; i++) {
+        norm_sq += state->coordinates[i].real * state->coordinates[i].real +
+                   state->coordinates[i].imag * state->coordinates[i].imag;
+    }
+
+    if (norm_sq > 1e-15) {
+        float inv_norm = 1.0f / sqrtf((float)norm_sq);
+        for (size_t i = 0; i < dim; i++) {
+            state->coordinates[i].real *= inv_norm;
+            state->coordinates[i].imag *= inv_norm;
+        }
+        state->is_normalized = true;
+    } else {
+        // Projection failed - fall back to equal superposition of valid configurations
+        // This can happen if |00...0⟩ has zero overlap with ground space
+        // Try starting from |++...+⟩ instead
+        float amp = 1.0f / sqrtf((float)dim);
+        for (size_t i = 0; i < dim; i++) {
+            state->coordinates[i].real = amp;
+            state->coordinates[i].imag = 0.0f;
+        }
+
+        // Re-apply all projectors
+        for (size_t p = 0; p < state->num_plaquettes; p++) {
+            get_plaquette_vertices(state, p, plaq_qubits);
+            apply_stabilizer_projector(state, PLAQUETTE_STABILIZER, plaq_qubits, 4);
+        }
+        for (size_t v = 0; v < state->num_vertices; v++) {
+            get_vertex_edges(state, v, vert_qubits);
+            size_t num_valid = 0;
+            size_t valid_qubits[4];
+            for (int i = 0; i < 4; i++) {
+                if (vert_qubits[i] != (size_t)-1 && vert_qubits[i] < state->num_qubits) {
+                    valid_qubits[num_valid++] = vert_qubits[i];
+                }
+            }
+            if (num_valid > 0) {
+                apply_stabilizer_projector(state, VERTEX_STABILIZER, valid_qubits, num_valid);
+            }
+        }
+
+        // Normalize
+        norm_sq = 0.0;
+        for (size_t i = 0; i < dim; i++) {
+            norm_sq += state->coordinates[i].real * state->coordinates[i].real +
+                       state->coordinates[i].imag * state->coordinates[i].imag;
+        }
+        if (norm_sq > 1e-15) {
+            float inv_norm = 1.0f / sqrtf((float)norm_sq);
+            for (size_t i = 0; i < dim; i++) {
+                state->coordinates[i].real *= inv_norm;
+                state->coordinates[i].imag *= inv_norm;
+            }
+        }
+        state->is_normalized = true;
+    }
+
+    // Clear any anyon states - ground state has no anyons
+    state->num_anyons = 0;
+}
+
+void apply_pauli_x(quantum_state_t* state, size_t qubit) {
+    if (!state || !state->coordinates || qubit >= state->num_qubits) return;
+
+    // Pauli-X gate (bit-flip): |0⟩ ↔ |1⟩
+    // In computational basis: X|ψ⟩ = Σ_i α_i |i ⊕ 2^qubit⟩
+    //
+    // This swaps amplitudes of basis states that differ only in the specified qubit.
+    // For qubit k: amplitude at index i is swapped with amplitude at index i XOR 2^k
+
+    size_t dim = state->dimension;
+    size_t mask = 1UL << qubit;
+
+    for (size_t i = 0; i < dim; i++) {
+        size_t j = i ^ mask;
+        if (j > i) {  // Only swap once per pair
+            ComplexFloat temp = state->coordinates[i];
+            state->coordinates[i] = state->coordinates[j];
+            state->coordinates[j] = temp;
+        }
+    }
+}
+
+// ============================================================================
 // Error Detection
 // ============================================================================
 

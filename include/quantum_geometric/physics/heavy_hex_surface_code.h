@@ -210,7 +210,7 @@ bool validate_hex_parameters(const HexConfig* config);
  * @param y Y coordinate in the lattice
  * @return true on success, false on failure
  */
-bool apply_pauli_x(quantum_state* state, size_t x, size_t y);
+bool hex_apply_pauli_x(quantum_state* state, size_t x, size_t y);
 
 /**
  * @brief Apply Pauli Y operator at a lattice position
@@ -220,7 +220,7 @@ bool apply_pauli_x(quantum_state* state, size_t x, size_t y);
  * @param y Y coordinate in the lattice
  * @return true on success, false on failure
  */
-bool apply_pauli_y(quantum_state* state, size_t x, size_t y);
+bool hex_apply_pauli_y(quantum_state* state, size_t x, size_t y);
 
 /**
  * @brief Apply Pauli Z operator at a lattice position
@@ -230,7 +230,7 @@ bool apply_pauli_y(quantum_state* state, size_t x, size_t y);
  * @param y Y coordinate in the lattice
  * @return true on success, false on failure
  */
-bool apply_pauli_z(quantum_state* state, size_t x, size_t y);
+bool hex_apply_pauli_z(quantum_state* state, size_t x, size_t y);
 
 // ============================================================================
 // Advanced Operations

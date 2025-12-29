@@ -6,6 +6,8 @@
 #ifndef ANYON_DETECTION_H
 #define ANYON_DETECTION_H
 
+// Include unified types first for canonical definitions
+#include "quantum_geometric/physics/anyon_types.h"
 #include "quantum_geometric/physics/quantum_state_operations.h"
 #include <stdbool.h>
 #include <complex.h>
@@ -62,12 +64,16 @@ typedef struct Anyon {
 } Anyon;
 
 // Anyon pair for braiding/fusion operations
+// Guarded to prevent conflict with TopologicalAnyonPair alias in basic_topological_protection.h
+#ifndef ANYON_PAIR_DEFINED
+#define ANYON_PAIR_DEFINED
 typedef struct AnyonPair {
     Anyon* anyon1;         // First anyon
     Anyon* anyon2;         // Second anyon
     double interaction_strength; // Pair interaction strength
     double braiding_phase; // Accumulated braiding phase
 } AnyonPair;
+#endif // ANYON_PAIR_DEFINED
 
 // Configuration for braiding operations
 typedef struct {
@@ -78,12 +84,25 @@ typedef struct {
 } BraidingConfig;
 
 // Configuration for fusion operations
-typedef struct {
-    double energy_threshold;      // Maximum energy for fusion to occur
-    double coherence_requirement; // Minimum coherence for valid fusion
-    size_t fusion_attempts;       // Number of fusion attempts
-    bool track_statistics;        // Track fusion statistics
+// Note: FusionConfig is defined in anyon_types.h with unified fields
+// This block is kept for documentation but guarded to prevent redefinition
+#ifndef FUSION_CONFIG_DEFINED
+#define FUSION_CONFIG_DEFINED
+typedef struct FusionConfig {
+    // From anyon_fusion.h
+    size_t lattice_width;           /**< Width of the lattice */
+    size_t lattice_height;          /**< Height of the lattice */
+    size_t history_length;          /**< Length of fusion history to track */
+    bool track_statistics;          /**< Enable braiding statistics tracking */
+    double probability_threshold;   /**< Minimum probability threshold */
+    // From anyon_detection.h
+    double energy_threshold;        /**< Maximum energy for fusion to occur */
+    double coherence_requirement;   /**< Minimum coherence for valid fusion */
+    size_t fusion_attempts;         /**< Number of fusion attempts */
+    // Additional fields expected by tests
+    double fusion_threshold;        /**< Fusion detection threshold */
 } FusionConfig;
+#endif // FUSION_CONFIG_DEFINED
 
 // Fusion outcome result
 typedef struct {
@@ -344,5 +363,40 @@ quantum_state* create_quantum_state(size_t size);
  * Destroy quantum state
  */
 void destroy_quantum_state(quantum_state* state);
+
+/**
+ * Braid two anyons, accumulating geometric phase
+ * @param state Quantum state
+ * @param pair Anyon pair to braid
+ * @param config Braiding configuration
+ * @return true if braiding successful
+ */
+bool braid_anyons(quantum_state* state, AnyonPair* pair, const BraidingConfig* config);
+
+/**
+ * Fuse two anyons according to fusion rules
+ * @param state Quantum state
+ * @param pair Anyon pair to fuse
+ * @param config Fusion configuration
+ * @return Fusion outcome with probability and result type
+ */
+FusionOutcome fuse_anyons(quantum_state* state, const AnyonPair* pair, const FusionConfig* config);
+
+/**
+ * Check if fusion is allowed by topological rules
+ * @param anyon1 First anyon
+ * @param anyon2 Second anyon
+ * @return true if fusion is allowed
+ */
+bool check_fusion_rules(const Anyon* anyon1, const Anyon* anyon2);
+
+/**
+ * Calculate interaction energy between two anyons
+ * Based on charge-charge and type-dependent interactions
+ * @param anyon1 First anyon
+ * @param anyon2 Second anyon
+ * @return Interaction energy (positive for repulsion)
+ */
+double calculate_interaction_energy(const Anyon* anyon1, const Anyon* anyon2);
 
 #endif // ANYON_DETECTION_H

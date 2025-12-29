@@ -255,22 +255,22 @@ static bool apply_hex_correction(HexLattice* lattice,
             
             if (coord->type == HEX_PLAQUETTE) {
                 // Apply X corrections for Z-type stabilizer
-                if (!apply_pauli_x(state, coord->x - 1, coord->y) ||
-                    !apply_pauli_x(state, coord->x + 1, coord->y) ||
-                    !apply_pauli_x(state, coord->x, coord->y - 1) ||
-                    !apply_pauli_x(state, coord->x, coord->y + 1) ||
-                    !apply_pauli_x(state, coord->x - 1, coord->y + 1) ||
-                    !apply_pauli_x(state, coord->x + 1, coord->y - 1)) {
+                if (!hex_apply_pauli_x(state, coord->x - 1, coord->y) ||
+                    !hex_apply_pauli_x(state, coord->x + 1, coord->y) ||
+                    !hex_apply_pauli_x(state, coord->x, coord->y - 1) ||
+                    !hex_apply_pauli_x(state, coord->x, coord->y + 1) ||
+                    !hex_apply_pauli_x(state, coord->x - 1, coord->y + 1) ||
+                    !hex_apply_pauli_x(state, coord->x + 1, coord->y - 1)) {
                     return false;
                 }
             } else {
                 // Apply Z corrections for X-type stabilizer
-                if (!apply_pauli_z(state, coord->x - 1, coord->y) ||
-                    !apply_pauli_z(state, coord->x + 1, coord->y) ||
-                    !apply_pauli_z(state, coord->x, coord->y - 1) ||
-                    !apply_pauli_z(state, coord->x, coord->y + 1) ||
-                    !apply_pauli_z(state, coord->x - 1, coord->y - 1) ||
-                    !apply_pauli_z(state, coord->x + 1, coord->y + 1)) {
+                if (!hex_apply_pauli_z(state, coord->x - 1, coord->y) ||
+                    !hex_apply_pauli_z(state, coord->x + 1, coord->y) ||
+                    !hex_apply_pauli_z(state, coord->x, coord->y - 1) ||
+                    !hex_apply_pauli_z(state, coord->x, coord->y + 1) ||
+                    !hex_apply_pauli_z(state, coord->x - 1, coord->y - 1) ||
+                    !hex_apply_pauli_z(state, coord->x + 1, coord->y + 1)) {
                     return false;
                 }
             }
@@ -383,7 +383,7 @@ bool measure_pauli_z(const quantum_state* state, size_t x, size_t y, double* res
 // Public API: Pauli gate applications (from heavy_hex_surface_code.h)
 // ============================================================================
 
-bool apply_pauli_x(quantum_state* state, size_t x, size_t y) {
+bool hex_apply_pauli_x(quantum_state* state, size_t x, size_t y) {
     if (!state || !state->coordinates) return false;
 
     size_t qubit_idx = coords_to_qubit(state, (int)x, (int)y);
@@ -408,7 +408,7 @@ bool apply_pauli_x(quantum_state* state, size_t x, size_t y) {
     return true;
 }
 
-bool apply_pauli_y(quantum_state* state, size_t x, size_t y) {
+bool hex_apply_pauli_y(quantum_state* state, size_t x, size_t y) {
     if (!state || !state->coordinates) return false;
 
     size_t qubit_idx = coords_to_qubit(state, (int)x, (int)y);
@@ -442,7 +442,7 @@ bool apply_pauli_y(quantum_state* state, size_t x, size_t y) {
     return true;
 }
 
-bool apply_pauli_z(quantum_state* state, size_t x, size_t y) {
+bool hex_apply_pauli_z(quantum_state* state, size_t x, size_t y) {
     if (!state || !state->coordinates) return false;
 
     size_t qubit_idx = coords_to_qubit(state, (int)x, (int)y);

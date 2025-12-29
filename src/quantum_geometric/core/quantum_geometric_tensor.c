@@ -1421,3 +1421,68 @@ qgt_error_t geometric_tensor_validate(const quantum_geometric_tensor_t* tensor) 
 
     return QGT_SUCCESS;
 }
+
+// ============================================================================
+// Geometric Phase Operations
+// ============================================================================
+
+qgt_error_t geometric_compute_phase(ComplexFloat* phase,
+                                    const quantum_state_t* state,
+                                    const quantum_geometric_connection_t* connection) {
+    if (!phase || !state || !connection) {
+        return QGT_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (!state->coordinates) {
+        return QGT_ERROR_INVALID_STATE;
+    }
+
+    // For a flat connection (Levi-Civita in Euclidean space),
+    // the geometric phase is trivial (identity)
+    // In curved spaces, we compute the holonomy from the connection
+
+    // Check if connection has zero coefficients (flat space)
+    bool is_flat = true;
+    size_t dim = connection->dimension;
+    for (size_t i = 0; i < dim * dim * dim && is_flat; i++) {
+        float mag = sqrtf(connection->coefficients[i].real * connection->coefficients[i].real +
+                         connection->coefficients[i].imag * connection->coefficients[i].imag);
+        if (mag > 1e-6f) {
+            is_flat = false;
+        }
+    }
+
+    if (is_flat) {
+        // Trivial phase for flat space
+        phase->real = 1.0f;
+        phase->imag = 0.0f;
+        return QGT_SUCCESS;
+    }
+
+    // For non-trivial connections, compute the Berry phase
+    // Phase = exp(i * integral(A · dx)) where A is the connection
+    // For discrete states, we approximate as:
+    // Phase = exp(i * sum(A_i * |psi_i|^2))
+
+    double phase_real = 0.0;
+    double phase_imag = 0.0;
+
+    for (size_t i = 0; i < state->dimension; i++) {
+        double prob_i = state->coordinates[i].real * state->coordinates[i].real +
+                        state->coordinates[i].imag * state->coordinates[i].imag;
+
+        // Sum diagonal connection elements weighted by probability
+        if (i < dim) {
+            size_t idx = i * dim * dim + i * dim + i;  // Christoffel symbol Gamma^i_ii
+            if (idx < dim * dim * dim) {
+                phase_imag += connection->coefficients[idx].imag * prob_i;
+            }
+        }
+    }
+
+    // Compute exp(i * phase_imag) = cos(phase_imag) + i*sin(phase_imag)
+    phase->real = (float)cos(phase_imag);
+    phase->imag = (float)sin(phase_imag);
+
+    return QGT_SUCCESS;
+}

@@ -104,4 +104,53 @@ typedef struct {
     size_t skip_cols;
 } csv_config_t;
 
+// ============================================================================
+// Simplified Data Loader API for Image Datasets (MNIST, CIFAR-10, etc.)
+// ============================================================================
+
+// Forward declaration of tensor_t (defined in tensor_types.h)
+struct tensor_t;
+
+/**
+ * @brief Simple data loader for image datasets
+ *
+ * This provides a simplified interface for loading batch image data
+ * for training quantum machine learning models.
+ */
+typedef struct DataLoader {
+    size_t image_width;         /**< Width of images in pixels */
+    size_t image_height;        /**< Height of images in pixels */
+    size_t num_channels;        /**< Number of color channels (1=grayscale, 3=RGB) */
+    size_t batch_size;          /**< Current batch size */
+    size_t num_classes;         /**< Number of classification classes */
+    void* data_handle;          /**< Internal handle for data management */
+} DataLoader;
+
+/**
+ * @brief Initialize a data loader for a named dataset
+ *
+ * @param loader Pointer to DataLoader structure to initialize
+ * @param dataset_name Name of dataset ("cifar10", "mnist", etc.)
+ * @param batch_size Number of samples per batch
+ * @return true if initialization successful, false otherwise
+ */
+bool init_data_loader(DataLoader* loader, const char* dataset_name, size_t batch_size);
+
+/**
+ * @brief Clean up data loader resources
+ *
+ * @param loader Pointer to DataLoader to clean up
+ */
+void cleanup_data_loader(DataLoader* loader);
+
+/**
+ * @brief Load the next batch of images and labels
+ *
+ * @param loader Pointer to initialized DataLoader
+ * @param images Output tensor for image data [batch_size x height x width x channels]
+ * @param labels Output tensor for labels [batch_size x num_classes] (one-hot encoded)
+ * @return true if batch loaded successfully, false otherwise
+ */
+bool load_next_batch(DataLoader* loader, struct tensor_t* images, struct tensor_t* labels);
+
 #endif // DATA_LOADER_H

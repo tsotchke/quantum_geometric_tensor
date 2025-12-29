@@ -34,6 +34,9 @@ typedef struct ChargeConfig {
     double measurement_threshold;   // Threshold for valid charge measurement
     double correlation_threshold;   // Threshold for significant correlation
     bool track_correlations;        // Enable correlation tracking
+
+    // Test-expected field (TDD compatibility)
+    double fusion_threshold;        // Threshold for fusion detection (tests expect this)
 } ChargeConfig;
 
 /**
@@ -61,12 +64,15 @@ typedef struct ChargeState {
 /**
  * Collection of anyon positions for charge measurement
  */
+#ifndef ANYON_POSITIONS_DEFINED
+#define ANYON_POSITIONS_DEFINED
 typedef struct AnyonPositions {
     size_t num_anyons;                      // Number of anyons
     size_t x_coords[MAX_CHARGE_ANYONS];     // X coordinates
     size_t y_coords[MAX_CHARGE_ANYONS];     // Y coordinates
     int charges[MAX_CHARGE_ANYONS];         // Charge values
 } AnyonPositions;
+#endif // ANYON_POSITIONS_DEFINED
 
 /**
  * Results of charge measurements

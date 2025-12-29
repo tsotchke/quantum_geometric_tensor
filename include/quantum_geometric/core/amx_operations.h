@@ -21,6 +21,7 @@ typedef struct {
 bool amx_available(void);
 int amx_init(void);
 void amx_cleanup(void);
+void amx_shutdown(void);  // Alias for amx_cleanup (backward compatibility)
 void amx_matrix_multiply(float* C, const float* A, const float* B, int size);
 
 // Low-level AMX instructions (implemented in assembly)

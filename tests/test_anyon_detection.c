@@ -1,14 +1,19 @@
 /**
  * @file test_anyon_detection.c
  * @brief Tests for anyon detection and tracking system
+ *
+ * Tests the anyon detection API using the library's geometric quantum_state type.
+ * quantum_state is typedef'd from quantum_state_t which contains geometric coordinates.
  */
 
 #include "quantum_geometric/physics/anyon_detection.h"
 #include "quantum_geometric/physics/quantum_state_operations.h"
+#include "quantum_geometric/core/quantum_types.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
 #include <math.h>
+#include <time.h>
 
 // Test helper functions
 static void test_initialization(void);
@@ -19,7 +24,8 @@ static void test_fusion_rules(void);
 static void test_error_cases(void);
 static void test_performance_requirements(void);
 
-// Mock functions and data
+// Helper functions using library's geometric quantum_state API
+// quantum_state is typedef'd to quantum_state_t in anyon_detection.h
 static quantum_state* create_test_state(size_t width, size_t height, size_t depth);
 static void apply_test_anyons(quantum_state* state);
 static void cleanup_test_state(quantum_state* state);
@@ -353,57 +359,74 @@ static void test_performance_requirements(void) {
     printf("Performance requirement tests passed\n");
 }
 
-// Mock implementation of test helpers
-static QuantumState* create_test_state(size_t width, size_t height, size_t depth) {
-    QuantumState* state = malloc(sizeof(QuantumState));
+// Test helper implementations using library's geometric quantum_state API
+static quantum_state* create_test_state(size_t width, size_t height, size_t depth) {
+    // Use library's create_quantum_state function
+    // Total qubits = width * height * depth
+    size_t num_qubits = width * height * depth;
+
+    // Create quantum state using the library function from anyon_detection.h
+    quantum_state* state = create_quantum_state(num_qubits);
     if (!state) return NULL;
 
-    // Calculate total number of qubits
-    size_t num_qubits = width * height * depth;
-    
-    // Allocate amplitudes array (2 amplitudes per qubit for |0⟩ and |1⟩ states)
-    state->amplitudes = calloc(num_qubits * 2, sizeof(double complex));
-    if (!state->amplitudes) {
-        free(state);
-        return NULL;
-    }
-
-    // Initialize state parameters
-    state->dimension = num_qubits;
-    state->width = width;
-    state->fidelity = 1.0;
-    state->purity = 1.0;
-
-    // Initialize all qubits to |0⟩ state
-    for (size_t i = 0; i < num_qubits; i++) {
-        state->amplitudes[i * 2] = 1.0;     // |0⟩ amplitude
-        state->amplitudes[i * 2 + 1] = 0.0; // |1⟩ amplitude
+    // Initialize to |00...0⟩ - first basis state has amplitude 1
+    // The geometric quantum state uses coordinates (ComplexFloat array)
+    if (state->coordinates && state->dimension > 0) {
+        state->coordinates[0].real = 1.0f;
+        state->coordinates[0].imag = 0.0f;
+        for (size_t i = 1; i < state->dimension; i++) {
+            state->coordinates[i].real = 0.0f;
+            state->coordinates[i].imag = 0.0f;
+        }
+        state->is_normalized = true;
     }
 
     return state;
 }
 
-static void apply_test_anyons(QuantumState* state) {
-    if (!state) return;
+static void apply_test_anyons(quantum_state* state) {
+    if (!state || !state->coordinates) return;
 
-    // Create X-type anyon at (1,1)
-    size_t idx1 = (1 * state->width + 1) * 2;
-    state->amplitudes[idx1] = 0.0;      // |0⟩ amplitude
-    state->amplitudes[idx1 + 1] = 1.0;  // |1⟩ amplitude
+    // Create anyon excitations by modifying the quantum state
+    // Anyons are detected from non-trivial stabilizer measurements,
+    // which arise from excited states (non-ground state configurations)
 
-    // Create Z-type anyon at (2,2)
-    size_t idx2 = (2 * state->width + 2) * 2;
-    state->amplitudes[idx2] = 1.0/sqrt(2.0);     // |0⟩ amplitude
-    state->amplitudes[idx2 + 1] = 1.0/sqrt(2.0); // |1⟩ amplitude
+    // For a lattice of qubits, we create excitations by putting
+    // the system in a superposition that violates stabilizer constraints
 
-    // Create Y-type anyon at (3,3)
-    size_t idx3 = (3 * state->width + 3) * 2;
-    state->amplitudes[idx3] = 1.0/sqrt(2.0);        // |0⟩ amplitude
-    state->amplitudes[idx3 + 1] = I/sqrt(2.0);      // |1⟩ amplitude with i phase
+    size_t dim = state->dimension;
+    if (dim < 4) return;  // Need at least 2 qubits for meaningful test
+
+    // Create a state with non-trivial syndrome pattern:
+    // Equal superposition of |00...0⟩ and some excited states
+    // This will create detectable anyon signatures
+
+    float norm = 1.0f / sqrtf(3.0f);  // Normalize over 3 states
+
+    // |ψ⟩ = (|0⟩ + |1⟩ + |2⟩) / √3  - creates X-type and Z-type excitations
+    state->coordinates[0].real = norm;
+    state->coordinates[0].imag = 0.0f;
+
+    if (dim > 1) {
+        state->coordinates[1].real = norm;
+        state->coordinates[1].imag = 0.0f;
+    }
+
+    if (dim > 2) {
+        state->coordinates[2].real = norm;
+        state->coordinates[2].imag = 0.0f;
+    }
+
+    // Zero out remaining amplitudes
+    for (size_t i = 3; i < dim; i++) {
+        state->coordinates[i].real = 0.0f;
+        state->coordinates[i].imag = 0.0f;
+    }
+
+    state->is_normalized = true;
 }
 
-static void cleanup_test_state(QuantumState* state) {
-    if (!state) return;
-    free(state->amplitudes);
-    free(state);
+static void cleanup_test_state(quantum_state* state) {
+    // Use library's destroy function
+    destroy_quantum_state(state);
 }

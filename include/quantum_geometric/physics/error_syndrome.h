@@ -88,6 +88,7 @@ typedef struct MatchingGraph {
 // Configuration for syndrome extraction
 #define SYNDROME_CONFIG_DEFINED
 typedef struct SyndromeConfig {
+    // Core configuration
     bool enable_parallel;      // Enable parallel measurements
     size_t parallel_group_size; // Size of parallel groups
     size_t max_parallel_ops;   // Maximum parallel operations
@@ -105,6 +106,17 @@ typedef struct SyndromeConfig {
     size_t history_window;     // Size of history window for error tracking
     uint64_t calibration_interval; // Calibration interval in nanoseconds
     size_t num_threads;        // Number of threads for parallel operations
+
+    // Enhanced configuration fields (TDD - required by tests)
+    bool auto_correction;          // Enable automatic error correction
+    bool enable_z_optimization;    // Enable Z-stabilizer optimizations
+    bool use_phase_tracking;       // Enable phase tracking
+    bool track_spatial_correlations; // Track spatial correlations
+    size_t history_capacity;       // Capacity for history tracking
+    bool dynamic_phase_correction; // Enable dynamic phase correction
+    double phase_calibration;      // Phase calibration factor
+    double z_gate_fidelity;        // Z gate fidelity
+    double measurement_fidelity;   // Measurement fidelity
 } SyndromeConfig;
 
 // Initialize matching graph

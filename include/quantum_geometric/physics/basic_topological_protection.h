@@ -24,7 +24,10 @@ typedef TopologicalErrorCode ErrorCode;
 #define ERROR_INVALID_STATE TOPO_ERROR_INVALID_STATE
 
 // AnyonPair alias for basic topological operations
+#ifndef ANYON_PAIR_DEFINED
+#define ANYON_PAIR_DEFINED
 typedef TopologicalAnyonPair AnyonPair;
+#endif
 
 // ============================================================================
 // Stabilizer Measurement Operations
@@ -109,6 +112,24 @@ StabilizerType get_stabilizer_type(quantum_state_t* state, size_t index);
  * @return Location index (plaquette or vertex index depending on type)
  */
 size_t get_stabilizer_location(quantum_state_t* state, size_t index);
+
+// ============================================================================
+// State Initialization
+// ============================================================================
+
+/**
+ * Initialize a quantum state to the ground state of the topological code.
+ * The ground state is the +1 eigenstate of all stabilizer operators.
+ * @param state Quantum state to initialize
+ */
+void initialize_ground_state(quantum_state_t* state);
+
+/**
+ * Apply Pauli-X gate to a specific qubit
+ * @param state Quantum state
+ * @param qubit Qubit index to apply X gate
+ */
+void apply_pauli_x(quantum_state_t* state, size_t qubit);
 
 // ============================================================================
 // Error Detection and Correction

@@ -3,8 +3,10 @@
  * @brief Tests for topological error correction and coherence protection
  */
 
-#include "../include/topological_protection.h"
-#include <unity.h>
+#include "quantum_geometric/physics/topological_protection.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <assert.h>
 #include <math.h>
 
 /* Test configuration */

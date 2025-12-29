@@ -133,6 +133,68 @@ const char* quantum_pipeline_get_error(quantum_pipeline_handle_t pipeline);
 // pipeline: Pipeline handle from quantum_pipeline_create
 void quantum_pipeline_destroy(quantum_pipeline_handle_t pipeline);
 
+// ============================================================================
+// Simplified Quantum Pipeline API for Training and Inference
+// ============================================================================
+
+// Forward declaration of tensor_t (defined in tensor_types.h)
+struct tensor_t;
+
+/**
+ * @brief Simplified quantum pipeline for training and inference
+ *
+ * This provides a simple interface for quantum machine learning pipelines
+ * that abstracts the internal complexity of the quantum circuit.
+ */
+typedef struct QuantumPipeline {
+    size_t input_size;          /**< Input dimension (flattened) */
+    size_t output_size;         /**< Output dimension (number of classes) */
+    float learning_rate;        /**< Current learning rate */
+    void* model_handle;         /**< Internal handle for quantum model */
+} QuantumPipeline;
+
+/**
+ * @brief Initialize a quantum pipeline
+ *
+ * @param pipeline Pointer to QuantumPipeline structure to initialize
+ * @param input_size Input dimension (e.g., image_width * image_height * channels)
+ * @param output_size Output dimension (number of classes for classification)
+ * @param learning_rate Learning rate for training
+ * @return true if initialization successful, false otherwise
+ */
+bool init_quantum_pipeline(QuantumPipeline* pipeline, size_t input_size,
+                          size_t output_size, float learning_rate);
+
+/**
+ * @brief Clean up quantum pipeline resources
+ *
+ * @param pipeline Pointer to QuantumPipeline to clean up
+ */
+void cleanup_quantum_pipeline(QuantumPipeline* pipeline);
+
+/**
+ * @brief Perform a single training step
+ *
+ * @param pipeline Pointer to initialized QuantumPipeline
+ * @param input Input tensor [batch_size x input_size]
+ * @param target Target tensor [batch_size x output_size] (one-hot encoded)
+ * @param loss Output: computed loss value
+ * @return true if training step successful, false otherwise
+ */
+bool train_step(QuantumPipeline* pipeline, struct tensor_t* input,
+               struct tensor_t* target, float* loss);
+
+/**
+ * @brief Perform inference on input data
+ *
+ * @param pipeline Pointer to initialized QuantumPipeline
+ * @param input Input tensor [batch_size x input_size]
+ * @param output Output tensor (will be allocated) [batch_size x output_size]
+ * @return true if inference successful, false otherwise
+ */
+bool inference(QuantumPipeline* pipeline, struct tensor_t* input,
+              struct tensor_t* output);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1,170 +1,88 @@
+/**
+ * @file amx_operations.c
+ * @brief AMX (Apple Matrix Extension) operations implementation
+ *
+ * Provides matrix multiplication acceleration using Apple's AMX
+ * hardware on Apple Silicon, with CPU fallback for other platforms.
+ */
+
+#include "quantum_geometric/core/amx_operations.h"
 #include <stdlib.h>
 #include <string.h>
-#include "quantum_geometric/core/amx_operations.h"
+#include <stdbool.h>
 
-#ifdef __aarch64__
+#ifdef __APPLE__
+#include <Accelerate/Accelerate.h>
+#endif
 
-static amx_state_t amx_state;
+// AMX state
+static bool g_amx_initialized = false;
+static bool g_amx_available = false;
 
-// ============================================================================
-// AMX Assembly Fallbacks
-// ============================================================================
-// These provide weak symbol fallbacks for AMX assembly instructions.
-// On systems with actual AMX assembly support, these will be overridden.
-// On systems without AMX assembly files, these provide safe no-ops.
-
-#ifndef QGT_HAS_AMX_ASM
-
-// Weak symbol fallbacks for AMX assembly functions
-__attribute__((weak)) void _amx_init_asm(void) {
-    // No-op fallback - AMX not available
-}
-
-__attribute__((weak)) void amx_stop(void) {
-    // No-op fallback
-}
-
-__attribute__((weak)) void amx_ldx(const void* ptr, uint64_t offset) {
-    (void)ptr;
-    (void)offset;
-    // No-op fallback
-}
-
-__attribute__((weak)) void amx_ldy(const void* ptr, uint64_t offset) {
-    (void)ptr;
-    (void)offset;
-    // No-op fallback
-}
-
-__attribute__((weak)) void amx_stx(void* ptr, uint64_t offset) {
-    (void)ptr;
-    (void)offset;
-    // No-op fallback
-}
-
-__attribute__((weak)) void amx_sty(void* ptr, uint64_t offset) {
-    (void)ptr;
-    (void)offset;
-    // No-op fallback
-}
-
-__attribute__((weak)) void amx_ldz(const void* ptr, uint64_t offset) {
-    (void)ptr;
-    (void)offset;
-    // No-op fallback
-}
-
-__attribute__((weak)) void amx_stz(void* ptr, uint64_t offset) {
-    (void)ptr;
-    (void)offset;
-    // No-op fallback
-}
-
-__attribute__((weak)) void amx_fma64(uint64_t x_offset, uint64_t y_offset, uint64_t z_offset) {
-    (void)x_offset;
-    (void)y_offset;
-    (void)z_offset;
-    // No-op fallback
-}
-
+bool amx_available(void) {
+#ifdef __APPLE__
+#ifdef __arm64__
+    return true;  // Apple Silicon has AMX via Accelerate
 #else
-
-// When AMX assembly is available, use extern declarations
-extern void _amx_init_asm(void);
-extern void amx_stop(void);
-extern void amx_ldx(const void* ptr, uint64_t offset);
-extern void amx_ldy(const void* ptr, uint64_t offset);
-extern void amx_stx(void* ptr, uint64_t offset);
-extern void amx_sty(void* ptr, uint64_t offset);
-extern void amx_ldz(const void* ptr, uint64_t offset);
-extern void amx_stz(void* ptr, uint64_t offset);
-extern void amx_fma64(uint64_t x_offset, uint64_t y_offset, uint64_t z_offset);
-
-#endif // QGT_HAS_AMX_ASM
-
-// Initialize AMX unit
-static void initialize_amx() {
-    static int initialized = 0;
-    if (!initialized) {
-        _amx_init_asm();
-        initialized = 1;
-    }
-}
-
-// Helper function to load matrix block into AMX registers
-static void load_matrix_block(const float* matrix, int row, int col, int stride, int block_size) {
-    float block[AMX_TILE_M][AMX_TILE_N] __attribute__((aligned(AMX_ALIGNMENT)));
-    
-    // Copy block from matrix to aligned buffer
-    for (int i = 0; i < block_size; i++) {
-        for (int j = 0; j < block_size; j++) {
-            block[i][j] = matrix[(row + i) * stride + (col + j)];
-        }
-    }
-    
-    // Load block into AMX registers with proper alignment
-    amx_ldx(block, 0);
-}
-
-// Helper function to store matrix block from AMX registers
-static void store_matrix_block(float* matrix, int row, int col, int stride, int block_size) {
-    float block[AMX_TILE_M][AMX_TILE_N] __attribute__((aligned(AMX_ALIGNMENT)));
-    
-    // Store block from AMX registers
-    amx_stz(block, 0);
-    
-    // Copy block to matrix
-    for (int i = 0; i < block_size; i++) {
-        for (int j = 0; j < block_size; j++) {
-            matrix[(row + i) * stride + (col + j)] = block[i][j];
-        }
-    }
-}
-
-void amx_matrix_multiply(float* C, const float* A, const float* B, int size) {
-    initialize_amx();
-    
-    // Process matrix in blocks of AMX tile size
-    for (int i = 0; i < size; i += AMX_TILE_M) {
-        for (int j = 0; j < size; j += AMX_TILE_N) {
-            // Clear accumulator
-            memset(amx_state.z, 0, sizeof(amx_state.z));
-            
-            for (int k = 0; k < size; k += AMX_TILE_K) {
-                // Load blocks from A and B with proper alignment
-                load_matrix_block(A, i, k, size, AMX_TILE_M);
-                load_matrix_block(B, k, j, size, AMX_TILE_N);
-                
-                // Perform block matrix multiplication using AMX
-                amx_fma64(0, 0, 0);
-            }
-            
-            // Store result block to C
-            store_matrix_block(C, i, j, size, AMX_TILE_M);
-        }
-    }
+    return false;
+#endif
+#else
+    return false;
+#endif
 }
 
 int amx_init(void) {
-    static int initialized = 0;
-    if (!initialized) {
-        _amx_init_asm();
-        initialized = 1;
+    if (g_amx_initialized) {
+        return g_amx_available ? 0 : -1;
     }
-    return 0;
+
+#ifdef __APPLE__
+#ifdef __arm64__
+    // On Apple Silicon, AMX is available through Accelerate framework
+    // The actual AMX instructions are used internally by Accelerate's BLAS
+    g_amx_available = true;
+#else
+    // x86 Mac - no AMX, but Accelerate still works
+    g_amx_available = false;
+#endif
+#else
+    // Non-Apple platform - no AMX
+    g_amx_available = false;
+#endif
+
+    g_amx_initialized = true;
+    return g_amx_available ? 0 : -1;
 }
 
 void amx_cleanup(void) {
-    amx_stop();
-    memset(&amx_state, 0, sizeof(amx_state));
+    // Reset AMX state
+    g_amx_initialized = false;
+    g_amx_available = false;
 }
 
-#else
+// Provide amx_shutdown as alias for amx_cleanup (backward compatibility)
+void amx_shutdown(void) {
+    amx_cleanup();
+}
 
-// Fallback implementation for non-Apple Silicon platforms
 void amx_matrix_multiply(float* C, const float* A, const float* B, int size) {
-    // Use basic OpenMP parallel implementation
-    #pragma omp parallel for collapse(2)
+    if (!A || !B || !C || size <= 0) {
+        return;
+    }
+
+#ifdef __APPLE__
+    // Use Accelerate's cblas_sgemm which utilizes AMX on Apple Silicon
+    // C = alpha * A * B + beta * C
+    // With alpha = 1.0, beta = 0.0: C = A * B
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                size, size, size,
+                1.0f,  // alpha
+                A, size,   // A and its leading dimension
+                B, size,   // B and its leading dimension
+                0.0f,  // beta
+                C, size);  // C and its leading dimension
+#else
+    // CPU fallback: naive matrix multiplication
     for (int i = 0; i < size; i++) {
         for (int j = 0; j < size; j++) {
             float sum = 0.0f;
@@ -174,28 +92,5 @@ void amx_matrix_multiply(float* C, const float* A, const float* B, int size) {
             C[i * size + j] = sum;
         }
     }
-}
-
-int amx_init(void) {
-    return 0;
-}
-
-void amx_cleanup(void) {
-    // Nothing to clean up in fallback implementation
-}
-
-#endif // __aarch64__
-
-// Helper function to check if AMX is available
-bool amx_available() {
-#ifdef __aarch64__
-    // Check if running on Apple Silicon
-    #ifdef __APPLE__
-        return true;  // AMX is available on all Apple Silicon chips
-    #else
-        return false;  // Not on Apple platform
-    #endif
-#else
-    return false;  // Not ARM64 architecture
 #endif
 }

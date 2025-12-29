@@ -126,7 +126,8 @@ ErrorCorrectionConfig* init_hardware_error_correction(bool use_gpu, bool use_dis
     return qec_state.config;
 }
 
-void cleanup_error_correction(ErrorCorrectionConfig* config) {
+// Renamed to match init_hardware_error_correction and avoid conflict with anyon_correction.c
+void cleanup_hardware_error_correction(ErrorCorrectionConfig* config) {
     if (!qec_state.initialized) {
         return;
     }

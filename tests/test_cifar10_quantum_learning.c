@@ -1,3 +1,10 @@
+/**
+ * @file test_cifar10_quantum_learning.c
+ * @brief Tests for CIFAR-10 quantum machine learning pipeline
+ *
+ * Tests the DataLoader and QuantumPipeline APIs for image classification tasks.
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,37 +19,15 @@
 #include "quantum_geometric/core/quantum_geometric_types.h"
 #include "quantum_geometric/learning/learning_task.h"
 #include "quantum_geometric/core/tensor_types.h"
+#include "quantum_geometric/core/tensor_operations.h"
 #include "quantum_geometric/core/quantum_complex.h"
 #include "test_helpers.h"
 
 #define EPSILON 1e-6
 
-// Data loader structure definition
-typedef struct {
-    size_t image_width;
-    size_t image_height;
-    size_t num_channels;
-    void* data_handle;  // Internal handle for data management
-} DataLoader;
-
-// Quantum pipeline structure definition
-typedef struct {
-    size_t input_size;
-    size_t output_size;
-    float learning_rate;
-    void* model_handle;  // Internal handle for quantum model
-} QuantumPipeline;
-
-// Data loader function declarations
-bool init_data_loader(DataLoader* loader, const char* dataset_name, size_t batch_size);
-void cleanup_data_loader(DataLoader* loader);
-bool load_next_batch(DataLoader* loader, tensor_t* images, tensor_t* labels);
-
-// Quantum pipeline function declarations
-bool init_quantum_pipeline(QuantumPipeline* pipeline, size_t input_size, size_t output_size, float learning_rate);
-void cleanup_quantum_pipeline(QuantumPipeline* pipeline);
-bool train_step(QuantumPipeline* pipeline, tensor_t* input, tensor_t* target, float* loss);
-bool inference(QuantumPipeline* pipeline, tensor_t* input, tensor_t* output);
+// DataLoader and QuantumPipeline types are defined in their respective headers:
+// - quantum_geometric/learning/data_loader.h
+// - quantum_geometric/learning/quantum_pipeline.h
 
 #define BATCH_SIZE 32
 #define NUM_EPOCHS 5
@@ -167,8 +152,8 @@ static bool test_training_step() {
     size_t output_dims[] = {BATCH_SIZE, NUM_CLASSES};
     tensor_t input, target;
 
-    if (!qg_tensor_init(&input, input_dims, 2, GEOMETRIC_TENSOR_HERMITIAN) ||
-        !qg_tensor_init(&target, output_dims, 2, GEOMETRIC_TENSOR_HERMITIAN)) {
+    if (!qg_tensor_init(&input, input_dims, 2) ||
+        !qg_tensor_init(&target, output_dims, 2)) {
         printf("Failed to initialize tensors\n");
         cleanup_quantum_pipeline(&pipeline);
         return false;
@@ -233,7 +218,7 @@ static bool test_inference() {
     size_t input_dims[] = {1, IMAGE_SIZE * IMAGE_SIZE * NUM_CHANNELS};
     tensor_t input, output;
 
-    if (!qg_tensor_init(&input, input_dims, 2, GEOMETRIC_TENSOR_HERMITIAN)) {
+    if (!qg_tensor_init(&input, input_dims, 2)) {
         printf("Failed to initialize input tensor\n");
         cleanup_quantum_pipeline(&pipeline);
         return false;

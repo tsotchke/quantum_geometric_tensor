@@ -456,6 +456,40 @@ qgt_error_t quantum_state_initialize_basis(quantum_state_t* state, size_t basis_
     return QGT_SUCCESS;
 }
 
+qgt_error_t quantum_state_initialize(quantum_state_t* state, const ComplexFloat* amplitudes) {
+    if (!state || !state->coordinates || !amplitudes) return QGT_ERROR_INVALID_ARGUMENT;
+
+    // Copy amplitudes to state coordinates
+    memcpy(state->coordinates, amplitudes, state->dimension * sizeof(ComplexFloat));
+
+    // Check normalization and normalize if needed
+    double norm_sq = 0.0;
+    for (size_t i = 0; i < state->dimension; i++) {
+        norm_sq += amplitudes[i].real * amplitudes[i].real +
+                   amplitudes[i].imag * amplitudes[i].imag;
+    }
+
+    if (norm_sq < 1e-15) {
+        // State is too close to zero - invalid
+        return QGT_ERROR_INVALID_STATE;
+    }
+
+    // Check if already normalized (within tolerance)
+    if (fabs(norm_sq - 1.0) < 1e-6) {
+        state->is_normalized = true;
+    } else {
+        // Normalize the state
+        float inv_norm = 1.0f / sqrtf((float)norm_sq);
+        for (size_t i = 0; i < state->dimension; i++) {
+            state->coordinates[i].real *= inv_norm;
+            state->coordinates[i].imag *= inv_norm;
+        }
+        state->is_normalized = true;
+    }
+
+    return QGT_SUCCESS;
+}
+
 qgt_error_t quantum_state_fidelity(float* fidelity, const quantum_state_t* a, const quantum_state_t* b) {
     if (!fidelity || !a || !b) return QGT_ERROR_INVALID_ARGUMENT;
     if (!a->coordinates || !b->coordinates) return QGT_ERROR_INVALID_ARGUMENT;

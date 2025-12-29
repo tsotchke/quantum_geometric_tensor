@@ -31,6 +31,10 @@ typedef struct TrackingConfig {
     double movement_threshold;      // Threshold for detecting movement
     double stability_threshold;     // Threshold for stability determination
     bool track_movement_patterns;   // Enable movement pattern analysis
+
+    // Test-expected field aliases (TDD compatibility)
+    double move_threshold;          // Alias for movement_threshold (tests expect this)
+    bool track_charges;             // Alias for track_movement_patterns (tests expect this)
 } TrackingConfig;
 
 /**

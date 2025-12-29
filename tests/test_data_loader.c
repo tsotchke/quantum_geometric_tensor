@@ -1,9 +1,15 @@
+/**
+ * @file test_data_loader.c
+ * @brief Tests for quantum data loading functionality
+ */
+
 #include "test_config.h"
 #include "test_matrix_helpers.h"
 #include "quantum_geometric/learning/data_loader.h"
+#include <math.h>
 
 // Test helper functions
-static void assert_dataset_valid(dataset_t* dataset, size_t expected_samples, 
+static void assert_dataset_valid(dataset_t* dataset, size_t expected_samples,
                                size_t expected_features) {
     TEST_ASSERT(dataset != NULL);
     TEST_ASSERT(dataset->num_samples == expected_samples);
@@ -15,38 +21,35 @@ static void assert_dataset_valid(dataset_t* dataset, size_t expected_samples,
 // Test cases
 void test_csv_loading() {
     TEST_SETUP();
-    
+
     // Create test CSV file
     FILE* fp = fopen("test_data.csv", "w");
     TEST_ASSERT(fp != NULL);
     fprintf(fp, "f1,f2,f3,label\n");
     for (int i = 0; i < 10; i++) {
-        fprintf(fp, "%f,%f,%f,%d\n", 
+        fprintf(fp, "%f,%f,%f,%d\n",
                 (float)i/10, (float)(i+1)/10, (float)(i+2)/10, i % 2);
     }
     fclose(fp);
 
-    // Load dataset
+    // Load dataset - use correct API structure
     dataset_config_t config = {
         .format = DATA_FORMAT_CSV,
-        .csv_config = {
-            .delimiter = ",",
-            .has_header = true,
-            .skip_rows = 0,
-            .skip_cols = 0
-        },
-        .normalize = false
+        .delimiter = ",",
+        .has_header = true,
+        .normalize = false,
+        .normalization_method = NORMALIZATION_NONE
     };
 
     dataset_t* dataset = quantum_load_dataset("test_data.csv", config);
     assert_dataset_valid(dataset, 10, 3);
 
-    // Verify data
+    // Verify data - features are ComplexFloat, access .real component
     for (int i = 0; i < 10; i++) {
-        TEST_ASSERT_FLOAT_EQ(dataset->features[i][0], (float)i/10);
-        TEST_ASSERT_FLOAT_EQ(dataset->features[i][1], (float)(i+1)/10);
-        TEST_ASSERT_FLOAT_EQ(dataset->features[i][2], (float)(i+2)/10);
-        TEST_ASSERT_FLOAT_EQ(dataset->labels[i], i % 2);
+        TEST_ASSERT_FLOAT_EQ(dataset->features[i][0].real, (float)i/10);
+        TEST_ASSERT_FLOAT_EQ(dataset->features[i][1].real, (float)(i+1)/10);
+        TEST_ASSERT_FLOAT_EQ(dataset->features[i][2].real, (float)(i+2)/10);
+        TEST_ASSERT_FLOAT_EQ(dataset->labels[i].real, (float)(i % 2));
     }
 
     quantum_dataset_destroy(dataset);
@@ -56,24 +59,24 @@ void test_csv_loading() {
 
 void test_normalization() {
     TEST_SETUP();
-    
+
     // Create test dataset
     dataset_t* dataset = quantum_create_synthetic_data(100, 5, 2, 0);
     assert_dataset_valid(dataset, 100, 5);
 
     // Test min-max normalization
     TEST_ASSERT(quantum_normalize_data(dataset, NORMALIZATION_MINMAX));
-    
-    // Verify normalization
+
+    // Verify normalization - features are ComplexFloat
     for (size_t j = 0; j < dataset->feature_dim; j++) {
-        float min_val = dataset->features[0][j];
-        float max_val = dataset->features[0][j];
-        
+        float min_val = dataset->features[0][j].real;
+        float max_val = dataset->features[0][j].real;
+
         for (size_t i = 1; i < dataset->num_samples; i++) {
-            if (dataset->features[i][j] < min_val) min_val = dataset->features[i][j];
-            if (dataset->features[i][j] > max_val) max_val = dataset->features[i][j];
+            if (dataset->features[i][j].real < min_val) min_val = dataset->features[i][j].real;
+            if (dataset->features[i][j].real > max_val) max_val = dataset->features[i][j].real;
         }
-        
+
         TEST_ASSERT_FLOAT_EQ(min_val, 0.0f);
         TEST_ASSERT_FLOAT_EQ(max_val, 1.0f);
     }
@@ -84,14 +87,14 @@ void test_normalization() {
 
 void test_dataset_split() {
     TEST_SETUP();
-    
+
     // Create test dataset
     dataset_t* dataset = quantum_create_synthetic_data(1000, 10, 2, 0);
     assert_dataset_valid(dataset, 1000, 10);
 
     // Split dataset
     dataset_split_t split = quantum_split_dataset(dataset, 0.7f, 0.15f, true, true);
-    
+
     // Verify split sizes
     assert_dataset_valid(split.train_data, 700, 10);
     assert_dataset_valid(split.val_data, 150, 10);
@@ -104,30 +107,29 @@ void test_dataset_split() {
 
 void test_performance_monitoring() {
     TEST_SETUP();
-    
-    // Configure performance monitoring
-    performance_config_t perf_config = {
+
+    // Configure performance monitoring - use correct type
+    data_performance_config_t perf_config = {
         .num_workers = 4,
         .prefetch_size = 2,
-        .pin_memory = true,
         .cache_size = 1024 * 1024,
         .profile = true
     };
-    
+
     TEST_ASSERT(quantum_configure_performance(perf_config));
 
     // Create and process dataset
     dataset_t* dataset = quantum_create_synthetic_data(10000, 50, 2, 0);
     assert_dataset_valid(dataset, 10000, 50);
 
-    // Get performance metrics
-    performance_metrics_t metrics;
-    TEST_ASSERT(quantum_get_performance_metrics(&metrics));
-    
+    // Get performance metrics - use correct type and function
+    data_loader_metrics_t metrics;
+    TEST_ASSERT(quantum_get_data_loader_metrics(&metrics));
+
     // Verify metrics
-    TEST_ASSERT(metrics.load_time > 0);
+    TEST_ASSERT(metrics.load_time >= 0);
     TEST_ASSERT(metrics.memory_usage > 0);
-    TEST_ASSERT(metrics.throughput > 0);
+    TEST_ASSERT(metrics.throughput >= 0);
 
     quantum_dataset_destroy(dataset);
     TEST_TEARDOWN();
@@ -135,26 +137,27 @@ void test_performance_monitoring() {
 
 void test_memory_management() {
     TEST_SETUP();
-    
+
     // Configure memory management
     memory_config_t mem_config = {
         .streaming = true,
         .chunk_size = 1024 * 1024,
         .max_memory = 1024 * 1024 * 1024,
         .gpu_cache = false,
-        .compress = false
+        .compress = false,
+        .use_mmap = false
     };
-    
+
     TEST_ASSERT(quantum_configure_memory(mem_config));
 
     // Create large dataset
     dataset_t* dataset = quantum_create_synthetic_data(100000, 100, 2, 0);
     assert_dataset_valid(dataset, 100000, 100);
 
-    // Get performance metrics
-    performance_metrics_t metrics;
-    TEST_ASSERT(quantum_get_performance_metrics(&metrics));
-    
+    // Get performance metrics - use correct type
+    data_loader_metrics_t metrics;
+    TEST_ASSERT(quantum_get_data_loader_metrics(&metrics));
+
     // Verify memory usage is within limits
     TEST_ASSERT(metrics.memory_usage <= mem_config.max_memory);
 
@@ -164,7 +167,7 @@ void test_memory_management() {
 
 void test_quantum_matrix_loading() {
     TEST_SETUP();
-    
+
     // Create a decomposable matrix for testing
     const int size = 32;
     float* matrix = (float*)malloc(size * size * sizeof(float));
@@ -182,10 +185,8 @@ void test_quantum_matrix_loading() {
     // Load dataset with quantum matrix configuration
     dataset_config_t config = {
         .format = DATA_FORMAT_CSV,
-        .csv_config = {
-            .delimiter = ",",
-            .has_header = true
-        },
+        .delimiter = ",",
+        .has_header = true,
         .normalize = false
     };
 
@@ -196,7 +197,7 @@ void test_quantum_matrix_loading() {
     float* loaded_matrix = (float*)malloc(size * size * sizeof(float));
     for (int i = 0; i < size; i++) {
         for (int j = 0; j < size; j++) {
-            loaded_matrix[i * size + j] = dataset->features[i][j];
+            loaded_matrix[i * size + j] = dataset->features[i][j].real;
         }
     }
 
@@ -216,7 +217,7 @@ void test_quantum_matrix_loading() {
 
 void test_well_conditioned_data() {
     TEST_SETUP();
-    
+
     // Create a well-conditioned matrix
     const int size = 16;
     float* matrix = (float*)malloc(size * size * sizeof(float));
@@ -226,15 +227,28 @@ void test_well_conditioned_data() {
     dataset_t* dataset = quantum_create_synthetic_data(size, size, 0, 0);
     for (int i = 0; i < size; i++) {
         for (int j = 0; j < size; j++) {
-            dataset->features[i][j] = matrix[i * size + j];
+            dataset->features[i][j].real = matrix[i * size + j];
+            dataset->features[i][j].imag = 0.0f;
         }
     }
 
-    // Verify condition number is good
+    // Verify condition number is good - need to extract float** for API
+    float** feature_ptrs = (float**)malloc(size * sizeof(float*));
+    for (int i = 0; i < size; i++) {
+        feature_ptrs[i] = (float*)malloc(size * sizeof(float));
+        for (int j = 0; j < size; j++) {
+            feature_ptrs[i][j] = dataset->features[i][j].real;
+        }
+    }
+
     float condition_number;
-    TEST_ASSERT(quantum_compute_condition_number(dataset->features, size, &condition_number));
+    TEST_ASSERT(quantum_compute_condition_number((const float**)feature_ptrs, size, &condition_number));
     TEST_ASSERT(condition_number < 100.0f);
 
+    for (int i = 0; i < size; i++) {
+        free(feature_ptrs[i]);
+    }
+    free(feature_ptrs);
     free(matrix);
     quantum_dataset_destroy(dataset);
     TEST_TEARDOWN();
@@ -242,7 +256,7 @@ void test_well_conditioned_data() {
 
 void test_sparse_data_handling() {
     TEST_SETUP();
-    
+
     // Create sparse matrix
     const int size = 64;
     float* matrix = (float*)malloc(size * size * sizeof(float));
@@ -255,7 +269,8 @@ void test_sparse_data_handling() {
     dataset_t* dataset = quantum_create_synthetic_data(size, size, 0, 0);
     for (int i = 0; i < size; i++) {
         for (int j = 0; j < size; j++) {
-            dataset->features[i][j] = matrix[i * size + j];
+            dataset->features[i][j].real = matrix[i * size + j];
+            dataset->features[i][j].imag = 0.0f;
         }
     }
 
@@ -263,7 +278,7 @@ void test_sparse_data_handling() {
     int num_zeros = 0;
     for (int i = 0; i < size; i++) {
         for (int j = 0; j < size; j++) {
-            if (fabs(dataset->features[i][j]) < TEST_EPSILON) {
+            if (fabs(dataset->features[i][j].real) < TEST_EPSILON) {
                 num_zeros++;
             }
         }

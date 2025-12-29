@@ -2205,3 +2205,823 @@ int dist_pipeline_init(quantum_pipeline_t* pipeline) {
 
     return 0;
 }
+
+// ============================================================================
+// Full Production QuantumPipeline API Implementation
+// ============================================================================
+//
+// This implements a complete variational quantum classifier with:
+// - Amplitude encoding for classical data
+// - Parameterized variational quantum circuits (VQC)
+// - Parameter-shift rule gradient computation
+// - Adam optimizer with momentum and adaptive learning rates
+// - Cross-entropy loss for classification
+// - Softmax output normalization
+// ============================================================================
+
+#include "quantum_geometric/core/tensor_types.h"
+#include "quantum_geometric/core/tensor_operations.h"
+
+// ==============================================
+// Internal structures for variational quantum circuit
+// ==============================================
+
+// Gate types in the variational circuit
+typedef enum {
+    VQC_GATE_RX,        // Rotation around X axis
+    VQC_GATE_RY,        // Rotation around Y axis
+    VQC_GATE_RZ,        // Rotation around Z axis
+    VQC_GATE_CNOT,      // Controlled-NOT (entangling)
+    VQC_GATE_CZ,        // Controlled-Z (entangling)
+    VQC_GATE_MEASURE    // Measurement
+} vqc_gate_type_t;
+
+// Single gate in the circuit
+typedef struct {
+    vqc_gate_type_t type;
+    size_t qubit;           // Target qubit
+    size_t control_qubit;   // Control qubit (for CNOT/CZ)
+    size_t param_index;     // Index into parameter array (-1 if non-parametric)
+} vqc_gate_t;
+
+// Full variational quantum circuit state
+typedef struct {
+    // Circuit architecture
+    size_t num_qubits;          // Number of qubits
+    size_t num_layers;          // Number of variational layers
+    size_t num_gates;           // Total gates in circuit
+    vqc_gate_t* gates;          // Gate definitions
+
+    // Variational parameters
+    size_t num_params;          // Number of trainable parameters
+    float* params;              // Current parameter values
+    float* gradients;           // Parameter gradients
+
+    // Adam optimizer state
+    float* adam_m;              // First moment estimates
+    float* adam_v;              // Second moment estimates
+    float beta1;                // First moment decay (0.9)
+    float beta2;                // Second moment decay (0.999)
+    float epsilon;              // Numerical stability (1e-8)
+    size_t adam_t;              // Time step
+
+    // Quantum state storage (complex amplitudes)
+    float* state_real;          // Real parts of statevector
+    float* state_imag;          // Imaginary parts of statevector
+    size_t state_dim;           // Dimension of statevector (2^num_qubits)
+
+    // Temporary buffers for parameter-shift rule
+    float* state_plus_real;
+    float* state_plus_imag;
+    float* state_minus_real;
+    float* state_minus_imag;
+
+    // Measurement probabilities
+    float* measurement_probs;   // Probability of each computational basis state
+    float* class_probs;         // Probabilities for each class (softmax output)
+
+    // Training configuration
+    float learning_rate;
+    size_t input_size;
+    size_t output_size;
+
+    // Training statistics
+    float current_loss;
+    size_t training_steps;
+    float* loss_history;
+    size_t loss_history_capacity;
+} VariationalQuantumCircuit;
+
+// ==============================================
+// Quantum gate implementations
+// ==============================================
+
+// Apply RX gate: exp(-i * theta/2 * X)
+static void apply_rx_gate(float* state_real, float* state_imag,
+                          size_t state_dim, size_t qubit, float theta) {
+    float cos_half = cosf(theta / 2.0f);
+    float sin_half = sinf(theta / 2.0f);
+    size_t mask = 1UL << qubit;
+
+    for (size_t i = 0; i < state_dim; i++) {
+        if ((i & mask) == 0) {
+            size_t j = i | mask;
+
+            // |0⟩ component: cos(θ/2)|0⟩ - i*sin(θ/2)|1⟩
+            // |1⟩ component: -i*sin(θ/2)|0⟩ + cos(θ/2)|1⟩
+            float a_real = state_real[i];
+            float a_imag = state_imag[i];
+            float b_real = state_real[j];
+            float b_imag = state_imag[j];
+
+            // New |0⟩: cos(θ/2)*a - i*sin(θ/2)*b
+            state_real[i] = cos_half * a_real + sin_half * b_imag;
+            state_imag[i] = cos_half * a_imag - sin_half * b_real;
+
+            // New |1⟩: -i*sin(θ/2)*a + cos(θ/2)*b
+            state_real[j] = sin_half * a_imag + cos_half * b_real;
+            state_imag[j] = -sin_half * a_real + cos_half * b_imag;
+        }
+    }
+}
+
+// Apply RY gate: exp(-i * theta/2 * Y)
+static void apply_ry_gate(float* state_real, float* state_imag,
+                          size_t state_dim, size_t qubit, float theta) {
+    float cos_half = cosf(theta / 2.0f);
+    float sin_half = sinf(theta / 2.0f);
+    size_t mask = 1UL << qubit;
+
+    for (size_t i = 0; i < state_dim; i++) {
+        if ((i & mask) == 0) {
+            size_t j = i | mask;
+
+            // |0⟩ component: cos(θ/2)|0⟩ - sin(θ/2)|1⟩
+            // |1⟩ component: sin(θ/2)|0⟩ + cos(θ/2)|1⟩
+            float a_real = state_real[i];
+            float a_imag = state_imag[i];
+            float b_real = state_real[j];
+            float b_imag = state_imag[j];
+
+            state_real[i] = cos_half * a_real - sin_half * b_real;
+            state_imag[i] = cos_half * a_imag - sin_half * b_imag;
+
+            state_real[j] = sin_half * a_real + cos_half * b_real;
+            state_imag[j] = sin_half * a_imag + cos_half * b_imag;
+        }
+    }
+}
+
+// Apply RZ gate: exp(-i * theta/2 * Z)
+static void apply_rz_gate(float* state_real, float* state_imag,
+                          size_t state_dim, size_t qubit, float theta) {
+    float cos_half = cosf(theta / 2.0f);
+    float sin_half = sinf(theta / 2.0f);
+    size_t mask = 1UL << qubit;
+
+    for (size_t i = 0; i < state_dim; i++) {
+        float real = state_real[i];
+        float imag = state_imag[i];
+
+        if ((i & mask) == 0) {
+            // |0⟩: multiply by exp(-i*θ/2)
+            state_real[i] = cos_half * real + sin_half * imag;
+            state_imag[i] = cos_half * imag - sin_half * real;
+        } else {
+            // |1⟩: multiply by exp(i*θ/2)
+            state_real[i] = cos_half * real - sin_half * imag;
+            state_imag[i] = cos_half * imag + sin_half * real;
+        }
+    }
+}
+
+// Apply CNOT gate
+static void apply_cnot_gate(float* state_real, float* state_imag,
+                            size_t state_dim, size_t control, size_t target) {
+    size_t control_mask = 1UL << control;
+    size_t target_mask = 1UL << target;
+
+    for (size_t i = 0; i < state_dim; i++) {
+        // Only apply when control is |1⟩ and target is |0⟩
+        if ((i & control_mask) && !(i & target_mask)) {
+            size_t j = i | target_mask;
+
+            // Swap amplitudes
+            float temp_real = state_real[i];
+            float temp_imag = state_imag[i];
+            state_real[i] = state_real[j];
+            state_imag[i] = state_imag[j];
+            state_real[j] = temp_real;
+            state_imag[j] = temp_imag;
+        }
+    }
+}
+
+// Apply CZ gate
+static void apply_cz_gate(float* state_real, float* state_imag,
+                          size_t state_dim, size_t control, size_t target) {
+    size_t control_mask = 1UL << control;
+    size_t target_mask = 1UL << target;
+
+    for (size_t i = 0; i < state_dim; i++) {
+        // Apply -1 phase when both control and target are |1⟩
+        if ((i & control_mask) && (i & target_mask)) {
+            state_real[i] = -state_real[i];
+            state_imag[i] = -state_imag[i];
+        }
+    }
+}
+
+// Initialize quantum state to |00...0⟩
+static void initialize_zero_state(float* state_real, float* state_imag, size_t state_dim) {
+    memset(state_real, 0, state_dim * sizeof(float));
+    memset(state_imag, 0, state_dim * sizeof(float));
+    state_real[0] = 1.0f;  // |00...0⟩
+}
+
+// ==============================================
+// Amplitude encoding
+// ==============================================
+
+// Encode classical data into quantum amplitudes
+// Uses angle encoding: each feature maps to a rotation angle
+static void amplitude_encode(float* state_real, float* state_imag,
+                             size_t state_dim, size_t num_qubits,
+                             const float* data, size_t data_size) {
+    // Initialize to |+⟩^n state for better expressibility
+    float amplitude = 1.0f / sqrtf((float)state_dim);
+    for (size_t i = 0; i < state_dim; i++) {
+        state_real[i] = amplitude;
+        state_imag[i] = 0.0f;
+    }
+
+    // Apply RY rotations based on input data
+    // Each data element maps to a qubit rotation
+    for (size_t q = 0; q < num_qubits && q < data_size; q++) {
+        // Scale data to rotation angle [0, π]
+        float theta = (float)M_PI * (data[q] + 1.0f) / 2.0f;  // Assumes data in [-1, 1]
+        apply_ry_gate(state_real, state_imag, state_dim, q, theta);
+    }
+
+    // For remaining data, use re-uploading strategy
+    for (size_t d = num_qubits; d < data_size; d++) {
+        size_t q = d % num_qubits;
+        float theta = (float)M_PI * (data[d] + 1.0f) / 2.0f;
+        apply_rz_gate(state_real, state_imag, state_dim, q, theta);
+    }
+}
+
+// ==============================================
+// Circuit construction and execution
+// ==============================================
+
+// Build the variational circuit architecture
+static bool build_circuit(VariationalQuantumCircuit* vqc) {
+    // Calculate number of gates
+    // For each layer: num_qubits rotation gates + (num_qubits-1) entangling gates
+    size_t gates_per_layer = vqc->num_qubits * 2 + (vqc->num_qubits - 1);
+    vqc->num_gates = vqc->num_layers * gates_per_layer;
+
+    vqc->gates = malloc(vqc->num_gates * sizeof(vqc_gate_t));
+    if (!vqc->gates) return false;
+
+    // Count parameters: 2 rotation parameters per qubit per layer
+    vqc->num_params = vqc->num_layers * vqc->num_qubits * 2;
+
+    vqc->params = malloc(vqc->num_params * sizeof(float));
+    vqc->gradients = calloc(vqc->num_params, sizeof(float));
+    vqc->adam_m = calloc(vqc->num_params, sizeof(float));
+    vqc->adam_v = calloc(vqc->num_params, sizeof(float));
+
+    if (!vqc->params || !vqc->gradients || !vqc->adam_m || !vqc->adam_v) {
+        free(vqc->gates);
+        free(vqc->params);
+        free(vqc->gradients);
+        free(vqc->adam_m);
+        free(vqc->adam_v);
+        return false;
+    }
+
+    // Initialize parameters with Xavier/Glorot initialization
+    float scale = sqrtf(2.0f / (float)(vqc->num_qubits + vqc->output_size));
+    for (size_t i = 0; i < vqc->num_params; i++) {
+        // Box-Muller transform for Gaussian initialization
+        float u1 = ((float)rand() + 1.0f) / ((float)RAND_MAX + 1.0f);
+        float u2 = ((float)rand()) / ((float)RAND_MAX);
+        float gaussian = sqrtf(-2.0f * logf(u1)) * cosf(2.0f * (float)M_PI * u2);
+        vqc->params[i] = gaussian * scale;
+    }
+
+    // Build circuit layer by layer
+    size_t gate_idx = 0;
+    size_t param_idx = 0;
+
+    for (size_t layer = 0; layer < vqc->num_layers; layer++) {
+        // RY rotation layer
+        for (size_t q = 0; q < vqc->num_qubits; q++) {
+            vqc->gates[gate_idx].type = VQC_GATE_RY;
+            vqc->gates[gate_idx].qubit = q;
+            vqc->gates[gate_idx].control_qubit = 0;
+            vqc->gates[gate_idx].param_index = param_idx++;
+            gate_idx++;
+        }
+
+        // RZ rotation layer
+        for (size_t q = 0; q < vqc->num_qubits; q++) {
+            vqc->gates[gate_idx].type = VQC_GATE_RZ;
+            vqc->gates[gate_idx].qubit = q;
+            vqc->gates[gate_idx].control_qubit = 0;
+            vqc->gates[gate_idx].param_index = param_idx++;
+            gate_idx++;
+        }
+
+        // Entangling layer: circular CNOT pattern
+        for (size_t q = 0; q < vqc->num_qubits - 1; q++) {
+            vqc->gates[gate_idx].type = VQC_GATE_CNOT;
+            vqc->gates[gate_idx].qubit = q + 1;  // Target
+            vqc->gates[gate_idx].control_qubit = q;  // Control
+            vqc->gates[gate_idx].param_index = (size_t)-1;  // Non-parametric
+            gate_idx++;
+        }
+    }
+
+    return true;
+}
+
+// Execute the circuit with current parameters
+static void execute_circuit(VariationalQuantumCircuit* vqc,
+                            const float* data, size_t data_size) {
+    // Initialize state with amplitude encoding
+    amplitude_encode(vqc->state_real, vqc->state_imag,
+                     vqc->state_dim, vqc->num_qubits,
+                     data, data_size);
+
+    // Apply variational gates
+    for (size_t g = 0; g < vqc->num_gates; g++) {
+        vqc_gate_t* gate = &vqc->gates[g];
+
+        switch (gate->type) {
+            case VQC_GATE_RX:
+                apply_rx_gate(vqc->state_real, vqc->state_imag,
+                              vqc->state_dim, gate->qubit,
+                              vqc->params[gate->param_index]);
+                break;
+
+            case VQC_GATE_RY:
+                apply_ry_gate(vqc->state_real, vqc->state_imag,
+                              vqc->state_dim, gate->qubit,
+                              vqc->params[gate->param_index]);
+                break;
+
+            case VQC_GATE_RZ:
+                apply_rz_gate(vqc->state_real, vqc->state_imag,
+                              vqc->state_dim, gate->qubit,
+                              vqc->params[gate->param_index]);
+                break;
+
+            case VQC_GATE_CNOT:
+                apply_cnot_gate(vqc->state_real, vqc->state_imag,
+                                vqc->state_dim, gate->control_qubit, gate->qubit);
+                break;
+
+            case VQC_GATE_CZ:
+                apply_cz_gate(vqc->state_real, vqc->state_imag,
+                              vqc->state_dim, gate->control_qubit, gate->qubit);
+                break;
+
+            default:
+                break;
+        }
+    }
+}
+
+// Compute measurement probabilities
+static void compute_measurement_probs(VariationalQuantumCircuit* vqc) {
+    for (size_t i = 0; i < vqc->state_dim; i++) {
+        float real = vqc->state_real[i];
+        float imag = vqc->state_imag[i];
+        vqc->measurement_probs[i] = real * real + imag * imag;
+    }
+}
+
+// Map measurement probabilities to class probabilities
+// Groups basis states into classes
+static void compute_class_probs(VariationalQuantumCircuit* vqc) {
+    // Initialize class probabilities to zero
+    for (size_t c = 0; c < vqc->output_size; c++) {
+        vqc->class_probs[c] = 0.0f;
+    }
+
+    // Sum measurement probabilities for each class
+    // Class assignment: use first log2(output_size) qubits
+    size_t class_bits = 0;
+    size_t temp = vqc->output_size - 1;
+    while (temp > 0) {
+        class_bits++;
+        temp >>= 1;
+    }
+    if (class_bits == 0) class_bits = 1;
+
+    size_t class_mask = (1UL << class_bits) - 1;
+
+    for (size_t i = 0; i < vqc->state_dim; i++) {
+        size_t class_idx = i & class_mask;
+        if (class_idx < vqc->output_size) {
+            vqc->class_probs[class_idx] += vqc->measurement_probs[i];
+        }
+    }
+
+    // Apply softmax normalization for valid probability distribution
+    float max_logit = vqc->class_probs[0];
+    for (size_t c = 1; c < vqc->output_size; c++) {
+        if (vqc->class_probs[c] > max_logit) {
+            max_logit = vqc->class_probs[c];
+        }
+    }
+
+    float sum_exp = 0.0f;
+    for (size_t c = 0; c < vqc->output_size; c++) {
+        // Scale probabilities to logit-like range for softmax
+        float logit = logf(vqc->class_probs[c] + 1e-10f);
+        vqc->class_probs[c] = expf(logit - max_logit);
+        sum_exp += vqc->class_probs[c];
+    }
+
+    // Normalize
+    if (sum_exp > 0.0f) {
+        for (size_t c = 0; c < vqc->output_size; c++) {
+            vqc->class_probs[c] /= sum_exp;
+        }
+    } else {
+        // Uniform distribution fallback
+        float uniform = 1.0f / (float)vqc->output_size;
+        for (size_t c = 0; c < vqc->output_size; c++) {
+            vqc->class_probs[c] = uniform;
+        }
+    }
+}
+
+// ==============================================
+// Loss computation
+// ==============================================
+
+// Compute cross-entropy loss for classification
+static float compute_cross_entropy(const float* probs, const float* target,
+                                   size_t num_classes) {
+    float loss = 0.0f;
+    const float epsilon = 1e-7f;
+
+    for (size_t c = 0; c < num_classes; c++) {
+        if (target[c] > 0.5f) {  // One-hot encoded
+            float p = probs[c];
+            if (p < epsilon) p = epsilon;
+            if (p > 1.0f - epsilon) p = 1.0f - epsilon;
+            loss -= logf(p);
+        }
+    }
+
+    return loss;
+}
+
+// ==============================================
+// Parameter-shift rule gradient computation
+// ==============================================
+
+// Compute gradient for a single parameter using parameter-shift rule
+// gradient = (f(θ+π/2) - f(θ-π/2)) / 2
+static float compute_param_gradient(VariationalQuantumCircuit* vqc,
+                                    size_t param_idx,
+                                    const float* data, size_t data_size,
+                                    const float* target) {
+    const float shift = (float)M_PI / 2.0f;
+    float original_value = vqc->params[param_idx];
+
+    // Forward pass with positive shift
+    vqc->params[param_idx] = original_value + shift;
+    execute_circuit(vqc, data, data_size);
+    compute_measurement_probs(vqc);
+    compute_class_probs(vqc);
+    float loss_plus = compute_cross_entropy(vqc->class_probs, target, vqc->output_size);
+
+    // Forward pass with negative shift
+    vqc->params[param_idx] = original_value - shift;
+    execute_circuit(vqc, data, data_size);
+    compute_measurement_probs(vqc);
+    compute_class_probs(vqc);
+    float loss_minus = compute_cross_entropy(vqc->class_probs, target, vqc->output_size);
+
+    // Restore original parameter
+    vqc->params[param_idx] = original_value;
+
+    // Parameter-shift rule gradient
+    return (loss_plus - loss_minus) / 2.0f;
+}
+
+// Compute all gradients for a batch
+static void compute_batch_gradients(VariationalQuantumCircuit* vqc,
+                                     const float* batch_data,
+                                     const float* batch_targets,
+                                     size_t batch_size,
+                                     size_t sample_dim) {
+    // Reset gradients
+    memset(vqc->gradients, 0, vqc->num_params * sizeof(float));
+
+    // Accumulate gradients over batch
+    for (size_t b = 0; b < batch_size; b++) {
+        const float* data = batch_data + b * sample_dim;
+        const float* target = batch_targets + b * vqc->output_size;
+
+        for (size_t p = 0; p < vqc->num_params; p++) {
+            vqc->gradients[p] += compute_param_gradient(vqc, p, data, sample_dim, target);
+        }
+    }
+
+    // Average gradients
+    float scale = 1.0f / (float)batch_size;
+    for (size_t p = 0; p < vqc->num_params; p++) {
+        vqc->gradients[p] *= scale;
+    }
+}
+
+// ==============================================
+// Adam optimizer
+// ==============================================
+
+static void adam_update(VariationalQuantumCircuit* vqc) {
+    vqc->adam_t++;
+
+    float bias_correction1 = 1.0f - powf(vqc->beta1, (float)vqc->adam_t);
+    float bias_correction2 = 1.0f - powf(vqc->beta2, (float)vqc->adam_t);
+
+    for (size_t p = 0; p < vqc->num_params; p++) {
+        float g = vqc->gradients[p];
+
+        // Update biased first moment estimate
+        vqc->adam_m[p] = vqc->beta1 * vqc->adam_m[p] + (1.0f - vqc->beta1) * g;
+
+        // Update biased second raw moment estimate
+        vqc->adam_v[p] = vqc->beta2 * vqc->adam_v[p] + (1.0f - vqc->beta2) * g * g;
+
+        // Compute bias-corrected first moment estimate
+        float m_hat = vqc->adam_m[p] / bias_correction1;
+
+        // Compute bias-corrected second raw moment estimate
+        float v_hat = vqc->adam_v[p] / bias_correction2;
+
+        // Update parameters
+        vqc->params[p] -= vqc->learning_rate * m_hat / (sqrtf(v_hat) + vqc->epsilon);
+    }
+}
+
+// ==============================================
+// Public API Implementation
+// ==============================================
+
+bool init_quantum_pipeline(QuantumPipeline* pipeline, size_t input_size,
+                          size_t output_size, float learning_rate) {
+    if (!pipeline || input_size == 0 || output_size == 0 || learning_rate <= 0.0f) {
+        return false;
+    }
+
+    // Store configuration
+    pipeline->input_size = input_size;
+    pipeline->output_size = output_size;
+    pipeline->learning_rate = learning_rate;
+
+    // Allocate VQC structure
+    VariationalQuantumCircuit* vqc = calloc(1, sizeof(VariationalQuantumCircuit));
+    if (!vqc) {
+        return false;
+    }
+
+    // Determine number of qubits based on input and output dimensions
+    // At minimum: ceil(log2(output_size)) qubits for classification
+    // For expressibility: scale with input dimension
+    size_t min_qubits = 1;
+    size_t temp = output_size - 1;
+    while (temp > 0) {
+        min_qubits++;
+        temp >>= 1;
+    }
+
+    // Scale qubits based on problem size (balance expressibility vs simulation cost)
+    // Heuristic: log2(input_size) + log2(output_size) capped at reasonable size
+    size_t input_log = 1;
+    temp = input_size - 1;
+    while (temp > 0) {
+        input_log++;
+        temp >>= 1;
+    }
+
+    vqc->num_qubits = min_qubits + input_log / 2;
+    if (vqc->num_qubits < 4) vqc->num_qubits = 4;
+    if (vqc->num_qubits > 12) vqc->num_qubits = 12;  // Cap for classical simulation
+
+    // Number of layers scales with problem complexity
+    vqc->num_layers = 4 + vqc->num_qubits / 2;
+    if (vqc->num_layers > 10) vqc->num_layers = 10;
+
+    vqc->input_size = input_size;
+    vqc->output_size = output_size;
+    vqc->learning_rate = learning_rate;
+
+    // Allocate statevector
+    vqc->state_dim = 1UL << vqc->num_qubits;
+    vqc->state_real = calloc(vqc->state_dim, sizeof(float));
+    vqc->state_imag = calloc(vqc->state_dim, sizeof(float));
+    vqc->state_plus_real = calloc(vqc->state_dim, sizeof(float));
+    vqc->state_plus_imag = calloc(vqc->state_dim, sizeof(float));
+    vqc->state_minus_real = calloc(vqc->state_dim, sizeof(float));
+    vqc->state_minus_imag = calloc(vqc->state_dim, sizeof(float));
+    vqc->measurement_probs = calloc(vqc->state_dim, sizeof(float));
+    vqc->class_probs = calloc(output_size, sizeof(float));
+
+    if (!vqc->state_real || !vqc->state_imag ||
+        !vqc->state_plus_real || !vqc->state_plus_imag ||
+        !vqc->state_minus_real || !vqc->state_minus_imag ||
+        !vqc->measurement_probs || !vqc->class_probs) {
+        free(vqc->state_real);
+        free(vqc->state_imag);
+        free(vqc->state_plus_real);
+        free(vqc->state_plus_imag);
+        free(vqc->state_minus_real);
+        free(vqc->state_minus_imag);
+        free(vqc->measurement_probs);
+        free(vqc->class_probs);
+        free(vqc);
+        return false;
+    }
+
+    // Adam optimizer parameters
+    vqc->beta1 = 0.9f;
+    vqc->beta2 = 0.999f;
+    vqc->epsilon = 1e-8f;
+    vqc->adam_t = 0;
+
+    // Loss history
+    vqc->loss_history_capacity = 1000;
+    vqc->loss_history = calloc(vqc->loss_history_capacity, sizeof(float));
+    vqc->training_steps = 0;
+    vqc->current_loss = 0.0f;
+
+    // Build the circuit
+    if (!build_circuit(vqc)) {
+        free(vqc->state_real);
+        free(vqc->state_imag);
+        free(vqc->state_plus_real);
+        free(vqc->state_plus_imag);
+        free(vqc->state_minus_real);
+        free(vqc->state_minus_imag);
+        free(vqc->measurement_probs);
+        free(vqc->class_probs);
+        free(vqc->loss_history);
+        free(vqc);
+        return false;
+    }
+
+    pipeline->model_handle = vqc;
+    return true;
+}
+
+void cleanup_quantum_pipeline(QuantumPipeline* pipeline) {
+    if (!pipeline) return;
+
+    VariationalQuantumCircuit* vqc = (VariationalQuantumCircuit*)pipeline->model_handle;
+    if (vqc) {
+        free(vqc->gates);
+        free(vqc->params);
+        free(vqc->gradients);
+        free(vqc->adam_m);
+        free(vqc->adam_v);
+        free(vqc->state_real);
+        free(vqc->state_imag);
+        free(vqc->state_plus_real);
+        free(vqc->state_plus_imag);
+        free(vqc->state_minus_real);
+        free(vqc->state_minus_imag);
+        free(vqc->measurement_probs);
+        free(vqc->class_probs);
+        free(vqc->loss_history);
+        free(vqc);
+    }
+
+    pipeline->model_handle = NULL;
+    pipeline->input_size = 0;
+    pipeline->output_size = 0;
+    pipeline->learning_rate = 0.0f;
+}
+
+bool train_step(QuantumPipeline* pipeline, tensor_t* input,
+                tensor_t* target, float* loss) {
+    if (!pipeline || !input || !target || !loss || !pipeline->model_handle) {
+        return false;
+    }
+
+    VariationalQuantumCircuit* vqc = (VariationalQuantumCircuit*)pipeline->model_handle;
+
+    // Validate dimensions
+    if (input->rank < 2 || target->rank < 2) {
+        return false;
+    }
+
+    size_t batch_size = input->dimensions[0];
+    size_t sample_dim = input->total_size / batch_size;
+
+    // Allocate temporary float arrays for batch processing
+    float* batch_data = malloc(input->total_size * sizeof(float));
+    float* batch_targets = malloc(target->total_size * sizeof(float));
+
+    if (!batch_data || !batch_targets) {
+        free(batch_data);
+        free(batch_targets);
+        return false;
+    }
+
+    // Convert complex tensor to float (take real parts)
+    for (size_t i = 0; i < input->total_size; i++) {
+        batch_data[i] = input->data[i].real;
+    }
+
+    for (size_t i = 0; i < target->total_size; i++) {
+        batch_targets[i] = target->data[i].real;
+    }
+
+    // Compute forward pass and loss for the batch
+    float total_loss = 0.0f;
+    for (size_t b = 0; b < batch_size; b++) {
+        const float* data = batch_data + b * sample_dim;
+        const float* target_data = batch_targets + b * vqc->output_size;
+
+        execute_circuit(vqc, data, sample_dim);
+        compute_measurement_probs(vqc);
+        compute_class_probs(vqc);
+
+        total_loss += compute_cross_entropy(vqc->class_probs, target_data, vqc->output_size);
+    }
+
+    // Average loss
+    *loss = total_loss / (float)batch_size;
+    vqc->current_loss = *loss;
+
+    // Store in loss history
+    if (vqc->training_steps < vqc->loss_history_capacity) {
+        vqc->loss_history[vqc->training_steps] = *loss;
+    }
+
+    // Compute gradients using parameter-shift rule
+    compute_batch_gradients(vqc, batch_data, batch_targets, batch_size, sample_dim);
+
+    // Apply gradient clipping
+    float grad_norm = 0.0f;
+    for (size_t p = 0; p < vqc->num_params; p++) {
+        grad_norm += vqc->gradients[p] * vqc->gradients[p];
+    }
+    grad_norm = sqrtf(grad_norm);
+
+    float max_norm = 1.0f;
+    if (grad_norm > max_norm) {
+        float scale = max_norm / grad_norm;
+        for (size_t p = 0; p < vqc->num_params; p++) {
+            vqc->gradients[p] *= scale;
+        }
+    }
+
+    // Update parameters using Adam
+    adam_update(vqc);
+
+    vqc->training_steps++;
+
+    free(batch_data);
+    free(batch_targets);
+
+    return true;
+}
+
+bool inference(QuantumPipeline* pipeline, tensor_t* input, tensor_t* output) {
+    if (!pipeline || !input || !output || !pipeline->model_handle) {
+        return false;
+    }
+
+    VariationalQuantumCircuit* vqc = (VariationalQuantumCircuit*)pipeline->model_handle;
+
+    // Get batch dimensions
+    size_t batch_size = input->dimensions[0];
+    size_t sample_dim = input->total_size / batch_size;
+
+    // Initialize output tensor
+    size_t output_dims[] = {batch_size, pipeline->output_size};
+    if (!qg_tensor_init(output, output_dims, 2)) {
+        return false;
+    }
+
+    // Allocate temporary input buffer
+    float* sample_data = malloc(sample_dim * sizeof(float));
+    if (!sample_data) {
+        qg_tensor_cleanup(output);
+        return false;
+    }
+
+    // Process each sample in the batch
+    for (size_t b = 0; b < batch_size; b++) {
+        // Extract sample and convert to float
+        for (size_t i = 0; i < sample_dim; i++) {
+            sample_data[i] = input->data[b * sample_dim + i].real;
+        }
+
+        // Execute quantum circuit
+        execute_circuit(vqc, sample_data, sample_dim);
+
+        // Compute measurement and class probabilities
+        compute_measurement_probs(vqc);
+        compute_class_probs(vqc);
+
+        // Copy class probabilities to output tensor
+        for (size_t c = 0; c < pipeline->output_size; c++) {
+            output->data[b * pipeline->output_size + c] =
+                complex_float_create(vqc->class_probs[c], 0.0f);
+        }
+    }
+
+    free(sample_data);
+    return true;
+}

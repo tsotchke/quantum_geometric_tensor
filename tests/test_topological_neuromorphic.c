@@ -1,7 +1,9 @@
-#include <quantum_geometric_core.h>
-#include <quantum_topological_operations.h>
-#include <quantum_ai_operations.h>
-#include <unity.h>
+#include "quantum_geometric/core/quantum_geometric_core.h"
+#include "quantum_geometric/physics/quantum_topological_operations.h"
+#include "quantum_geometric/ai/quantum_ai_operations.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <assert.h>
 
 // Test fixtures
 static topological_memory_t* q_memory;

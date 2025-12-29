@@ -20,9 +20,9 @@ static bool detect_correction_patterns(CorrectionState* state);
 // Forward declaration
 void cleanup_anyon_correction(CorrectionState* state);
 
-// Renamed to avoid conflict with quantum_error_correction.c
-bool init_anyon_error_correction(CorrectionState* state,
-                                 const CorrectionConfig* config) {
+// Primary implementation
+static bool init_anyon_error_correction_impl(CorrectionState* state,
+                                              const CorrectionConfig* config) {
     if (!state || !config) {
         return false;
     }
@@ -55,6 +55,22 @@ void cleanup_anyon_correction(CorrectionState* state) {
         }
         memset(state, 0, sizeof(CorrectionState));
     }
+}
+
+// Public wrappers - match the API expected by tests
+bool init_error_correction(CorrectionState* state,
+                          const CorrectionConfig* config) {
+    return init_anyon_error_correction_impl(state, config);
+}
+
+void cleanup_error_correction(CorrectionState* state) {
+    cleanup_anyon_correction(state);
+}
+
+// Alias for backward compatibility
+bool init_anyon_error_correction(CorrectionState* state,
+                                 const CorrectionConfig* config) {
+    return init_anyon_error_correction_impl(state, config);
 }
 
 bool determine_corrections(CorrectionState* state,
