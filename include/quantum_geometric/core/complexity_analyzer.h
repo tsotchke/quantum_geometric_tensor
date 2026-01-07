@@ -150,4 +150,23 @@ bool import_complexity_data(complexity_analyzer_t* analyzer,
                           const char* filename);
 void free_complexity_metrics(complexity_metrics_t* metrics);
 
+// Test helper functions (for benchmarking algorithm implementations)
+typedef void (*algorithm_func_t)(void* data, int size);
+
+// Verify that an algorithm implementation meets target complexity
+bool verify_optimization_target(const char* name,
+                               algorithm_func_t algorithm,
+                               int min_size,
+                               int max_size,
+                               int num_samples,
+                               double target_complexity);
+
+// Compare two algorithm implementations
+bool compare_implementations(const char* name,
+                           algorithm_func_t baseline,
+                           algorithm_func_t optimized,
+                           int min_size,
+                           int max_size,
+                           int num_samples);
+
 #endif // COMPLEXITY_ANALYZER_H

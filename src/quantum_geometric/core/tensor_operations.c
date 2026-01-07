@@ -882,3 +882,55 @@ bool qg_tensor_contract(ComplexFloat* result,
     free(out_dimensions);
     return true;
 }
+
+// =============================================================================
+// Simple Tensor Helper Functions (for testing and benchmarking)
+// =============================================================================
+
+#include <stdlib.h>
+#include <string.h>
+
+float* tensor_create_random(int rows, int cols) {
+    if (rows <= 0 || cols <= 0) return NULL;
+
+    size_t size = rows * cols;
+    float* tensor = (float*)malloc(size * sizeof(float));
+    if (!tensor) return NULL;
+
+    // Initialize with random values
+    for (size_t i = 0; i < size; i++) {
+        tensor[i] = (float)rand() / (float)RAND_MAX;
+    }
+
+    return tensor;
+}
+
+float* tensor_create_zero(int rows, int cols) {
+    if (rows <= 0 || cols <= 0) return NULL;
+
+    size_t size = rows * cols;
+    float* tensor = (float*)calloc(size, sizeof(float));
+    return tensor;
+}
+
+void test_tensor_free(float* tensor) {
+    if (tensor) {
+        free(tensor);
+    }
+}
+
+void tensor_matmul(const float* A, const float* B, float* C, int size) {
+    if (!A || !B || !C || size <= 0) return;
+
+    // Simple O(n³) matrix multiplication
+    // C = A * B where all are size x size matrices
+    for (int i = 0; i < size; i++) {
+        for (int j = 0; j < size; j++) {
+            float sum = 0.0f;
+            for (int k = 0; k < size; k++) {
+                sum += A[i * size + k] * B[k * size + j];
+            }
+            C[i * size + j] = sum;
+        }
+    }
+}

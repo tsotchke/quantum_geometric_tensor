@@ -96,6 +96,11 @@ bool quantum_reset_performance_metrics(void);
 bool quantum_decompose_matrix(const float* matrix, size_t size, float* U, float* V);
 bool quantum_compute_condition_number(const float** matrix, size_t size, float* condition_number);
 
+// Standard dataset loaders (download from official sources)
+dataset_t* quantum_load_mnist(dataset_config_t config);
+dataset_t* quantum_load_cifar10(dataset_config_t config);
+dataset_t* quantum_load_uci(const char* name, dataset_config_t config);
+
 // CSV configuration
 typedef struct {
     const char* delimiter;

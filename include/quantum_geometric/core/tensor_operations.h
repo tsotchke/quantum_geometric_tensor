@@ -120,11 +120,50 @@ bool qg_tensor_add(tensor_t* result,
 
 /**
  * @brief Get total size of tensor from dimensions
- * 
+ *
  * @param dimensions Dimension array
  * @param rank Number of dimensions
  * @return Total size in elements
  */
 size_t qg_tensor_get_size(const size_t* dimensions, size_t rank);
+
+// =============================================================================
+// Simple Tensor Helper Functions (for testing and benchmarking)
+// =============================================================================
+
+/**
+ * @brief Create a tensor filled with random values
+ *
+ * @param rows Number of rows
+ * @param cols Number of columns
+ * @return Pointer to allocated float array, or NULL on failure
+ */
+float* tensor_create_random(int rows, int cols);
+
+/**
+ * @brief Create a zero-initialized tensor
+ *
+ * @param rows Number of rows
+ * @param cols Number of columns
+ * @return Pointer to allocated float array, or NULL on failure
+ */
+float* tensor_create_zero(int rows, int cols);
+
+/**
+ * @brief Free test tensor memory
+ *
+ * @param tensor Tensor to free
+ */
+void test_tensor_free(float* tensor);
+
+/**
+ * @brief Matrix multiplication C = A * B
+ *
+ * @param A First input matrix
+ * @param B Second input matrix
+ * @param C Output matrix
+ * @param size Matrix dimension (assuming square matrices)
+ */
+void tensor_matmul(const float* A, const float* B, float* C, int size);
 
 #endif // TENSOR_OPERATIONS_H

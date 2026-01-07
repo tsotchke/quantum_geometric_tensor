@@ -114,23 +114,31 @@ const char* get_complexity_class(double exponent) {
     return "Higher than cubic";
 }
 
-void compare_implementations(const char* name,
-                           void (*baseline_func)(void*, int),
-                           void (*optimized_func)(void*, int),
+bool compare_implementations(const char* name,
+                           algorithm_func_t baseline_func,
+                           algorithm_func_t optimized_func,
                            int min_size, int max_size, int steps) {
+    if (!name || !baseline_func || !optimized_func) return false;
+
     printf("\nComparing implementations of %s:\n", name);
-    
+
     complexity_analysis* baseline = analyze_algorithm("Baseline", baseline_func, min_size, max_size, steps);
     complexity_analysis* optimized = analyze_algorithm("Optimized", optimized_func, min_size, max_size, steps);
-    
+
+    if (!baseline || !optimized) {
+        if (baseline) free_analysis(baseline);
+        if (optimized) free_analysis(optimized);
+        return false;
+    }
+
     printf("\nBaseline implementation:\n");
     printf("Complexity class: %s\n", get_complexity_class(baseline->complexity_exponent));
     printf("Exact exponent: %.2f (R² = %.4f)\n", baseline->complexity_exponent, baseline->r_squared);
-    
+
     printf("\nOptimized implementation:\n");
     printf("Complexity class: %s\n", get_complexity_class(optimized->complexity_exponent));
     printf("Exact exponent: %.2f (R² = %.4f)\n", optimized->complexity_exponent, optimized->r_squared);
-    
+
     // Calculate and print speedup for each size
     printf("\nSpeedup analysis:\n");
     printf("Size\t\tSpeedup\n");
@@ -138,26 +146,37 @@ void compare_implementations(const char* name,
         double speedup = baseline->measurements[i].time / optimized->measurements[i].time;
         printf("%d\t\t%.2fx\n", baseline->measurements[i].size, speedup);
     }
-    
+
     free_analysis(baseline);
     free_analysis(optimized);
+
+    return true;
 }
 
-void verify_optimization_target(const char* name, void (*func)(void*, int),
-                              int min_size, int max_size, int steps,
-                              double target_exponent) {
+bool verify_optimization_target(const char* name,
+                               algorithm_func_t func,
+                               int min_size, int max_size, int steps,
+                               double target_exponent) {
+    if (!name || !func) return false;
+
     complexity_analysis* analysis = analyze_algorithm(name, func, min_size, max_size, steps);
-    
+    if (!analysis) return false;
+
     printf("\nOptimization target verification for %s:\n", name);
     printf("Target complexity: O(n^%.2f)\n", target_exponent);
     printf("Actual complexity: O(n^%.2f)\n", analysis->complexity_exponent);
-    
-    if (analysis->complexity_exponent <= target_exponent + 0.1) {
+
+    bool target_met = (analysis->complexity_exponent <= target_exponent + 0.1);
+
+    if (target_met) {
         printf("✅ Target achieved!\n");
     } else {
         printf("❌ Target not met. Current implementation is %.2f orders higher than target.\n",
                analysis->complexity_exponent - target_exponent);
     }
-    
+
     free_analysis(analysis);
+
+    return target_met;
 }
+

@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <math.h>
 #include "quantum_geometric/core/complexity_analyzer.h"
 #include "quantum_geometric/core/tensor_operations.h"
 
@@ -46,6 +48,21 @@ static void linear_algorithm(void* data, int size) {
     }
 }
 
+// Wrapper for tensor_matmul to match algorithm_func_t signature
+static void tensor_matmul_wrapper(void* data, int size) {
+    // Allocate matrices for testing
+    float* A = tensor_create_random(size, size);
+    float* B = tensor_create_random(size, size);
+    float* C = (float*)data;
+
+    // Call tensor_matmul
+    tensor_matmul(A, B, C, size);
+
+    // Cleanup
+    test_tensor_free(A);
+    test_tensor_free(B);
+}
+
 // Test matrix multiplication implementations
 static void test_matrix_operations() {
     printf("\nTesting Matrix Multiplication Implementations:\n");
@@ -80,9 +97,9 @@ static void test_matrix_operations() {
         printf("Optimized time: %.3f seconds\n", optimized_time);
         printf("Speedup: %.2fx\n", baseline_time / optimized_time);
         
-        tensor_free(A);
-        tensor_free(B);
-        tensor_free(C);
+        test_tensor_free(A);
+        test_tensor_free(B);
+        test_tensor_free(C);
     }
 }
 
@@ -109,16 +126,16 @@ static void test_complexity_analyzer_accuracy() {
 static void test_hardware_acceleration() {
     printf("\nTesting Hardware Acceleration Impact:\n");
     printf("===================================\n");
-    
+
     // Compare implementations
     compare_implementations("Matrix Multiplication",
                           cubic_algorithm,  // Baseline cubic implementation
-                          tensor_matmul,    // Optimized implementation
+                          tensor_matmul_wrapper,    // Optimized implementation
                           128, 1024, 5);
-    
+
     // Verify optimized implementation meets target
     verify_optimization_target("Hardware Accelerated Matrix Multiplication",
-                             tensor_matmul,
+                             tensor_matmul_wrapper,
                              128, 1024, 5,
                              2.0);  // Target: O(n²) or better
 }
