@@ -125,11 +125,11 @@ static void test_quantum_state_integration() {
     assert(result == 0);
     
     // Get quantum state and verify properties
-    const QuantumState* state = stochastic_sampler_get_state(sampler);
+    const StochasticSamplerState* state = stochastic_sampler_get_state(sampler);
     assert(state != NULL);
-    assert(quantum_state_get_dim(state) == 1);
-    assert(quantum_state_get_fidelity(state) > 0.0);
-    assert(quantum_state_get_purity(state) > 0.0);
+    assert(stochastic_state_get_dim(state) == 1);
+    assert(stochastic_state_get_fidelity(state) > 0.0);
+    assert(stochastic_state_get_purity(state) > 0.0);
     
     stochastic_sampler_free(sampler);
 }
@@ -260,7 +260,7 @@ static void test_performance_metrics() {
     assert(result == 0);
     
     // Check metrics
-    const PerformanceMetrics* metrics = stochastic_sampler_get_metrics(sampler);
+    const SamplingMetrics* metrics = stochastic_sampler_get_metrics(sampler);
     assert(metrics != NULL);
     assert(metrics->training_time > 0.0);
     assert(metrics->memory_usage_mb > 0.0);

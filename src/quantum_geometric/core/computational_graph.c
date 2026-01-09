@@ -61,7 +61,7 @@ void destroy_computational_graph(computational_graph_t* graph) {
 // Node management
 computation_node_t* add_node(computational_graph_t* graph,
                            node_type_t type,
-                           operation_type_t op_type,
+                           graph_operation_type_t op_type,
                            void* data) {
     if (!graph) return NULL;
     

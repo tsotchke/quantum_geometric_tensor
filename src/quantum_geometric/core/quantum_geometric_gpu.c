@@ -60,7 +60,9 @@ qgt_error_t gpu_malloc(void** ptr, size_t size) {
     return QGT_SUCCESS;
 }
 
-qgt_error_t gpu_free(void* ptr) {
+// Context-free GPU memory free
+// Note: For context-based free, use gpu_free(GPUContext*, void*) from hardware/quantum_geometric_gpu.c
+qgt_error_t qgt_gpu_free_buffer(void* ptr) {
     if (!ptr) {
         return QGT_ERROR_INVALID_PARAMETER;
     }
@@ -164,6 +166,20 @@ qgt_error_t gpu_memcpy_device_to_host(void* dst, const void* src, size_t size) {
     return QGT_SUCCESS;
 }
 
+// Stream management constants
+#define MAX_GPU_STREAMS 64
+
+// Stream slot for tracking active streams
+typedef struct {
+    bool active;
+#ifdef QGT_ENABLE_METAL
+    void* metal_queue;  // MTLCommandQueue*
+#endif
+#ifdef QGT_ENABLE_CUDA
+    void* cuda_stream;  // cudaStream_t
+#endif
+} gpu_stream_slot_t;
+
 // Global state
 static struct {
     bool initialized;
@@ -175,6 +191,10 @@ static struct {
     size_t queue_tail;
     pthread_mutex_t queue_lock;
     gpu_error_t last_error;
+    // Stream tracking
+    gpu_stream_slot_t streams[MAX_GPU_STREAMS];
+    int num_active_streams;
+    pthread_mutex_t stream_lock;
 } gpu_state = {0};
 
 // Forward declarations of static functions
@@ -185,11 +205,19 @@ static int queue_kernel(const char* name, const void* args, size_t args_size,
 static void process_kernel_queue(void);
 static int get_optimal_device(size_t memory_required, int compute_capability);
 
+// Forward declaration of synchronization function (defined later in file)
+int qg_gpu_synchronize(void);
+
 // Implementation of public functions
 int qg_gpu_init(void) {
     if (gpu_state.initialized) return QG_GPU_SUCCESS;
 
     pthread_mutex_init(&gpu_state.queue_lock, NULL);
+    pthread_mutex_init(&gpu_state.stream_lock, NULL);
+
+    // Initialize stream slots
+    memset(gpu_state.streams, 0, sizeof(gpu_state.streams));
+    gpu_state.num_active_streams = 0;
 
     // Initialize Metal
 #ifdef QGT_ENABLE_METAL
@@ -285,10 +313,37 @@ int qg_gpu_init(void) {
 void qg_gpu_cleanup(void) {
     if (!gpu_state.initialized) return;
 
+    // Synchronize all work before cleanup
+    qg_gpu_synchronize();
+
+    // Clean up all active streams
+    pthread_mutex_lock(&gpu_state.stream_lock);
+    for (int i = 0; i < MAX_GPU_STREAMS; i++) {
+        if (gpu_state.streams[i].active) {
+#ifdef QGT_ENABLE_METAL
+            if (gpu_state.streams[i].metal_queue) {
+                MTLCommandQueue* queue = (MTLCommandQueue*)gpu_state.streams[i].metal_queue;
+                [queue release];
+                gpu_state.streams[i].metal_queue = NULL;
+            }
+#endif
+#ifdef QGT_ENABLE_CUDA
+            if (gpu_state.streams[i].cuda_stream) {
+                cudaStreamDestroy((cudaStream_t)gpu_state.streams[i].cuda_stream);
+                gpu_state.streams[i].cuda_stream = NULL;
+            }
+#endif
+            gpu_state.streams[i].active = false;
+        }
+    }
+    gpu_state.num_active_streams = 0;
+    pthread_mutex_unlock(&gpu_state.stream_lock);
+    pthread_mutex_destroy(&gpu_state.stream_lock);
+
     // Clean up memory pools
     for (int i = 0; i < gpu_state.num_devices; i++) {
         pthread_mutex_lock(&gpu_state.memory_pools[i].lock);
-        
+
         if (gpu_state.memory_pools[i].base_ptr) {
             if (gpu_state.memory_pools[i].uses_unified_memory) {
                 #ifdef QGT_ENABLE_CUDA
@@ -303,7 +358,7 @@ void qg_gpu_cleanup(void) {
                 #endif
             }
         }
-        
+
         pthread_mutex_unlock(&gpu_state.memory_pools[i].lock);
         pthread_mutex_destroy(&gpu_state.memory_pools[i].lock);
     }
@@ -410,9 +465,15 @@ int qg_gpu_allocate(gpu_buffer_t* buffer, size_t size) {
     buffer->is_pinned = false;
 
     // Try to allocate from pool first
-    int device_id;
+    int device_id = 0;  // Default to first device
+#ifdef QGT_ENABLE_CUDA
     cudaGetDevice(&device_id);
-    buffer->device_ptr = allocate_from_pool(&gpu_state.memory_pools[device_id], size);
+#endif
+    if (gpu_state.memory_pools) {
+        buffer->device_ptr = allocate_from_pool(&gpu_state.memory_pools[device_id], size);
+    } else {
+        buffer->device_ptr = NULL;
+    }
     
     if (buffer->device_ptr) {
         return QG_GPU_SUCCESS;
@@ -547,19 +608,131 @@ int qg_gpu_memcpy_to_host(void* dst, const gpu_buffer_t* src, size_t size) {
     return QG_GPU_SUCCESS;
 }
 
+// Internal stream registration - finds a free slot and returns stream ID
+static int register_stream_internal(void* native_stream, bool is_metal) {
+    pthread_mutex_lock(&gpu_state.stream_lock);
+
+    // Find first free slot
+    int slot = -1;
+    for (int i = 0; i < MAX_GPU_STREAMS; i++) {
+        if (!gpu_state.streams[i].active) {
+            slot = i;
+            break;
+        }
+    }
+
+    if (slot < 0) {
+        pthread_mutex_unlock(&gpu_state.stream_lock);
+        return -1;  // No free slots
+    }
+
+    gpu_state.streams[slot].active = true;
+#ifdef QGT_ENABLE_METAL
+    if (is_metal) {
+        gpu_state.streams[slot].metal_queue = native_stream;
+    }
+#endif
+#ifdef QGT_ENABLE_CUDA
+    if (!is_metal) {
+        gpu_state.streams[slot].cuda_stream = native_stream;
+    }
+#endif
+    gpu_state.num_active_streams++;
+
+    pthread_mutex_unlock(&gpu_state.stream_lock);
+    return slot;
+}
+
+// Internal stream unregistration
+static void unregister_stream_internal(int stream_id) {
+    if (stream_id < 0 || stream_id >= MAX_GPU_STREAMS) return;
+
+    pthread_mutex_lock(&gpu_state.stream_lock);
+
+    if (gpu_state.streams[stream_id].active) {
+        gpu_state.streams[stream_id].active = false;
+#ifdef QGT_ENABLE_METAL
+        gpu_state.streams[stream_id].metal_queue = NULL;
+#endif
+#ifdef QGT_ENABLE_CUDA
+        gpu_state.streams[stream_id].cuda_stream = NULL;
+#endif
+        gpu_state.num_active_streams--;
+    }
+
+    pthread_mutex_unlock(&gpu_state.stream_lock);
+}
+
+// Metal stream management implementation
+#ifdef QGT_ENABLE_METAL
+void* qgt_metal_create_command_queue(void) {
+    MTLDevice* device = get_metal_device();
+    if (!device) return NULL;
+    return [device newCommandQueue];
+}
+
+int qgt_metal_register_command_queue(void* queue) {
+    return register_stream_internal(queue, true);
+}
+
+void* qgt_metal_get_command_queue(int stream_id) {
+    if (stream_id < 0 || stream_id >= MAX_GPU_STREAMS) return NULL;
+    if (!gpu_state.streams[stream_id].active) return NULL;
+    return gpu_state.streams[stream_id].metal_queue;
+}
+
+void qgt_metal_unregister_command_queue(int stream_id) {
+    if (stream_id < 0 || stream_id >= MAX_GPU_STREAMS) return;
+
+    pthread_mutex_lock(&gpu_state.stream_lock);
+    if (gpu_state.streams[stream_id].active && gpu_state.streams[stream_id].metal_queue) {
+        MTLCommandQueue* queue = (MTLCommandQueue*)gpu_state.streams[stream_id].metal_queue;
+        [queue release];
+    }
+    pthread_mutex_unlock(&gpu_state.stream_lock);
+
+    unregister_stream_internal(stream_id);
+}
+#endif
+
+// CUDA stream management implementation
+#ifdef QGT_ENABLE_CUDA
+int qgt_cuda_register_stream(void* stream) {
+    return register_stream_internal(stream, false);
+}
+
+void* qgt_cuda_get_stream(int stream_id) {
+    if (stream_id < 0 || stream_id >= MAX_GPU_STREAMS) return NULL;
+    if (!gpu_state.streams[stream_id].active) return NULL;
+    return gpu_state.streams[stream_id].cuda_stream;
+}
+
+void qgt_cuda_unregister_stream(int stream_id) {
+    unregister_stream_internal(stream_id);
+}
+#endif
+
 int qg_gpu_create_stream(int* stream_id) {
     if (!gpu_state.initialized || !stream_id) {
         gpu_state.last_error = QG_GPU_ERROR_NOT_INITIALIZED;
         return QG_GPU_ERROR_NOT_INITIALIZED;
     }
 
+    *stream_id = -1;
+
 #ifdef QGT_ENABLE_METAL
-    MTLCommandQueue* queue = qgt_metal_create_command_queue();
+    void* queue = qgt_metal_create_command_queue();
     if (!queue) {
         gpu_state.last_error = QG_GPU_ERROR_LAUNCH_FAILED;
         return QG_GPU_ERROR_LAUNCH_FAILED;
     }
     *stream_id = qgt_metal_register_command_queue(queue);
+    if (*stream_id < 0) {
+        [(MTLCommandQueue*)queue release];
+        gpu_state.last_error = QG_GPU_ERROR_OUT_OF_MEMORY;
+        return QG_GPU_ERROR_OUT_OF_MEMORY;
+    }
+    return QG_GPU_SUCCESS;
 #endif
 
 #ifdef QGT_ENABLE_CUDA
@@ -570,9 +743,17 @@ int qg_gpu_create_stream(int* stream_id) {
         return QG_GPU_ERROR_LAUNCH_FAILED;
     }
     *stream_id = qgt_cuda_register_stream(stream);
+    if (*stream_id < 0) {
+        cudaStreamDestroy(stream);
+        gpu_state.last_error = QG_GPU_ERROR_OUT_OF_MEMORY;
+        return QG_GPU_ERROR_OUT_OF_MEMORY;
+    }
+    return QG_GPU_SUCCESS;
 #endif
 
-    return QG_GPU_SUCCESS;
+    // No GPU backend available
+    gpu_state.last_error = QG_GPU_ERROR_NO_DEVICE;
+    return QG_GPU_ERROR_NO_DEVICE;
 }
 
 int qg_gpu_destroy_stream(int stream_id) {
@@ -581,26 +762,31 @@ int qg_gpu_destroy_stream(int stream_id) {
         return QG_GPU_ERROR_NOT_INITIALIZED;
     }
 
-#ifdef QGT_ENABLE_METAL
-    MTLCommandQueue* queue = qgt_metal_get_command_queue(stream_id);
-    if (!queue) {
+    if (stream_id < 0 || stream_id >= MAX_GPU_STREAMS) {
         gpu_state.last_error = QG_GPU_ERROR_INVALID_VALUE;
         return QG_GPU_ERROR_INVALID_VALUE;
     }
+
+    if (!gpu_state.streams[stream_id].active) {
+        gpu_state.last_error = QG_GPU_ERROR_INVALID_VALUE;
+        return QG_GPU_ERROR_INVALID_VALUE;
+    }
+
+#ifdef QGT_ENABLE_METAL
     qgt_metal_unregister_command_queue(stream_id);
+    return QG_GPU_SUCCESS;
 #endif
 
 #ifdef QGT_ENABLE_CUDA
-    cudaStream_t stream = qgt_cuda_get_stream(stream_id);
-    if (!stream) {
-        gpu_state.last_error = QG_GPU_ERROR_INVALID_VALUE;
-        return QG_GPU_ERROR_INVALID_VALUE;
+    cudaStream_t stream = (cudaStream_t)qgt_cuda_get_stream(stream_id);
+    if (stream) {
+        cudaStreamDestroy(stream);
     }
-    cudaStreamDestroy(stream);
     qgt_cuda_unregister_stream(stream_id);
+    return QG_GPU_SUCCESS;
 #endif
 
-    return QG_GPU_SUCCESS;
+    return QG_GPU_ERROR_NO_DEVICE;
 }
 
 int qg_gpu_synchronize_stream(int stream_id) {
@@ -609,29 +795,103 @@ int qg_gpu_synchronize_stream(int stream_id) {
         return QG_GPU_ERROR_NOT_INITIALIZED;
     }
 
-#ifdef QGT_ENABLE_METAL
-    MTLCommandQueue* queue = qgt_metal_get_command_queue(stream_id);
-    if (!queue) {
+    if (stream_id < 0 || stream_id >= MAX_GPU_STREAMS) {
         gpu_state.last_error = QG_GPU_ERROR_INVALID_VALUE;
         return QG_GPU_ERROR_INVALID_VALUE;
     }
-    [queue waitUntilCompleted];
+
+    if (!gpu_state.streams[stream_id].active) {
+        gpu_state.last_error = QG_GPU_ERROR_INVALID_VALUE;
+        return QG_GPU_ERROR_INVALID_VALUE;
+    }
+
+#ifdef QGT_ENABLE_METAL
+    MTLCommandQueue* queue = (MTLCommandQueue*)qgt_metal_get_command_queue(stream_id);
+    if (queue) {
+        @autoreleasepool {
+            id<MTLCommandBuffer> commandBuffer = [queue commandBuffer];
+            if (commandBuffer) {
+                [commandBuffer commit];
+                [commandBuffer waitUntilCompleted];
+            }
+        }
+    }
+    return QG_GPU_SUCCESS;
 #endif
 
 #ifdef QGT_ENABLE_CUDA
-    cudaStream_t stream = qgt_cuda_get_stream(stream_id);
-    if (!stream) {
-        gpu_state.last_error = QG_GPU_ERROR_INVALID_VALUE;
-        return QG_GPU_ERROR_INVALID_VALUE;
+    cudaStream_t stream = (cudaStream_t)qgt_cuda_get_stream(stream_id);
+    if (stream) {
+        cudaError_t error = cudaStreamSynchronize(stream);
+        if (error != cudaSuccess) {
+            gpu_state.last_error = QG_GPU_ERROR_SYNC_FAILED;
+            return QG_GPU_ERROR_SYNC_FAILED;
+        }
     }
-    cudaError_t error = cudaStreamSynchronize(stream);
-    if (error != cudaSuccess) {
-        gpu_state.last_error = QG_GPU_ERROR_LAUNCH_FAILED;
-        return QG_GPU_ERROR_LAUNCH_FAILED;
+    return QG_GPU_SUCCESS;
+#endif
+
+    return QG_GPU_ERROR_NO_DEVICE;
+}
+
+int qg_gpu_synchronize(void) {
+    if (!gpu_state.initialized) {
+        gpu_state.last_error = QG_GPU_ERROR_NOT_INITIALIZED;
+        return QG_GPU_ERROR_NOT_INITIALIZED;
+    }
+
+    int result = QG_GPU_SUCCESS;
+
+    // Lock stream state while iterating
+    pthread_mutex_lock(&gpu_state.stream_lock);
+
+#ifdef QGT_ENABLE_METAL
+    // Synchronize all active Metal command queues
+    for (int i = 0; i < MAX_GPU_STREAMS; i++) {
+        if (gpu_state.streams[i].active && gpu_state.streams[i].metal_queue) {
+            MTLCommandQueue* queue = (MTLCommandQueue*)gpu_state.streams[i].metal_queue;
+            // Create a command buffer and wait for all work to complete
+            @autoreleasepool {
+                id<MTLCommandBuffer> commandBuffer = [queue commandBuffer];
+                if (commandBuffer) {
+                    [commandBuffer commit];
+                    [commandBuffer waitUntilCompleted];
+                }
+            }
+        }
+    }
+
+    // Additionally wait for any uncommitted work on the device
+    // by creating a temporary sync buffer on the shared device
+    MTLDevice* device = get_metal_device();
+    if (device) {
+        @autoreleasepool {
+            id<MTLCommandQueue> tempQueue = [device newCommandQueue];
+            if (tempQueue) {
+                id<MTLCommandBuffer> syncBuffer = [tempQueue commandBuffer];
+                if (syncBuffer) {
+                    [syncBuffer commit];
+                    [syncBuffer waitUntilCompleted];
+                }
+                [tempQueue release];
+            }
+        }
     }
 #endif
 
-    return QG_GPU_SUCCESS;
+#ifdef QGT_ENABLE_CUDA
+    // cudaDeviceSynchronize() waits for all streams on all devices
+    // This is the most thorough synchronization
+    cudaError_t error = cudaDeviceSynchronize();
+    if (error != cudaSuccess) {
+        gpu_state.last_error = QG_GPU_ERROR_SYNC_FAILED;
+        result = QG_GPU_ERROR_SYNC_FAILED;
+    }
+#endif
+
+    pthread_mutex_unlock(&gpu_state.stream_lock);
+
+    return result;
 }
 
 const char* qg_gpu_get_error_string(gpu_error_t error) {

@@ -18,7 +18,7 @@ static double get_time_ms(struct timespec *start, struct timespec *end) {
     return (end->tv_sec - start->tv_sec) * 1000.0 + (end->tv_nsec - start->tv_nsec) / 1000000.0;
 }
 
-static void print_matrix(const float* matrix, int size) {
+static void print_float_matrix(const float* matrix, int size) {
     for (int i = 0; i < size; i++) {
         for (int j = 0; j < size; j++) {
             printf("%8.3f ", matrix[i * size + j]);
@@ -55,7 +55,7 @@ static bool test_matrix_decomposition() {
     }
 
     printf("Original matrix:\n");
-    print_matrix(matrix, size);
+    print_float_matrix(matrix, size);
 
     struct timespec op_start, op_end;
     clock_gettime(CLOCK_MONOTONIC, &op_start);
@@ -72,9 +72,9 @@ static bool test_matrix_decomposition() {
     }
 
     printf("U matrix:\n");
-    print_matrix(U, size);
+    print_float_matrix(U, size);
     printf("V matrix:\n");
-    print_matrix(V, size);
+    print_float_matrix(V, size);
 
     // Verify decomposition by multiplying U and V
     float* reconstructed = (float*)malloc(size * size * sizeof(float));
@@ -197,7 +197,7 @@ static bool test_tensor_network_conversion() {
     }
 
     printf("Original matrix:\n");
-    print_matrix(matrix, size);
+    print_float_matrix(matrix, size);
 
     struct timespec op_start, op_end;
     clock_gettime(CLOCK_MONOTONIC, &op_start);
@@ -212,7 +212,7 @@ static bool test_tensor_network_conversion() {
     }
 
     // Basic validation of tensor network properties
-    bool success = (network.num_tensors > 0);
+    bool success = (network.num_nodes > 0);
 
     free(matrix);
     // Cleanup tensor network (assuming there's a cleanup function)
@@ -249,7 +249,7 @@ static bool test_hierarchical_conversion() {
     }
 
     printf("Original matrix:\n");
-    print_matrix(matrix, size);
+    print_float_matrix(matrix, size);
 
     struct timespec op_start, op_end;
     clock_gettime(CLOCK_MONOTONIC, &op_start);
@@ -264,7 +264,7 @@ static bool test_hierarchical_conversion() {
     }
 
     // Basic validation of hierarchical matrix properties
-    bool success = (hmatrix.size == size);
+    bool success = (hmatrix.n == (size_t)size);
 
     free(matrix);
     // Cleanup hierarchical matrix (assuming there's a cleanup function)
@@ -302,9 +302,9 @@ static bool test_decomposition_optimization() {
     }
 
     printf("Original U matrix:\n");
-    print_matrix(U, size);
+    print_float_matrix(U, size);
     printf("Original V matrix:\n");
-    print_matrix(V, size);
+    print_float_matrix(V, size);
 
     const float tolerance = 0.01f;
     struct timespec op_start, op_end;
@@ -321,9 +321,9 @@ static bool test_decomposition_optimization() {
     }
 
     printf("Optimized U matrix:\n");
-    print_matrix(U, size);
+    print_float_matrix(U, size);
     printf("Optimized V matrix:\n");
-    print_matrix(V, size);
+    print_float_matrix(V, size);
 
     // Basic validation that matrices changed
     bool success = true;

@@ -882,3 +882,127 @@ bool measure_pauli_z_parallel(const quantum_state* state, size_t qubit_index, do
     *result = expectation;
     return true;
 }
+
+// ============================================================================
+// Public Pauli Measurement API (wrappers for header-declared functions)
+// ============================================================================
+
+bool measure_pauli_x(const quantum_state* state, size_t qubit_index, double* result) {
+    return measure_pauli_x_parallel(state, qubit_index, result);
+}
+
+bool measure_pauli_y(const quantum_state* state, size_t qubit_index, double* result) {
+    return measure_pauli_y_parallel(state, qubit_index, result);
+}
+
+bool measure_pauli_z(const quantum_state* state, size_t qubit_index, double* result) {
+    return measure_pauli_z_parallel(state, qubit_index, result);
+}
+
+// ============================================================================
+// Single Stabilizer Measurement (Serial)
+// ============================================================================
+
+/**
+ * @brief Measure a single stabilizer operator on a set of qubits
+ *
+ * For STABILIZER_PLAQUETTE (Z-type): measures the tensor product Z⊗Z⊗Z⊗Z
+ * For STABILIZER_VERTEX (X-type): measures the tensor product X⊗X⊗X⊗X
+ *
+ * The expectation value is the product of individual Pauli measurements,
+ * which gives the eigenvalue of the stabilizer operator.
+ *
+ * @param state Quantum state to measure
+ * @param qubit_indices Array of qubit indices comprising the stabilizer
+ * @param num_qubits Number of qubits in the stabilizer (typically 4)
+ * @param type Stabilizer type (PLAQUETTE for Z-basis, VERTEX for X-basis)
+ * @param result Output: expectation value in [-1, +1]
+ * @return true on success, false on failure
+ */
+bool measure_stabilizer(const quantum_state* state,
+                       const size_t* qubit_indices,
+                       size_t num_qubits,
+                       StabilizerType type,
+                       double* result) {
+    if (!state || !qubit_indices || !result || num_qubits == 0) {
+        return false;
+    }
+
+    // Validate stabilizer type
+    if (type != STABILIZER_PLAQUETTE && type != STABILIZER_VERTEX) {
+        return false;
+    }
+
+    // Validate state has coordinates
+    if (!state->coordinates) {
+        return false;
+    }
+
+    // For stabilizer measurements, we need to compute the expectation value
+    // of the multi-qubit Pauli operator (Z^n or X^n)
+    //
+    // For Z-stabilizers (plaquette): eigenvalue is product of Z measurements
+    // For X-stabilizers (vertex): eigenvalue is product of X measurements
+    //
+    // Direct approach: iterate over all basis states and compute
+    // <psi| P_1 ⊗ P_2 ⊗ ... ⊗ P_n |psi>
+
+    size_t dim = state->dimension;
+    double expectation = 0.0;
+
+    if (type == STABILIZER_PLAQUETTE) {
+        // Z-type stabilizer: Z⊗Z⊗...⊗Z
+        // Diagonal in computational basis
+        // Eigenvalue of |i⟩ is (-1)^(parity of selected qubits in i)
+
+        for (size_t i = 0; i < dim; i++) {
+            // Compute parity of the selected qubits
+            int parity = 0;
+            for (size_t q = 0; q < num_qubits; q++) {
+                size_t qubit_idx = qubit_indices[q];
+                if (qubit_idx >= state->num_qubits) {
+                    return false;  // Invalid qubit index
+                }
+                if (i & (1UL << qubit_idx)) {
+                    parity ^= 1;
+                }
+            }
+
+            // Probability of this basis state
+            double prob = state->coordinates[i].real * state->coordinates[i].real +
+                         state->coordinates[i].imag * state->coordinates[i].imag;
+
+            // Contribution: (+1 if even parity, -1 if odd parity) * probability
+            expectation += (parity ? -prob : prob);
+        }
+    } else {
+        // X-type stabilizer: X⊗X⊗...⊗X
+        // Off-diagonal: flips all selected qubits
+        // <i|X^n|j> = 1 if j = i XOR (mask of all selected qubits)
+
+        // Build the flip mask for all selected qubits
+        size_t flip_mask = 0;
+        for (size_t q = 0; q < num_qubits; q++) {
+            size_t qubit_idx = qubit_indices[q];
+            if (qubit_idx >= state->num_qubits) {
+                return false;  // Invalid qubit index
+            }
+            flip_mask |= (1UL << qubit_idx);
+        }
+
+        // <X^n> = sum over i of c_i* c_{i XOR mask}
+        for (size_t i = 0; i < dim; i++) {
+            size_t j = i ^ flip_mask;
+
+            // Only count each pair once (when i < j) and double it
+            // Or we can just sum all and take real part
+            // c_i* c_j contribution to <X^n>
+            double real_part = state->coordinates[i].real * state->coordinates[j].real +
+                              state->coordinates[i].imag * state->coordinates[j].imag;
+            expectation += real_part;
+        }
+    }
+
+    *result = expectation;
+    return true;
+}

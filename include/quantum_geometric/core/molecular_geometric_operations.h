@@ -14,14 +14,14 @@ typedef enum {
     GEOM_MOLECULAR       // Molecular geometry
 } geometry_type_t;
 
-// Operation types
+// Molecular operation types (renamed to avoid conflict with other modules)
 typedef enum {
     OP_ROTATION,          // Rotation operation
     OP_TRANSLATION,       // Translation operation
     OP_DEFORMATION,       // Deformation operation
     OP_TRANSFORMATION,    // General transformation
     OP_QUANTUM           // Quantum operation
-} operation_type_t;
+} molecular_operation_type_t;
 
 // Coordinate systems
 typedef enum {
@@ -63,7 +63,7 @@ typedef struct {
 
 // Operation parameters
 typedef struct {
-    operation_type_t type;        // Operation type
+    molecular_operation_type_t type;        // Operation type
     double* parameters;           // Operation parameters
     size_t num_params;            // Number of parameters
     bool is_reversible;           // Reversibility flag

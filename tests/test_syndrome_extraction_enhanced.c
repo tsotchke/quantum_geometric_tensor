@@ -6,6 +6,9 @@
 #include "quantum_geometric/physics/syndrome_extraction.h"
 #include "quantum_geometric/physics/z_stabilizer_operations.h"
 #include "quantum_geometric/hardware/quantum_hardware_optimization.h"
+#include "quantum_geometric/core/quantum_geometric_types.h"
+#include "quantum_geometric/core/quantum_state.h"
+#include "quantum_geometric/core/quantum_complex.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
@@ -24,7 +27,8 @@ static void test_parallel_processing(void);
 
 // Helper functions
 static SyndromeConfig create_test_config(void);
-static quantum_state* create_test_state(void);
+static quantum_state_t* create_test_state(void);
+static void destroy_test_state(quantum_state_t* state);
 static void verify_phase_metrics(const SyndromeState* state);
 static void verify_spatial_metrics(const SyndromeState* state);
 static void verify_hardware_metrics(const SyndromeState* state);
@@ -51,7 +55,7 @@ static void test_z_stabilizer_integration(void) {
 
     SyndromeConfig config = create_test_config();
     SyndromeState state = {0};
-    quantum_state* qstate = create_test_state();
+    quantum_state_t* qstate = create_test_state();
     ErrorSyndrome syndrome = {0};
 
     bool success = init_syndrome_extraction_enhanced(&state, &config);
@@ -68,7 +72,7 @@ static void test_z_stabilizer_integration(void) {
     assert(state.cache->z_state->error_correction_active);
 
     cleanup_syndrome_extraction(&state);
-    free(qstate);
+    destroy_test_state(qstate);
 
     printf("Z-stabilizer integration tests passed\n");
 }
@@ -78,7 +82,7 @@ static void test_enhanced_correlation_tracking(void) {
 
     SyndromeConfig config = create_test_config();
     SyndromeState state = {0};
-    quantum_state* qstate = create_test_state();
+    quantum_state_t* qstate = create_test_state();
 
     bool success = init_syndrome_extraction_enhanced(&state, &config);
     assert(success);
@@ -108,7 +112,7 @@ static void test_enhanced_correlation_tracking(void) {
     }
 
     cleanup_syndrome_extraction(&state);
-    free(qstate);
+    destroy_test_state(qstate);
 
     printf("Enhanced correlation tracking tests passed\n");
 }
@@ -119,7 +123,7 @@ static void test_hardware_optimizations(void) {
     SyndromeConfig config = create_test_config();
     config.dynamic_phase_correction = true;
     SyndromeState state = {0};
-    quantum_state* qstate = create_test_state();
+    quantum_state_t* qstate = create_test_state();
 
     bool success = init_syndrome_extraction_enhanced(&state, &config);
     assert(success);
@@ -138,7 +142,7 @@ static void test_hardware_optimizations(void) {
     assert(state.phase_stability >= initial_phase);
 
     cleanup_syndrome_extraction(&state);
-    free(qstate);
+    destroy_test_state(qstate);
 
     printf("Hardware optimization tests passed\n");
 }
@@ -150,7 +154,7 @@ static void test_parallel_processing(void) {
     config.enable_parallel = true;
     config.parallel_group_size = 16;
     SyndromeState state = {0};
-    quantum_state* qstate = create_test_state();
+    quantum_state_t* qstate = create_test_state();
 
     bool success = init_syndrome_extraction_enhanced(&state, &config);
     assert(success);
@@ -187,7 +191,7 @@ static void test_parallel_processing(void) {
 
     cleanup_syndrome_extraction(&state);
     cleanup_syndrome_extraction(&serial_state);
-    free(qstate);
+    destroy_test_state(qstate);
 
     printf("Parallel processing tests passed\n");
 }
@@ -197,7 +201,7 @@ static void test_phase_stability(void) {
 
     SyndromeConfig config = create_test_config();
     SyndromeState state = {0};
-    quantum_state* qstate = create_test_state();
+    quantum_state_t* qstate = create_test_state();
 
     bool success = init_syndrome_extraction_enhanced(&state, &config);
     assert(success);
@@ -210,7 +214,7 @@ static void test_phase_stability(void) {
     }
 
     cleanup_syndrome_extraction(&state);
-    free(qstate);
+    destroy_test_state(qstate);
 
     printf("Phase stability tests passed\n");
 }
@@ -221,7 +225,7 @@ static void test_spatial_coherence(void) {
     SyndromeConfig config = create_test_config();
     config.track_spatial_correlations = true;
     SyndromeState state = {0};
-    quantum_state* qstate = create_test_state();
+    quantum_state_t* qstate = create_test_state();
 
     bool success = init_syndrome_extraction_enhanced(&state, &config);
     assert(success);
@@ -234,7 +238,7 @@ static void test_spatial_coherence(void) {
     }
 
     cleanup_syndrome_extraction(&state);
-    free(qstate);
+    destroy_test_state(qstate);
 
     printf("Spatial coherence tests passed\n");
 }
@@ -244,7 +248,7 @@ static void test_error_cases(void) {
 
     SyndromeConfig config = create_test_config();
     SyndromeState state = {0};
-    quantum_state* qstate = create_test_state();
+    quantum_state_t* qstate = create_test_state();
 
     assert(!init_syndrome_extraction_enhanced(NULL, &config));
     assert(!init_syndrome_extraction_enhanced(&state, NULL));
@@ -258,7 +262,7 @@ static void test_error_cases(void) {
     assert(!extract_error_syndrome_enhanced(&state, NULL, &syndrome));
     assert(!extract_error_syndrome_enhanced(&state, qstate, NULL));
 
-    free(qstate);
+    destroy_test_state(qstate);
     printf("Error case tests passed\n");
 }
 
@@ -272,7 +276,7 @@ static void test_performance_requirements(void) {
     config.parallel_group_size = 16;
     
     SyndromeState state = {0};
-    quantum_state* qstate = create_test_state();
+    quantum_state_t* qstate = create_test_state();
 
     clock_t start = clock();
     bool success = init_syndrome_extraction_enhanced(&state, &config);
@@ -292,7 +296,7 @@ static void test_performance_requirements(void) {
     assert(measurement_time < 10.0);  // <10μs target
 
     cleanup_syndrome_extraction(&state);
-    free(qstate);
+    destroy_test_state(qstate);
 
     printf("Performance requirement tests passed\n");
 }
@@ -319,47 +323,62 @@ static SyndromeConfig create_test_config(void) {
     return config;
 }
 
-static quantum_state* create_test_state(void) {
-    quantum_state* state = malloc(sizeof(quantum_state));
-    if (!state) {
+static quantum_state_t* create_test_state(void) {
+    quantum_state_t* state = NULL;
+    size_t width = 16;
+    size_t height = 16;
+    size_t num_qubits = width * height;
+    size_t dimension = 1UL << (num_qubits > 20 ? 20 : num_qubits);  // Cap dimension
+
+    qgt_error_t err = quantum_state_create(&state, QUANTUM_STATE_PURE, dimension);
+    if (err != QGT_SUCCESS || !state) {
         return NULL;
     }
 
-    state->width = 16;
-    state->height = 16;
-    state->depth = 1;
-    state->num_qubits = state->width * state->height;
+    // Set lattice dimensions
+    state->lattice_width = width;
+    state->lattice_height = height;
+    state->num_qubits = num_qubits;
 
-    size_t aligned_size = ((state->num_qubits * sizeof(qubit_state) + 63) / 64) * 64;
-    state->qubits = aligned_alloc(64, aligned_size);
-    if (!state->qubits) {
-        free(state);
+    // Initialize coordinates to superposition state |+⟩^n
+    float amp = 1.0f / sqrtf(2.0f);
+    for (size_t i = 0; i < state->dimension && i < 2; i++) {
+        state->coordinates[i] = complex_float_create(amp, 0.0f);
+    }
+
+    // Allocate syndrome values for error tracking
+    size_t total_stabilizers = (width - 1) * (height - 1) * 2;
+    state->num_stabilizers = total_stabilizers;
+    state->num_plaquettes = (width - 1) * (height - 1);
+    state->num_vertices = (width - 1) * (height - 1);
+    state->syndrome_size = total_stabilizers;
+    state->syndrome_values = calloc(total_stabilizers, sizeof(double));
+
+    if (!state->syndrome_values) {
+        quantum_state_destroy(state);
         return NULL;
     }
 
-    for (size_t i = 0; i < state->num_qubits; i++) {
-        state->qubits[i].amplitude_real = 1.0 / sqrt(2.0);
-        state->qubits[i].amplitude_imag = 1.0 / sqrt(2.0);
-        state->qubits[i].phase = 0.0;
-        state->qubits[i].error_rate = 0.001;
+    // Initialize syndrome to no errors (+1 eigenvalue for all stabilizers)
+    for (size_t i = 0; i < total_stabilizers; i++) {
+        state->syndrome_values[i] = 1.0;
     }
-
-    state->layout = HARDWARE_OPTIMIZED_LAYOUT;
-    state->cache_line_aligned = true;
-    state->supports_simd = true;
-    state->supports_gpu_acceleration = true;
-
-    state->hardware_config.num_threads = 8;
-    state->hardware_config.cache_size = get_l3_cache_size();
-    state->hardware_config.simd_width = get_simd_width();
-    state->hardware_config.gpu_available = check_gpu_availability();
-    state->hardware_config.tensor_cores_available = check_tensor_cores();
-
-    optimize_memory_layout(state);
-    setup_hardware_prefetch(state);
-    initialize_error_buffers(state);
 
     return state;
+}
+
+static void destroy_test_state(quantum_state_t* state) {
+    if (state) {
+        if (state->syndrome_values) {
+            free(state->syndrome_values);
+            state->syndrome_values = NULL;
+        }
+        if (state->measurement_confidence) {
+            free(state->measurement_confidence);
+            state->measurement_confidence = NULL;
+        }
+        quantum_state_destroy(state);
+    }
 }
 
 static void verify_phase_metrics(const SyndromeState* state) {

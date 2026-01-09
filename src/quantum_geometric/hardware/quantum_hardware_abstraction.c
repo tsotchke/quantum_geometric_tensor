@@ -47,7 +47,7 @@ static bool operation_to_quil(const QuantumOperation* operation, char* buffer, s
 static bool operation_to_json(const QuantumOperation* operation, char* buffer, size_t size);
 
 // Forward declarations - Validation helpers
-static bool validate_gate_operation(const QuantumGate* gate);
+static bool validate_gate_operation(const HardwareGate* gate);
 static bool validate_annealing_schedule(const double* schedule, size_t points);
 
 // Forward declarations - Optimization helpers (program-based)
@@ -966,164 +966,164 @@ static bool operation_to_qasm(const QuantumOperation* operation, char* buffer, s
             switch (operation->op.gate.type) {
                 // Identity gate
                 case GATE_I:
-                    snprintf(buffer, size, "id q[%u];", operation->op.gate.qubit);
+                    snprintf(buffer, size, "id q[%u];", operation->op.gate.target);
                     break;
 
                 // Single-qubit Pauli gates
                 case GATE_H:
-                    snprintf(buffer, size, "h q[%u];", operation->op.gate.qubit);
+                    snprintf(buffer, size, "h q[%u];", operation->op.gate.target);
                     break;
                 case GATE_X:
-                    snprintf(buffer, size, "x q[%u];", operation->op.gate.qubit);
+                    snprintf(buffer, size, "x q[%u];", operation->op.gate.target);
                     break;
                 case GATE_Y:
-                    snprintf(buffer, size, "y q[%u];", operation->op.gate.qubit);
+                    snprintf(buffer, size, "y q[%u];", operation->op.gate.target);
                     break;
                 case GATE_Z:
-                    snprintf(buffer, size, "z q[%u];", operation->op.gate.qubit);
+                    snprintf(buffer, size, "z q[%u];", operation->op.gate.target);
                     break;
 
                 // Phase gates
                 case GATE_S:
-                    snprintf(buffer, size, "s q[%u];", operation->op.gate.qubit);
+                    snprintf(buffer, size, "s q[%u];", operation->op.gate.target);
                     break;
                 case GATE_SDG:
-                    snprintf(buffer, size, "sdg q[%u];", operation->op.gate.qubit);
+                    snprintf(buffer, size, "sdg q[%u];", operation->op.gate.target);
                     break;
                 case GATE_T:
-                    snprintf(buffer, size, "t q[%u];", operation->op.gate.qubit);
+                    snprintf(buffer, size, "t q[%u];", operation->op.gate.target);
                     break;
                 case GATE_TDG:
-                    snprintf(buffer, size, "tdg q[%u];", operation->op.gate.qubit);
+                    snprintf(buffer, size, "tdg q[%u];", operation->op.gate.target);
                     break;
 
                 // Square root of X
                 case GATE_SX:
-                    snprintf(buffer, size, "sx q[%u];", operation->op.gate.qubit);
+                    snprintf(buffer, size, "sx q[%u];", operation->op.gate.target);
                     break;
 
                 // Rotation gates
                 case GATE_RX:
                     snprintf(buffer, size, "rx(%g) q[%u];",
-                            operation->op.gate.parameter, operation->op.gate.qubit);
+                            operation->op.gate.parameter, operation->op.gate.target);
                     break;
                 case GATE_RY:
                     snprintf(buffer, size, "ry(%g) q[%u];",
-                            operation->op.gate.parameter, operation->op.gate.qubit);
+                            operation->op.gate.parameter, operation->op.gate.target);
                     break;
                 case GATE_RZ:
                     snprintf(buffer, size, "rz(%g) q[%u];",
-                            operation->op.gate.parameter, operation->op.gate.qubit);
+                            operation->op.gate.parameter, operation->op.gate.target);
                     break;
 
                 // U gates (IBM native)
                 case GATE_U1:
                     snprintf(buffer, size, "u1(%g) q[%u];",
-                            operation->op.gate.parameter, operation->op.gate.qubit);
+                            operation->op.gate.parameter, operation->op.gate.target);
                     break;
                 case GATE_U2:
-                    if (operation->op.gate.parameters && operation->op.gate.num_parameters >= 2) {
+                    if (operation->op.gate.parameters && operation->op.gate.num_params >= 2) {
                         snprintf(buffer, size, "u2(%g,%g) q[%u];",
                                 operation->op.gate.parameters[0],
                                 operation->op.gate.parameters[1],
-                                operation->op.gate.qubit);
+                                operation->op.gate.target);
                     } else {
-                        snprintf(buffer, size, "u2(0,0) q[%u];", operation->op.gate.qubit);
+                        snprintf(buffer, size, "u2(0,0) q[%u];", operation->op.gate.target);
                     }
                     break;
                 case GATE_U3:
-                    if (operation->op.gate.parameters && operation->op.gate.num_parameters >= 3) {
+                    if (operation->op.gate.parameters && operation->op.gate.num_params >= 3) {
                         snprintf(buffer, size, "u3(%g,%g,%g) q[%u];",
                                 operation->op.gate.parameters[0],
                                 operation->op.gate.parameters[1],
                                 operation->op.gate.parameters[2],
-                                operation->op.gate.qubit);
+                                operation->op.gate.target);
                     } else {
-                        snprintf(buffer, size, "u3(0,0,0) q[%u];", operation->op.gate.qubit);
+                        snprintf(buffer, size, "u3(0,0,0) q[%u];", operation->op.gate.target);
                     }
                     break;
 
                 // Two-qubit gates
                 case GATE_CNOT:
                     snprintf(buffer, size, "cx q[%u],q[%u];",
-                            operation->op.gate.control_qubit,
-                            operation->op.gate.target_qubit);
+                            operation->op.gate.control,
+                            operation->op.gate.target);
                     break;
                 case GATE_CZ:
                     snprintf(buffer, size, "cz q[%u],q[%u];",
-                            operation->op.gate.control_qubit,
-                            operation->op.gate.target_qubit);
+                            operation->op.gate.control,
+                            operation->op.gate.target);
                     break;
                 case GATE_SWAP:
                     snprintf(buffer, size, "swap q[%u],q[%u];",
-                            operation->op.gate.control_qubit,
-                            operation->op.gate.target_qubit);
+                            operation->op.gate.control,
+                            operation->op.gate.target);
                     break;
                 case GATE_ISWAP:
                     // iSWAP is not native QASM, decompose to standard gates
                     snprintf(buffer, size, "// iswap decomposition\n"
                             "s q[%u]; s q[%u]; h q[%u]; cx q[%u],q[%u]; cx q[%u],q[%u]; h q[%u];",
-                            operation->op.gate.control_qubit,
-                            operation->op.gate.target_qubit,
-                            operation->op.gate.control_qubit,
-                            operation->op.gate.control_qubit,
-                            operation->op.gate.target_qubit,
-                            operation->op.gate.target_qubit,
-                            operation->op.gate.control_qubit,
-                            operation->op.gate.target_qubit);
+                            operation->op.gate.control,
+                            operation->op.gate.target,
+                            operation->op.gate.control,
+                            operation->op.gate.control,
+                            operation->op.gate.target,
+                            operation->op.gate.target,
+                            operation->op.gate.control,
+                            operation->op.gate.target);
                     break;
 
                 // Controlled rotation gates
                 case GATE_CRX:
                     snprintf(buffer, size, "crx(%g) q[%u],q[%u];",
                             operation->op.gate.parameter,
-                            operation->op.gate.control_qubit,
-                            operation->op.gate.target_qubit);
+                            operation->op.gate.control,
+                            operation->op.gate.target);
                     break;
                 case GATE_CRY:
                     snprintf(buffer, size, "cry(%g) q[%u],q[%u];",
                             operation->op.gate.parameter,
-                            operation->op.gate.control_qubit,
-                            operation->op.gate.target_qubit);
+                            operation->op.gate.control,
+                            operation->op.gate.target);
                     break;
                 case GATE_CRZ:
                     snprintf(buffer, size, "crz(%g) q[%u],q[%u];",
                             operation->op.gate.parameter,
-                            operation->op.gate.control_qubit,
-                            operation->op.gate.target_qubit);
+                            operation->op.gate.control,
+                            operation->op.gate.target);
                     break;
                 case GATE_CH:
                     snprintf(buffer, size, "ch q[%u],q[%u];",
-                            operation->op.gate.control_qubit,
-                            operation->op.gate.target_qubit);
+                            operation->op.gate.control,
+                            operation->op.gate.target);
                     break;
 
-                // Three-qubit gates (use qubit, control_qubit, target_qubit)
+                // Three-qubit gates (use control, target1, target2)
                 // Note: GATE_TOFFOLI is an alias for GATE_CCX
                 case GATE_CCX:
                     snprintf(buffer, size, "ccx q[%u],q[%u],q[%u];",
-                            operation->op.gate.qubit,
-                            operation->op.gate.control_qubit,
-                            operation->op.gate.target_qubit);
+                            operation->op.gate.control,
+                            operation->op.gate.target1,
+                            operation->op.gate.target);
                     break;
                 case GATE_CSWAP:
                     snprintf(buffer, size, "cswap q[%u],q[%u],q[%u];",
-                            operation->op.gate.qubit,
-                            operation->op.gate.control_qubit,
-                            operation->op.gate.target_qubit);
+                            operation->op.gate.control,
+                            operation->op.gate.target1,
+                            operation->op.gate.target);
                     break;
 
                 // IBM native ECR gate
                 case GATE_ECR:
                     snprintf(buffer, size, "ecr q[%u],q[%u];",
-                            operation->op.gate.control_qubit,
-                            operation->op.gate.target_qubit);
+                            operation->op.gate.control,
+                            operation->op.gate.target);
                     break;
 
                 // Phase gate with parameter
                 case GATE_PHASE:
                     snprintf(buffer, size, "p(%g) q[%u];",
-                            operation->op.gate.parameter, operation->op.gate.qubit);
+                            operation->op.gate.parameter, operation->op.gate.target);
                     break;
 
                 default:
@@ -1146,7 +1146,7 @@ static bool operation_to_qasm(const QuantumOperation* operation, char* buffer, s
                 int written = snprintf(buffer, size, "barrier ");
                 size_t remaining = size - written;
                 char* pos = buffer + written;
-                
+
                 for (size_t i = 0; i < operation->op.barrier.num_qubits; i++) {
                     int w = snprintf(pos, remaining, "q[%u]%s",
                                    operation->op.barrier.qubits[i],
@@ -1176,170 +1176,170 @@ static bool operation_to_quil(const QuantumOperation* operation, char* buffer, s
             switch (operation->op.gate.type) {
                 // Identity gate
                 case GATE_I:
-                    snprintf(buffer, size, "I %u", operation->op.gate.qubit);
+                    snprintf(buffer, size, "I %u", operation->op.gate.target);
                     break;
 
                 // Single-qubit Pauli gates
                 case GATE_H:
-                    snprintf(buffer, size, "H %u", operation->op.gate.qubit);
+                    snprintf(buffer, size, "H %u", operation->op.gate.target);
                     break;
                 case GATE_X:
-                    snprintf(buffer, size, "X %u", operation->op.gate.qubit);
+                    snprintf(buffer, size, "X %u", operation->op.gate.target);
                     break;
                 case GATE_Y:
-                    snprintf(buffer, size, "Y %u", operation->op.gate.qubit);
+                    snprintf(buffer, size, "Y %u", operation->op.gate.target);
                     break;
                 case GATE_Z:
-                    snprintf(buffer, size, "Z %u", operation->op.gate.qubit);
+                    snprintf(buffer, size, "Z %u", operation->op.gate.target);
                     break;
 
                 // Phase gates (using RZ decomposition for S and T)
                 case GATE_S:
-                    snprintf(buffer, size, "RZ(pi/2) %u", operation->op.gate.qubit);
+                    snprintf(buffer, size, "RZ(pi/2) %u", operation->op.gate.target);
                     break;
                 case GATE_SDG:
-                    snprintf(buffer, size, "RZ(-pi/2) %u", operation->op.gate.qubit);
+                    snprintf(buffer, size, "RZ(-pi/2) %u", operation->op.gate.target);
                     break;
                 case GATE_T:
-                    snprintf(buffer, size, "RZ(pi/4) %u", operation->op.gate.qubit);
+                    snprintf(buffer, size, "RZ(pi/4) %u", operation->op.gate.target);
                     break;
                 case GATE_TDG:
-                    snprintf(buffer, size, "RZ(-pi/4) %u", operation->op.gate.qubit);
+                    snprintf(buffer, size, "RZ(-pi/4) %u", operation->op.gate.target);
                     break;
 
                 // Square root of X
                 case GATE_SX:
-                    snprintf(buffer, size, "RX(pi/2) %u", operation->op.gate.qubit);
+                    snprintf(buffer, size, "RX(pi/2) %u", operation->op.gate.target);
                     break;
 
                 // Rotation gates
                 case GATE_RX:
                     snprintf(buffer, size, "RX(%g) %u",
-                            operation->op.gate.parameter, operation->op.gate.qubit);
+                            operation->op.gate.parameter, operation->op.gate.target);
                     break;
                 case GATE_RY:
                     snprintf(buffer, size, "RY(%g) %u",
-                            operation->op.gate.parameter, operation->op.gate.qubit);
+                            operation->op.gate.parameter, operation->op.gate.target);
                     break;
                 case GATE_RZ:
                     snprintf(buffer, size, "RZ(%g) %u",
-                            operation->op.gate.parameter, operation->op.gate.qubit);
+                            operation->op.gate.parameter, operation->op.gate.target);
                     break;
 
                 // U gates (decomposed to native Rigetti gates)
                 case GATE_U1:
                     // U1(lambda) = RZ(lambda)
                     snprintf(buffer, size, "RZ(%g) %u",
-                            operation->op.gate.parameter, operation->op.gate.qubit);
+                            operation->op.gate.parameter, operation->op.gate.target);
                     break;
                 case GATE_U2:
                     // U2(phi, lambda) = RZ(phi) RY(pi/2) RZ(lambda)
-                    if (operation->op.gate.parameters && operation->op.gate.num_parameters >= 2) {
+                    if (operation->op.gate.parameters && operation->op.gate.num_params >= 2) {
                         snprintf(buffer, size, "RZ(%g) %u\nRY(1.5707963267948966) %u\nRZ(%g) %u",
-                                operation->op.gate.parameters[1], operation->op.gate.qubit,
-                                operation->op.gate.qubit,
-                                operation->op.gate.parameters[0], operation->op.gate.qubit);
+                                operation->op.gate.parameters[1], operation->op.gate.target,
+                                operation->op.gate.target,
+                                operation->op.gate.parameters[0], operation->op.gate.target);
                     } else {
-                        snprintf(buffer, size, "RY(1.5707963267948966) %u", operation->op.gate.qubit);
+                        snprintf(buffer, size, "RY(1.5707963267948966) %u", operation->op.gate.target);
                     }
                     break;
                 case GATE_U3:
                     // U3(theta, phi, lambda) = RZ(phi) RY(theta) RZ(lambda)
-                    if (operation->op.gate.parameters && operation->op.gate.num_parameters >= 3) {
+                    if (operation->op.gate.parameters && operation->op.gate.num_params >= 3) {
                         snprintf(buffer, size, "RZ(%g) %u\nRY(%g) %u\nRZ(%g) %u",
-                                operation->op.gate.parameters[2], operation->op.gate.qubit,
-                                operation->op.gate.parameters[0], operation->op.gate.qubit,
-                                operation->op.gate.parameters[1], operation->op.gate.qubit);
+                                operation->op.gate.parameters[2], operation->op.gate.target,
+                                operation->op.gate.parameters[0], operation->op.gate.target,
+                                operation->op.gate.parameters[1], operation->op.gate.target);
                     } else {
-                        snprintf(buffer, size, "I %u", operation->op.gate.qubit);
+                        snprintf(buffer, size, "I %u", operation->op.gate.target);
                     }
                     break;
 
                 // Two-qubit gates
                 case GATE_CNOT:
                     snprintf(buffer, size, "CNOT %u %u",
-                            operation->op.gate.control_qubit,
-                            operation->op.gate.target_qubit);
+                            operation->op.gate.control,
+                            operation->op.gate.target);
                     break;
                 case GATE_CZ:
                     snprintf(buffer, size, "CZ %u %u",
-                            operation->op.gate.control_qubit,
-                            operation->op.gate.target_qubit);
+                            operation->op.gate.control,
+                            operation->op.gate.target);
                     break;
                 case GATE_SWAP:
                     snprintf(buffer, size, "SWAP %u %u",
-                            operation->op.gate.control_qubit,
-                            operation->op.gate.target_qubit);
+                            operation->op.gate.control,
+                            operation->op.gate.target);
                     break;
                 case GATE_ISWAP:
                     snprintf(buffer, size, "ISWAP %u %u",
-                            operation->op.gate.control_qubit,
-                            operation->op.gate.target_qubit);
+                            operation->op.gate.control,
+                            operation->op.gate.target);
                     break;
 
                 // Controlled rotation gates (decomposed)
                 case GATE_CRX:
                     // Controlled RX decomposition
                     snprintf(buffer, size, "RZ(pi/2) %u\nCNOT %u %u\nRY(%g) %u\nCNOT %u %u\nRY(%g) %u\nRZ(-pi/2) %u",
-                            operation->op.gate.target_qubit,
-                            operation->op.gate.control_qubit, operation->op.gate.target_qubit,
-                            -operation->op.gate.parameter / 2.0, operation->op.gate.target_qubit,
-                            operation->op.gate.control_qubit, operation->op.gate.target_qubit,
-                            operation->op.gate.parameter / 2.0, operation->op.gate.target_qubit,
-                            operation->op.gate.target_qubit);
+                            operation->op.gate.target,
+                            operation->op.gate.control, operation->op.gate.target,
+                            -operation->op.gate.parameter / 2.0, operation->op.gate.target,
+                            operation->op.gate.control, operation->op.gate.target,
+                            operation->op.gate.parameter / 2.0, operation->op.gate.target,
+                            operation->op.gate.target);
                     break;
                 case GATE_CRY:
                     // Controlled RY decomposition
                     snprintf(buffer, size, "RY(%g) %u\nCNOT %u %u\nRY(%g) %u\nCNOT %u %u",
-                            operation->op.gate.parameter / 2.0, operation->op.gate.target_qubit,
-                            operation->op.gate.control_qubit, operation->op.gate.target_qubit,
-                            -operation->op.gate.parameter / 2.0, operation->op.gate.target_qubit,
-                            operation->op.gate.control_qubit, operation->op.gate.target_qubit);
+                            operation->op.gate.parameter / 2.0, operation->op.gate.target,
+                            operation->op.gate.control, operation->op.gate.target,
+                            -operation->op.gate.parameter / 2.0, operation->op.gate.target,
+                            operation->op.gate.control, operation->op.gate.target);
                     break;
                 case GATE_CRZ:
                     // Controlled RZ decomposition
                     snprintf(buffer, size, "RZ(%g) %u\nCNOT %u %u\nRZ(%g) %u\nCNOT %u %u",
-                            operation->op.gate.parameter / 2.0, operation->op.gate.target_qubit,
-                            operation->op.gate.control_qubit, operation->op.gate.target_qubit,
-                            -operation->op.gate.parameter / 2.0, operation->op.gate.target_qubit,
-                            operation->op.gate.control_qubit, operation->op.gate.target_qubit);
+                            operation->op.gate.parameter / 2.0, operation->op.gate.target,
+                            operation->op.gate.control, operation->op.gate.target,
+                            -operation->op.gate.parameter / 2.0, operation->op.gate.target,
+                            operation->op.gate.control, operation->op.gate.target);
                     break;
                 case GATE_CH:
                     // Controlled H decomposition: S-CNOT-Sdg on target, then CNOT, then S-CNOT-Sdg
                     snprintf(buffer, size, "RY(pi/4) %u\nCNOT %u %u\nRY(-pi/4) %u",
-                            operation->op.gate.target_qubit,
-                            operation->op.gate.control_qubit, operation->op.gate.target_qubit,
-                            operation->op.gate.target_qubit);
+                            operation->op.gate.target,
+                            operation->op.gate.control, operation->op.gate.target,
+                            operation->op.gate.target);
                     break;
 
                 // Three-qubit gates
                 // Note: GATE_TOFFOLI is an alias for GATE_CCX
                 case GATE_CCX:
                     snprintf(buffer, size, "CCNOT %u %u %u",
-                            operation->op.gate.qubit,
-                            operation->op.gate.control_qubit,
-                            operation->op.gate.target_qubit);
+                            operation->op.gate.target,
+                            operation->op.gate.control,
+                            operation->op.gate.target);
                     break;
                 case GATE_CSWAP:
                     snprintf(buffer, size, "CSWAP %u %u %u",
-                            operation->op.gate.qubit,
-                            operation->op.gate.control_qubit,
-                            operation->op.gate.target_qubit);
+                            operation->op.gate.target,
+                            operation->op.gate.control,
+                            operation->op.gate.target);
                     break;
 
                 // IBM native ECR gate (decompose for Rigetti)
                 case GATE_ECR:
                     // ECR decomposition to native gates
                     snprintf(buffer, size, "RZ(pi/4) %u\nCNOT %u %u\nX %u",
-                            operation->op.gate.control_qubit,
-                            operation->op.gate.control_qubit, operation->op.gate.target_qubit,
-                            operation->op.gate.control_qubit);
+                            operation->op.gate.control,
+                            operation->op.gate.control, operation->op.gate.target,
+                            operation->op.gate.control);
                     break;
 
                 // Phase gate with parameter
                 case GATE_PHASE:
                     snprintf(buffer, size, "RZ(%g) %u",
-                            operation->op.gate.parameter, operation->op.gate.qubit);
+                            operation->op.gate.parameter, operation->op.gate.target);
                     break;
 
                 default:
@@ -1362,8 +1362,8 @@ static bool operation_to_quil(const QuantumOperation* operation, char* buffer, s
                 int written = snprintf(buffer, size, "PRAGMA BARRIER ");
                 size_t remaining = size - written;
                 char* pos = buffer + written;
-                
-                 for (size_t i = 0; i < operation->op.barrier.num_qubits; i++) {
+
+                for (size_t i = 0; i < operation->op.barrier.num_qubits; i++) {
                     int w = snprintf(pos, remaining, "%u%s",
                                    operation->op.barrier.qubits[i],
                                    i < operation->op.barrier.num_qubits - 1 ? " " : "");
@@ -1393,19 +1393,19 @@ static bool operation_to_json(const QuantumOperation* operation, char* buffer, s
                 case GATE_H:
                     snprintf(buffer, size,
                             "{\"type\": \"gate\", \"name\": \"h\", \"qubit\": %u}",
-                            operation->op.gate.qubit);
+                            operation->op.gate.target);
                     break;
                 case GATE_X:
                     snprintf(buffer, size,
                             "{\"type\": \"gate\", \"name\": \"x\", \"qubit\": %u}",
-                            operation->op.gate.qubit);
+                            operation->op.gate.target);
                     break;
                 case GATE_CNOT:
                     snprintf(buffer, size,
                             "{\"type\": \"gate\", \"name\": \"cx\", "
                             "\"control\": %u, \"target\": %u}",
-                            operation->op.gate.control_qubit,
-                            operation->op.gate.target_qubit);
+                            operation->op.gate.control,
+                            operation->op.gate.target);
                     break;
                 default:
                     return false;
@@ -1430,7 +1430,7 @@ static bool operation_to_json(const QuantumOperation* operation, char* buffer, s
                                      "{\"type\": \"barrier\", \"qubits\": [");
                 size_t remaining = size - written;
                 char* pos = buffer + written;
-                
+
                 for (size_t i = 0; i < operation->op.barrier.num_qubits; i++) {
                     int w = snprintf(pos, remaining, "%u%s",
                                    operation->op.barrier.qubits[i],
@@ -1450,7 +1450,7 @@ static bool operation_to_json(const QuantumOperation* operation, char* buffer, s
     return true;
 }
 
-static bool validate_gate_operation(const QuantumGate* gate) {
+static bool validate_gate_operation(const HardwareGate* gate) {
     if (!gate) {
         return false;
     }
@@ -1460,7 +1460,7 @@ static bool validate_gate_operation(const QuantumGate* gate) {
         case GATE_X:
             return true;
         case GATE_CNOT:
-            return gate->control_qubit != gate->target_qubit;
+            return gate->control != gate->target;
         default:
             return false;
     }
@@ -2720,7 +2720,7 @@ static void optimize_gate_cancellation(QuantumProgram* program) {
             if (op1->type == OPERATION_GATE && op2->type == OPERATION_GATE) {
                 // Check if gates are self-inverse and on same qubit
                 if (op1->op.gate.type == op2->op.gate.type &&
-                    op1->op.gate.qubit == op2->op.gate.qubit) {
+                    op1->op.gate.target == op2->op.gate.target) {
                     // X, Y, Z, H are self-inverse
                     gate_type_t type = op1->op.gate.type;
                     if (type == GATE_X || type == GATE_Y ||
@@ -2755,7 +2755,7 @@ static void optimize_gate_fusion(QuantumProgram* program) {
         QuantumOperation* op2 = &program->operations[i + 1];
 
         if (op1->type == OPERATION_GATE && op2->type == OPERATION_GATE &&
-            op1->op.gate.qubit == op2->op.gate.qubit) {
+            op1->op.gate.target == op2->op.gate.target) {
 
             // Fuse consecutive RZ gates
             if (op1->op.gate.type == GATE_RZ && op2->op.gate.type == GATE_RZ) {
@@ -2772,16 +2772,16 @@ static void optimize_gate_fusion(QuantumProgram* program) {
 }
 
 // Check if two gates can commute (operate on disjoint qubits or are both diagonal)
-static bool gates_can_commute(const QuantumGate* g1, const QuantumGate* g2) {
+static bool gates_can_commute(const HardwareGate* g1, const HardwareGate* g2) {
     if (!g1 || !g2) return true;
 
     // Get effective target qubits for each gate
-    // For single-qubit gates: use qubit field
-    // For two-qubit gates: use control_qubit and target_qubit
-    uint32_t g1_primary = g1->qubit;
-    uint32_t g1_secondary = g1->control_qubit;
-    uint32_t g2_primary = g2->qubit;
-    uint32_t g2_secondary = g2->control_qubit;
+    // For single-qubit gates: use target field
+    // For two-qubit gates: use control and target
+    uint32_t g1_primary = g1->target;
+    uint32_t g1_secondary = g1->control;
+    uint32_t g2_primary = g2->target;
+    uint32_t g2_secondary = g2->control;
 
     // Check if gates share any qubits
     bool share_qubit = (g1_primary == g2_primary) ||
@@ -2824,11 +2824,11 @@ static void optimize_gate_reordering(QuantumProgram* program) {
                 continue;
             }
 
-            const QuantumGate* g1 = &op1->op.gate;
-            const QuantumGate* g2 = &op2->op.gate;
+            const HardwareGate* g1 = &op1->op.gate;
+            const HardwareGate* g2 = &op2->op.gate;
 
             // If gates commute and g2 targets a lower qubit, swap for consistent ordering
-            if (gates_can_commute(g1, g2) && g2->qubit < g1->qubit) {
+            if (gates_can_commute(g1, g2) && g2->target < g1->target) {
                 QuantumOperation temp = *op1;
                 *op1 = *op2;
                 *op2 = temp;
@@ -2857,12 +2857,12 @@ static void optimize_qubit_mapping(QuantumProgram* program, const HardwareCapabi
 
     for (size_t i = 0; i < program->num_operations; i++) {
         if (program->operations[i].type == OPERATION_GATE) {
-            const QuantumGate* gate = &program->operations[i].op.gate;
-            if (gate->control_qubit != 0 && gate->control_qubit < num_qubits &&
-                gate->target_qubit < num_qubits) {
+            const HardwareGate* gate = &program->operations[i].op.gate;
+            if (gate->control != 0 && gate->control < num_qubits &&
+                gate->target < num_qubits) {
                 // Two-qubit gate - count interaction
-                size_t q1 = gate->control_qubit;
-                size_t q2 = gate->target_qubit;
+                size_t q1 = gate->control;
+                size_t q2 = gate->target;
                 interactions[q1 * num_qubits + q2]++;
                 interactions[q2 * num_qubits + q1]++;
             }
@@ -2881,15 +2881,12 @@ static void optimize_qubit_mapping(QuantumProgram* program, const HardwareCapabi
         // Apply mapping to all gate operations
         for (size_t i = 0; i < program->num_operations; i++) {
             if (program->operations[i].type == OPERATION_GATE) {
-                QuantumGate* gate = &program->operations[i].op.gate;
-                if (gate->qubit < num_qubits) {
-                    gate->qubit = mapping[gate->qubit];
+                HardwareGate* gate = &program->operations[i].op.gate;
+                if (gate->target < num_qubits) {
+                    gate->target = mapping[gate->target];
                 }
-                if (gate->control_qubit != 0 && gate->control_qubit < num_qubits) {
-                    gate->control_qubit = mapping[gate->control_qubit];
-                }
-                if (gate->target_qubit < num_qubits) {
-                    gate->target_qubit = mapping[gate->target_qubit];
+                if (gate->control != 0 && gate->control < num_qubits) {
+                    gate->control = mapping[gate->control];
                 }
             }
         }
@@ -3004,8 +3001,8 @@ static bool hal_sim_apply_operation(struct SimulatorConfig* backend, void* state
     }
 
     ComplexDouble* state = (ComplexDouble*)state_ptr;
-    const QuantumGate* gate = &op->op.gate;
-    uint32_t target = gate->qubit;
+    const HardwareGate* gate = &op->op.gate;
+    uint32_t target = gate->target;
 
     // Determine state size from backend or use default
     size_t num_qubits = backend ? backend->max_qubits : 10;
@@ -3075,9 +3072,9 @@ static bool hal_sim_apply_operation(struct SimulatorConfig* backend, void* state
         case GATE_CNOT: {
             // Note: GATE_CX is an alias for GATE_CNOT
             // Controlled-NOT gate
-            uint32_t control = gate->control_qubit;
-            uint32_t tgt = gate->target_qubit;
-            size_t ctrl_mask = (size_t)1 << control;
+            uint32_t ctrl = gate->control;
+            uint32_t tgt = gate->target;
+            size_t ctrl_mask = (size_t)1 << ctrl;
             size_t tgt_mask = (size_t)1 << tgt;
 
             for (size_t i = 0; i < num_states; i++) {
@@ -3092,9 +3089,9 @@ static bool hal_sim_apply_operation(struct SimulatorConfig* backend, void* state
         }
         case GATE_CZ: {
             // Controlled-Z gate
-            uint32_t control = gate->control_qubit;
-            uint32_t tgt = gate->target_qubit;
-            size_t ctrl_mask = (size_t)1 << control;
+            uint32_t ctrl = gate->control;
+            uint32_t tgt = gate->target;
+            size_t ctrl_mask = (size_t)1 << ctrl;
             size_t tgt_mask = (size_t)1 << tgt;
 
             for (size_t i = 0; i < num_states; i++) {
@@ -3631,25 +3628,25 @@ QUBO* program_to_qubo(const struct QuantumProgram* program) {
 
         switch (op->op.gate.type) {
             case GATE_Z:
-                if (op->op.gate.target_qubit < qubo->num_variables) {
-                    qubo->linear[op->op.gate.target_qubit] += 1.0;
+                if (op->op.gate.target < qubo->num_variables) {
+                    qubo->linear[op->op.gate.target] += 1.0;
                 }
                 break;
 
             case GATE_CZ:
-                if (op->op.gate.control_qubit < qubo->num_variables &&
-                    op->op.gate.target_qubit < qubo->num_variables &&
+                if (op->op.gate.control < qubo->num_variables &&
+                    op->op.gate.target < qubo->num_variables &&
                     coupling_idx < max_couplings) {
-                    qubo->variable_indices[coupling_idx * 2] = (uint32_t)op->op.gate.control_qubit;
-                    qubo->variable_indices[coupling_idx * 2 + 1] = (uint32_t)op->op.gate.target_qubit;
+                    qubo->variable_indices[coupling_idx * 2] = (uint32_t)op->op.gate.control;
+                    qubo->variable_indices[coupling_idx * 2 + 1] = (uint32_t)op->op.gate.target;
                     qubo->quadratic[coupling_idx] = 1.0;
                     coupling_idx++;
                 }
                 break;
 
             case GATE_RZ:
-                if (op->op.gate.target_qubit < qubo->num_variables) {
-                    qubo->linear[op->op.gate.target_qubit] += op->op.gate.parameter / M_PI;
+                if (op->op.gate.target < qubo->num_variables) {
+                    qubo->linear[op->op.gate.target] += op->op.gate.parameter / M_PI;
                 }
                 break;
 
@@ -4395,14 +4392,48 @@ ErrorMitigationStrategy select_error_mitigation(const struct QuantumCircuit* cir
 #ifdef ENABLE_METAL
 /**
  * @brief Get Metal GPU context
+ *
+ * Creates or retrieves the default Metal GPU context for quantum operations.
+ * The context is created on the default Metal device (device_id = 0).
+ *
+ * @return Pointer to Metal context, or NULL if Metal is unavailable
  */
+static void* g_metal_context = NULL;
+
 void* get_metal_context(void) {
-    // Return the Metal device context
-    // This would be implemented in the Metal backend
-    return NULL;  // Placeholder
+    // Check if Metal is available
+    if (!qgt_metal_is_available()) {
+        return NULL;
+    }
+
+    // Return existing context if already created
+    if (g_metal_context != NULL) {
+        return g_metal_context;
+    }
+
+    // Create context on default device (device_id = 0)
+    g_metal_context = metal_create_context(0);
+    return g_metal_context;
+}
+
+/**
+ * @brief Release Metal GPU context
+ *
+ * Releases the global Metal context if it exists.
+ * Called during hardware abstraction cleanup.
+ */
+void release_metal_context(void) {
+    if (g_metal_context != NULL) {
+        metal_destroy_context(g_metal_context);
+        g_metal_context = NULL;
+    }
 }
 #else
 void* get_metal_context(void) {
     return NULL;
+}
+
+void release_metal_context(void) {
+    // No-op when Metal is not enabled
 }
 #endif

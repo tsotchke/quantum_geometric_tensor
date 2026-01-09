@@ -1,5 +1,6 @@
 #include "quantum_geometric/distributed/quantum_distributed_operations.h"
 #include "quantum_geometric/core/quantum_geometric_operations.h"
+#include "quantum_geometric/core/quantum_circuit_operations.h"
 #include "quantum_geometric/hardware/quantum_geometric_gpu.h"
 #ifndef HAS_MPI
 #ifndef NO_MPI
@@ -14,10 +15,12 @@
 typedef int MPI_Comm;
 typedef int MPI_Status;
 typedef int MPI_Datatype;
+typedef int MPI_Op;
 #define MPI_COMM_WORLD 0
 #define MPI_COMM_NULL 0
 #define MPI_BYTE 0
 #define MPI_SUCCESS 0
+#define MPI_SUM 0
 
 // Stub MPI functions for single-node fallback
 static inline int MPI_Comm_rank(MPI_Comm comm, int* rank) { (void)comm; *rank = 0; return 0; }
@@ -42,7 +45,7 @@ static inline int MPI_Sendrecv(const void* sb, int sc, MPI_Datatype st, int d, i
     return 0;
 }
 static inline int MPI_Barrier(MPI_Comm comm) { (void)comm; return 0; }
-static inline int MPI_Allreduce(const void* sb, void* rb, int c, MPI_Datatype dt, int op, MPI_Comm comm) {
+static inline int MPI_Allreduce(const void* sb, void* rb, int c, MPI_Datatype dt, MPI_Op op, MPI_Comm comm) {
     (void)dt; (void)op; (void)comm;
     // For single-node: just copy the data (no reduction needed)
     if (sb && rb && c > 0) {
@@ -53,6 +56,16 @@ static inline int MPI_Allreduce(const void* sb, void* rb, int c, MPI_Datatype dt
 static inline int MPI_Bcast(void* buf, int count, MPI_Datatype dt, int root, MPI_Comm comm) {
     (void)buf; (void)count; (void)dt; (void)root; (void)comm;
     return 0;  // No-op for single node - data already in place
+}
+static inline int MPI_Gather(const void* sb, int sc, MPI_Datatype sdt,
+                             void* rb, int rc, MPI_Datatype rdt,
+                             int root, MPI_Comm comm) {
+    (void)sdt; (void)rdt; (void)root; (void)comm; (void)rc;
+    // For single-node: just copy send buffer to receive buffer
+    if (sb && rb && sc > 0) {
+        memcpy(rb, sb, (size_t)sc);
+    }
+    return 0;
 }
 #define MPI_DOUBLE 1
 #endif
@@ -65,6 +78,161 @@ static inline int MPI_Bcast(void* buf, int count, MPI_Datatype dt, int root, MPI
 #include <math.h>
 #include <complex.h>
 #include <stdint.h>
+
+// ============================================================================
+// Forward declarations and stubs for distributed quantum operations
+// ============================================================================
+
+/**
+ * @brief Quantum Fourier Transform on a quantum state
+ *
+ * Implements the standard QFT using Hadamard and controlled-phase gates.
+ * For n qubits, applies:
+ *   H on qubit n-1, controlled-R_k from qubits n-2 to 0
+ *   H on qubit n-2, controlled-R_k from qubits n-3 to 0
+ *   ... and so on, followed by bit reversal
+ *
+ * @param state Quantum state to transform in place
+ */
+static void quantum_fourier_transform(QuantumState* state) {
+    if (!state || !state->amplitudes) return;
+
+    size_t n = state->num_qubits;
+    size_t dim = 1ULL << n;
+
+    // Allocate temporary buffer
+    ComplexFloat* temp = malloc(dim * sizeof(ComplexFloat));
+    if (!temp) return;
+
+    // Apply QFT: for each output amplitude, compute the sum
+    // |k⟩ → (1/√N) Σ_{j=0}^{N-1} exp(2πijk/N) |j⟩
+    double norm = 1.0 / sqrt((double)dim);
+
+    #pragma omp parallel for
+    for (size_t k = 0; k < dim; k++) {
+        double real_sum = 0.0;
+        double imag_sum = 0.0;
+
+        for (size_t j = 0; j < dim; j++) {
+            double angle = 2.0 * M_PI * (double)(j * k) / (double)dim;
+            double cos_a = cos(angle);
+            double sin_a = sin(angle);
+
+            // Multiply amplitude by exp(i*angle)
+            double amp_r = (double)state->amplitudes[j].real;
+            double amp_i = (double)state->amplitudes[j].imag;
+
+            real_sum += amp_r * cos_a - amp_i * sin_a;
+            imag_sum += amp_r * sin_a + amp_i * cos_a;
+        }
+
+        temp[k].real = (float)(real_sum * norm);
+        temp[k].imag = (float)(imag_sum * norm);
+    }
+
+    // Copy result back
+    memcpy(state->amplitudes, temp, dim * sizeof(ComplexFloat));
+    free(temp);
+
+    state->is_normalized = true;
+}
+
+/**
+ * @brief Measure error syndrome for quantum error correction
+ *
+ * Simulates syndrome measurement for stabilizer-based error correction.
+ * This implementation estimates bit-flip errors by checking amplitude
+ * distribution for deviations from expected patterns.
+ *
+ * @param state Quantum state to measure
+ * @param syndrome Output array for syndrome bits
+ * @param num_qubits Number of qubits (determines syndrome size)
+ */
+static void measure_error_syndrome(const QuantumState* state,
+                                   bool* syndrome,
+                                   size_t num_qubits) {
+    if (!state || !state->amplitudes || !syndrome) return;
+
+    size_t dim = 1ULL << state->num_qubits;
+
+    // Initialize syndrome to no errors
+    for (size_t i = 0; i < num_qubits; i++) {
+        syndrome[i] = false;
+    }
+
+    // For each qubit, check if there's evidence of an error
+    // by comparing amplitudes of |0⟩ vs |1⟩ subspaces
+    for (size_t q = 0; q < num_qubits && q < state->num_qubits; q++) {
+        size_t mask = 1ULL << q;
+        double prob_0 = 0.0;  // Probability of qubit in |0⟩
+        double prob_1 = 0.0;  // Probability of qubit in |1⟩
+
+        for (size_t i = 0; i < dim; i++) {
+            double prob = (double)state->amplitudes[i].real *
+                         (double)state->amplitudes[i].real +
+                         (double)state->amplitudes[i].imag *
+                         (double)state->amplitudes[i].imag;
+
+            if (i & mask) {
+                prob_1 += prob;
+            } else {
+                prob_0 += prob;
+            }
+        }
+
+        // Syndrome bit indicates potential error if probabilities are
+        // significantly imbalanced (threshold-based detection)
+        // For a surface code, we'd use parity checks instead
+        double imbalance = fabs(prob_0 - prob_1);
+        syndrome[q] = (imbalance > 0.3);  // Threshold for error indication
+    }
+}
+
+/**
+ * @brief Analyze error syndrome to determine error locations
+ *
+ * Converts syndrome bits to error location indices.
+ * Returns an array of qubit indices where errors were detected.
+ *
+ * @param syndrome Syndrome bit array
+ * @param num_qubits Number of syndrome bits
+ * @return Dynamically allocated array of error locations (caller must free)
+ */
+static size_t* analyze_error_syndrome(const bool* syndrome, size_t num_qubits) {
+    if (!syndrome) return NULL;
+
+    // Allocate result array (worst case: all qubits have errors)
+    size_t* locations = malloc((num_qubits + 1) * sizeof(size_t));
+    if (!locations) return NULL;
+
+    size_t count = 0;
+    for (size_t i = 0; i < num_qubits; i++) {
+        if (syndrome[i]) {
+            locations[count++] = i;
+        }
+    }
+
+    // Terminate with sentinel value (SIZE_MAX indicates end)
+    locations[count] = SIZE_MAX;
+
+    return locations;
+}
+
+// Forward declarations for static helper functions (defined later in file)
+static double compute_cross_node_phase(const QuantumState* state,
+                                       size_t local_qubit,
+                                       size_t remote_offset);
+static void apply_remote_phase(QuantumState* state, double phase, size_t qubit);
+static double estimate_local_phase(const QuantumState* state,
+                                   size_t qubit,
+                                   size_t precision);
+static void combine_phase_estimates(double* phases, size_t num_qubits);
+static void apply_phase_corrections(QuantumState* state,
+                                    const double* phases,
+                                    size_t num_qubits);
+static void apply_error_corrections(QuantumState* state,
+                                    const bool* syndrome,
+                                    size_t num_syndromes);
 
 // MPI tags
 #define TAG_QUANTUM_STATE 1
@@ -407,11 +575,18 @@ static void apply_remote_phase(QuantumState* state,
                              size_t qubit) {
     size_t dim = 1ULL << state->num_qubits;
     size_t mask = 1ULL << qubit;
-    
+    double cos_p = cos(phase);
+    double sin_p = sin(phase);
+
     #pragma omp parallel for
     for (size_t i = 0; i < dim; i++) {
         if (i & mask) {
-            state->amplitudes[i] *= cexp(I * phase);
+            // Multiply by exp(i*phase) = cos(phase) + i*sin(phase)
+            // (a + bi)(c + di) = (ac - bd) + (ad + bc)i
+            float a = state->amplitudes[i].real;
+            float b = state->amplitudes[i].imag;
+            state->amplitudes[i].real = (float)(a * cos_p - b * sin_p);
+            state->amplitudes[i].imag = (float)(a * sin_p + b * cos_p);
         }
     }
 }

@@ -14,8 +14,8 @@ typedef enum {
 
 // Fusion rules
 typedef struct {
-    operation_type_t op1;         // First operation type
-    operation_type_t op2;         // Second operation type
+    graph_operation_type_t op1;         // First operation type
+    graph_operation_type_t op2;         // Second operation type
     fusion_pattern_t pattern;     // Fusion pattern
     double cost_reduction;        // Expected cost reduction
     bool (*compatibility_check)(computation_node_t*, computation_node_t*);
@@ -50,7 +50,7 @@ fusion_group_t* identify_fusion_groups(struct computational_graph_t* graph,
 
 // Rule management
 bool register_fusion_rule(fusion_rule_t* rule);
-bool remove_fusion_rule(operation_type_t op1, operation_type_t op2);
+bool remove_fusion_rule(graph_operation_type_t op1, graph_operation_type_t op2);
 bool modify_fusion_rule(fusion_rule_t* rule);
 
 // Pattern management

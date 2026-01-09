@@ -25,11 +25,14 @@ extern "C" {
 #define QGT_OP_ASYNC       0x08
 
 // Mutex wrapper for thread synchronization
+#ifndef QGT_MUTEX_TYPE_DEFINED
+#define QGT_MUTEX_TYPE_DEFINED
 typedef struct qgt_mutex {
     pthread_rwlock_t rwlock;
     pthread_mutex_t mutex;
     bool initialized;
 } qgt_mutex_t;
+#endif
 
 // Spin system for twistor space analysis
 #ifdef QGT_SPIN_SYSTEM_DEFINED

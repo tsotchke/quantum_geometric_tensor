@@ -3,6 +3,7 @@
 #include "quantum_geometric/core/error_codes.h"
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // Test validation of metric
@@ -119,48 +120,55 @@ static void test_curvature_validation(void) {
 
 // Test validation of optimization
 static void test_optimization_validation(void) {
-    geometric_optimization_t optimization;
+    quantum_geometric_optimization_t optimization;
     validation_result_t result;
-    
-    // Initialize optimization
+
+    // Initialize optimization with correct struct fields
+    memset(&optimization, 0, sizeof(optimization));
     optimization.dimension = 2;
     optimization.type = GEOMETRIC_OPTIMIZATION_NEWTON;
-    optimization.gradient = (ComplexFloat*)malloc(2 * sizeof(ComplexFloat));
-    optimization.hessian = (ComplexFloat*)malloc(4 * sizeof(ComplexFloat));
+    optimization.parameters = (ComplexFloat*)malloc(2 * sizeof(ComplexFloat));
     optimization.learning_rate = 0.01f;
     optimization.convergence_threshold = 1e-6f;
-    optimization.max_iterations = 1000;
-    
+    optimization.iterations = 0;
+    optimization.converged = false;
+    optimization.optimizer_state = NULL;
+
+    // Initialize parameters
+    if (optimization.parameters) {
+        optimization.parameters[0] = (ComplexFloat){1.0f, 0.0f};
+        optimization.parameters[1] = (ComplexFloat){0.0f, 1.0f};
+    }
+
     // Test valid optimization
-    qgt_error_t err = geometric_validate_optimization(&optimization, 
+    qgt_error_t err = geometric_validate_optimization(&optimization,
         GEOMETRIC_VALIDATION_CHECK_BOUNDS | GEOMETRIC_VALIDATION_CHECK_CONVERGENCE,
         &result);
     assert(err == QGT_SUCCESS);
     assert(result.is_valid == true);
-    
+
     // Test invalid learning rate
     optimization.learning_rate = -0.01f;
-    
-    err = geometric_validate_optimization(&optimization, 
+
+    err = geometric_validate_optimization(&optimization,
         GEOMETRIC_VALIDATION_CHECK_BOUNDS | GEOMETRIC_VALIDATION_CHECK_CONVERGENCE,
         &result);
     assert(err == QGT_SUCCESS);
     assert(result.is_valid == false);
     assert(result.error_code == QGT_ERROR_INVALID_PARAMETER);
-    
-    // Test missing Hessian for Newton method
+
+    // Test missing parameters for Newton method
     optimization.learning_rate = 0.01f;
-    free(optimization.hessian);
-    optimization.hessian = NULL;
-    
-    err = geometric_validate_optimization(&optimization, 
+    free(optimization.parameters);
+    optimization.parameters = NULL;
+
+    err = geometric_validate_optimization(&optimization,
         GEOMETRIC_VALIDATION_CHECK_BOUNDS | GEOMETRIC_VALIDATION_CHECK_CONVERGENCE,
         &result);
     assert(err == QGT_SUCCESS);
     assert(result.is_valid == false);
     assert(result.error_code == QGT_ERROR_INVALID_STATE);
-    
-    free(optimization.gradient);
+
     printf("✓ Optimization validation test passed\n");
 }
 

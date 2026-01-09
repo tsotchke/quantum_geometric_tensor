@@ -224,6 +224,10 @@ struct quantum_state_t {
     // Error syndrome
     double* syndrome_values;        // Current syndrome measurement values
     size_t syndrome_size;           // Size of syndrome array
+
+    // Measurement confidence tracking
+    double* measurement_confidence; // Per-qubit measurement confidence values
+    size_t confidence_size;         // Size of measurement confidence array
 };
 
 // Circuit layer structure

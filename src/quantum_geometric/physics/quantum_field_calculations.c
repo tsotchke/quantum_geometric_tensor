@@ -344,7 +344,7 @@ static complex double* calculate_field_strength(
 // Field Initialization and Cleanup
 // ============================================================================
 
-bool init_quantum_field(
+bool init_quantum_field_direct(
     QuantumField* field,
     const size_t* lattice_dims,
     size_t num_components,

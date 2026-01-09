@@ -14,14 +14,7 @@
 #include "quantum_geometric/hardware/quantum_geometric_cuda.h"
 #endif
 
-// Internal context structure
-struct GPUContext {
-    GPUBackendType backend_type;
-    void* backend_context;  // Metal or CUDA context
-    GPUDeviceInfo device_info;
-    char last_error[256];
-    GPUPerformanceMetrics metrics;
-};
+// GPUContext is defined in quantum_geometric_gpu.h
 
 // Initialize GPU system
 int gpu_initialize(void) {

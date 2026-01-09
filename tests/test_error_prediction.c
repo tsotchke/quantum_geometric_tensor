@@ -21,10 +21,10 @@ static void test_error_cases(void);
 static void test_performance_requirements(void);
 
 // Mock functions and data
-static quantum_state* create_test_state(void);
+static quantum_state_t* create_test_state(void);
 static ErrorPattern* create_test_patterns(size_t* num_patterns);
 static ErrorCorrelation* create_test_correlations(size_t* num_correlations);
-static void cleanup_test_data(quantum_state* state,
+static void cleanup_test_data(quantum_state_t* state,
                             ErrorPattern* patterns,
                             ErrorCorrelation* correlations);
 
@@ -135,7 +135,7 @@ static void test_prediction_verification(void) {
     assert(success);
 
     // Create test data
-    quantum_state* test_state = create_test_state();
+    quantum_state_t* test_state = create_test_state();
     size_t num_patterns, num_correlations;
     ErrorPattern* patterns = create_test_patterns(&num_patterns);
     ErrorCorrelation* correlations = create_test_correlations(&num_correlations);
@@ -175,7 +175,7 @@ static void test_model_updates(void) {
     assert(success);
 
     // Create test data
-    quantum_state* test_state = create_test_state();
+    quantum_state_t* test_state = create_test_state();
     size_t num_patterns, num_correlations;
     ErrorPattern* patterns = create_test_patterns(&num_patterns);
     ErrorCorrelation* correlations = create_test_correlations(&num_correlations);
@@ -222,7 +222,7 @@ static void test_error_cases(void) {
     size_t num_patterns = 1, num_correlations = 1;
     ErrorPattern patterns[1] = {0};
     ErrorCorrelation correlations[1] = {0};
-    quantum_state test_state = {0};
+    quantum_state_t test_state = {0};
 
     size_t result = predict_errors(NULL, patterns, num_patterns,
                                  correlations, num_correlations);
@@ -263,7 +263,7 @@ static void test_performance_requirements(void) {
     assert(success);
 
     // Create large test dataset
-    quantum_state* test_state = create_test_state();
+    quantum_state_t* test_state = create_test_state();
     size_t num_patterns = 1000, num_correlations = 1000;
     ErrorPattern* patterns = malloc(num_patterns * sizeof(ErrorPattern));
     ErrorCorrelation* correlations = malloc(num_correlations * sizeof(ErrorCorrelation));
@@ -298,8 +298,8 @@ static void test_performance_requirements(void) {
 }
 
 // Mock implementation of test helpers
-static quantum_state* create_test_state(void) {
-    quantum_state* state = malloc(sizeof(quantum_state));
+static quantum_state_t* create_test_state(void) {
+    quantum_state_t* state = malloc(sizeof(quantum_state_t));
     // Initialize with test data
     return state;
 }
@@ -318,7 +318,7 @@ static ErrorCorrelation* create_test_correlations(size_t* num_correlations) {
     return correlations;
 }
 
-static void cleanup_test_data(quantum_state* state,
+static void cleanup_test_data(quantum_state_t* state,
                             ErrorPattern* patterns,
                             ErrorCorrelation* correlations) {
     free(state);

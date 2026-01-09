@@ -27,45 +27,49 @@ static metal_tensor_error_t initialize_metal() {
     if (!commandQueue) return METAL_TENSOR_ERROR_INIT_FAILED;
     
     // Compile Metal library from source
-    NSString* shaderSource = [NSString stringWithFormat:@"#include <metal_stdlib>\n"
-                            "using namespace metal;\n"
-                            "\n"
-                            "struct ComplexFloat {\n"
-                            "    float real;\n"
-                            "    float imag;\n"
-                            "    bool valid;\n"
-                            "};\n"
-                            "\n"
-                            "kernel void matrix_multiply_optimized(\n"
-                            "    device const ComplexFloat* A [[buffer(0)]],\n"
-                            "    device const ComplexFloat* B [[buffer(1)]],\n"
-                            "    device ComplexFloat* C [[buffer(2)]],\n"
-                            "    constant uint& M [[buffer(3)]],\n"
-                            "    constant uint& N [[buffer(4)]],\n"
-                            "    constant uint& K [[buffer(5)]],\n"
-                            "    uint2 gid [[thread_position_in_grid]]) {\n"
-                            "    if (gid.x >= N || gid.y >= M) return;\n"
-                            "    float sum_real = 0.0f;\n"
-                            "    float sum_imag = 0.0f;\n"
-                            "    bool valid = true;\n"
-                            "    \n"
-                            "    for (uint k = 0; k < K; k++) {\n"
-                            "        ComplexFloat a = A[gid.y * K + k];\n"
-                            "        ComplexFloat b = B[k * N + gid.x];\n"
-                            "        if (!a.valid || !b.valid) {\n"
-                            "            valid = false;\n"
-                            "            break;\n"
-                            "        }\n"
-                            "        sum_real += a.real * b.real - a.imag * b.imag;\n"
-                            "        sum_imag += a.real * b.imag + a.imag * b.real;\n"
-                            "    }\n"
-                            "    \n"
-                            "    ComplexFloat result;\n"
-                            "    result.real = sum_real;\n"
-                            "    result.imag = sum_imag;\n"
-                            "    result.valid = valid;\n"
-                            "    C[gid.y * N + gid.x] = result;\n"
-                            "}\n";
+    static const char* shaderSourceCStr = R"(
+#include <metal_stdlib>
+using namespace metal;
+
+struct ComplexFloat {
+    float real;
+    float imag;
+    bool valid;
+};
+
+kernel void matrix_multiply_optimized(
+    device const ComplexFloat* A [[buffer(0)]],
+    device const ComplexFloat* B [[buffer(1)]],
+    device ComplexFloat* C [[buffer(2)]],
+    constant uint& M [[buffer(3)]],
+    constant uint& N [[buffer(4)]],
+    constant uint& K [[buffer(5)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= N || gid.y >= M) return;
+    float sum_real = 0.0f;
+    float sum_imag = 0.0f;
+    bool valid = true;
+
+    for (uint k = 0; k < K; k++) {
+        ComplexFloat a = A[gid.y * K + k];
+        ComplexFloat b = B[k * N + gid.x];
+        if (!a.valid || !b.valid) {
+            valid = false;
+            break;
+        }
+        sum_real += a.real * b.real - a.imag * b.imag;
+        sum_imag += a.real * b.imag + a.imag * b.real;
+    }
+
+    ComplexFloat result;
+    result.real = sum_real;
+    result.imag = sum_imag;
+    result.valid = valid;
+    C[gid.y * N + gid.x] = result;
+}
+)";
+    NSString* shaderSource = [NSString stringWithUTF8String:shaderSourceCStr];
     
     NSError* error = nil;
     library = [device newLibraryWithSource:shaderSource
@@ -179,7 +183,6 @@ metal_tensor_error_t metal_matrix_multiply(float* C_real, float* C_imag,
     const NSUInteger buffer_B_size = ((B_elements * sizeof(ComplexFloat) + alignment - 1) / alignment) * alignment;
     const NSUInteger buffer_C_size = ((C_elements * sizeof(ComplexFloat) + alignment - 1) / alignment) * alignment;
     
-    NSError* error = nil;
     id<MTLBuffer> bufferA = [device newBufferWithLength:buffer_A_size options:MTLResourceStorageModeShared];
     id<MTLBuffer> bufferB = [device newBufferWithLength:buffer_B_size options:MTLResourceStorageModeShared];
     id<MTLBuffer> bufferC = [device newBufferWithLength:buffer_C_size options:MTLResourceStorageModeShared];

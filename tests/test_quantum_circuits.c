@@ -1,4 +1,5 @@
 #include "quantum_geometric/core/quantum_geometric_operations.h"
+#include "quantum_geometric/core/quantum_circuit_operations.h"
 #include "quantum_geometric/hardware/quantum_geometric_gpu.h"
 #include "quantum_geometric/physics/quantum_state_operations.h"
 #include <stdlib.h>
@@ -8,19 +9,19 @@
 #include <time.h>
 
 // Test parameters
-#define MIN_QUBITS 4
-#define MAX_QUBITS 20
+#define TEST_MIN_QUBITS 4
+#define TEST_MAX_QUBITS 20
 #define NUM_TRIALS 5
 #define EPSILON 1e-10
 
-// Performance measurement
+// Performance measurement (local struct to avoid conflict with quantum_hardware_types.h)
 typedef struct {
     size_t num_qubits;
     double encode_time;
     double multiply_time;
     double svd_time;
     double compress_time;
-} PerformanceMetrics;
+} CircuitPerfMetrics;
 
 // Create test matrix
 static HierarchicalMatrix* create_test_matrix(size_t size) {
@@ -58,9 +59,9 @@ static double measure_time(void (*func)(void*), void* arg) {
 static void test_quantum_encoding(void) {
     printf("Testing quantum encoding/decoding...\n");
     
-    PerformanceMetrics metrics[MAX_QUBITS - MIN_QUBITS + 1] = {0};
+    CircuitPerfMetrics metrics[TEST_MAX_QUBITS - TEST_MIN_QUBITS + 1] = {0};
     
-    for (size_t n = MIN_QUBITS; n <= MAX_QUBITS; n++) {
+    for (size_t n = TEST_MIN_QUBITS; n <= TEST_MAX_QUBITS; n++) {
         size_t size = 1ULL << n;
         printf("  Testing size 2^%zu x 2^%zu...\n", n, n);
         
@@ -107,8 +108,8 @@ static void test_quantum_encoding(void) {
         }
         
         // Record metrics
-        metrics[n - MIN_QUBITS].num_qubits = n;
-        metrics[n - MIN_QUBITS].encode_time = total_encode / NUM_TRIALS;
+        metrics[n - TEST_MIN_QUBITS].num_qubits = n;
+        metrics[n - TEST_MIN_QUBITS].encode_time = total_encode / NUM_TRIALS;
         
         // Clean up
         free(state->amplitudes);
@@ -119,7 +120,7 @@ static void test_quantum_encoding(void) {
     // Print results
     printf("\nEncoding Performance Results:\n");
     printf("Qubits\tTime (s)\tlog2(Time)\n");
-    for (size_t i = 0; i < MAX_QUBITS - MIN_QUBITS + 1; i++) {
+    for (size_t i = 0; i < TEST_MAX_QUBITS - TEST_MIN_QUBITS + 1; i++) {
         printf("%zu\t%.6f\t%.6f\n",
                metrics[i].num_qubits,
                metrics[i].encode_time,
@@ -131,9 +132,9 @@ static void test_quantum_encoding(void) {
 static void test_quantum_multiplication(void) {
     printf("\nTesting quantum multiplication...\n");
     
-    PerformanceMetrics metrics[MAX_QUBITS - MIN_QUBITS + 1] = {0};
+    CircuitPerfMetrics metrics[TEST_MAX_QUBITS - TEST_MIN_QUBITS + 1] = {0};
     
-    for (size_t n = MIN_QUBITS; n <= MAX_QUBITS; n++) {
+    for (size_t n = TEST_MIN_QUBITS; n <= TEST_MAX_QUBITS; n++) {
         size_t size = 1ULL << n;
         printf("  Testing size 2^%zu x 2^%zu...\n", n, n);
         
@@ -166,8 +167,8 @@ static void test_quantum_multiplication(void) {
         }
         
         // Record metrics
-        metrics[n - MIN_QUBITS].num_qubits = n;
-        metrics[n - MIN_QUBITS].multiply_time = total_time / NUM_TRIALS;
+        metrics[n - TEST_MIN_QUBITS].num_qubits = n;
+        metrics[n - TEST_MIN_QUBITS].multiply_time = total_time / NUM_TRIALS;
         
         // Clean up
         free(state_a->amplitudes);
@@ -181,7 +182,7 @@ static void test_quantum_multiplication(void) {
     // Print results
     printf("\nMultiplication Performance Results:\n");
     printf("Qubits\tTime (s)\tlog2(Time)\n");
-    for (size_t i = 0; i < MAX_QUBITS - MIN_QUBITS + 1; i++) {
+    for (size_t i = 0; i < TEST_MAX_QUBITS - TEST_MIN_QUBITS + 1; i++) {
         printf("%zu\t%.6f\t%.6f\n",
                metrics[i].num_qubits,
                metrics[i].multiply_time,
@@ -193,9 +194,9 @@ static void test_quantum_multiplication(void) {
 static void test_quantum_compression(void) {
     printf("\nTesting quantum compression...\n");
     
-    PerformanceMetrics metrics[MAX_QUBITS - MIN_QUBITS + 1] = {0};
+    CircuitPerfMetrics metrics[TEST_MAX_QUBITS - TEST_MIN_QUBITS + 1] = {0};
     
-    for (size_t n = MIN_QUBITS; n <= MAX_QUBITS; n++) {
+    for (size_t n = TEST_MIN_QUBITS; n <= TEST_MAX_QUBITS; n++) {
         size_t size = 1ULL << n;
         printf("  Testing size 2^%zu x 2^%zu...\n", n, n);
         
@@ -225,8 +226,8 @@ static void test_quantum_compression(void) {
         }
         
         // Record metrics
-        metrics[n - MIN_QUBITS].num_qubits = n;
-        metrics[n - MIN_QUBITS].compress_time = total_time / NUM_TRIALS;
+        metrics[n - TEST_MIN_QUBITS].num_qubits = n;
+        metrics[n - TEST_MIN_QUBITS].compress_time = total_time / NUM_TRIALS;
         
         // Clean up
         free(state->amplitudes);
@@ -237,7 +238,7 @@ static void test_quantum_compression(void) {
     // Print results
     printf("\nCompression Performance Results:\n");
     printf("Qubits\tTime (s)\tlog2(Time)\n");
-    for (size_t i = 0; i < MAX_QUBITS - MIN_QUBITS + 1; i++) {
+    for (size_t i = 0; i < TEST_MAX_QUBITS - TEST_MIN_QUBITS + 1; i++) {
         printf("%zu\t%.6f\t%.6f\n",
                metrics[i].num_qubits,
                metrics[i].compress_time,

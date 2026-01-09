@@ -170,6 +170,158 @@ void report_metal_error(NSError* error, const char* operation);
 #endif
 #endif
 
+// ============================================================================
+// Spacetime Dimensions (for test compatibility)
+// ============================================================================
+
+#ifndef SPACETIME_DIMS
+#define SPACETIME_DIMS 4
+#endif
+
+// ============================================================================
+// Include QuantumField and Tensor definitions
+// ============================================================================
+
+#include "quantum_geometric/physics/quantum_field_calculations.h"
+
+// ============================================================================
+// Field Configuration for Test Compatibility
+// ============================================================================
+
+/**
+ * @brief Field configuration for initializing quantum fields
+ */
+typedef struct {
+    size_t lattice_size;        /**< Size of each lattice dimension */
+    size_t num_components;      /**< Number of field components */
+    size_t num_generators;      /**< Number of gauge generators */
+    double mass;                /**< Field mass */
+    double coupling;            /**< Self-coupling constant */
+    double field_strength;      /**< Gauge field strength */
+    bool gauge_group;           /**< Whether to include gauge field */
+} FieldConfig;
+
+/**
+ * @brief Geometric configuration for spacetime
+ */
+typedef struct {
+    double* metric;             /**< Spacetime metric tensor */
+    double* connection;         /**< Christoffel connection */
+    double* curvature;          /**< Riemann curvature tensor */
+} GeometricConfig;
+
+// ============================================================================
+// GPU Acceleration Detection
+// ============================================================================
+
+/**
+ * @brief Check if GPU acceleration is available
+ * @return true if GPU is available, false otherwise
+ */
+bool has_gpu_acceleration(void);
+
+/**
+ * @brief Get GPU device name
+ * @return Device name string
+ */
+const char* get_gpu_device_name(void);
+
+/**
+ * @brief Cleanup GPU backend resources
+ */
+void cleanup_gpu_backend(void);
+
+// ============================================================================
+// Field Operations (GPU and CPU versions)
+// ============================================================================
+
+/**
+ * @brief Initialize quantum field for GPU operations
+ * @param config Field configuration
+ * @param geom Geometric configuration (may be NULL)
+ * @return Initialized quantum field or NULL on failure
+ */
+QuantumField* init_quantum_field(const FieldConfig* config, const GeometricConfig* geom);
+
+/**
+ * @brief Cleanup quantum field with GPU-specific resources
+ *
+ * This is the GPU-extended version that cleans up additional GPU resources
+ * allocated by init_quantum_field. For the base cleanup function, use
+ * cleanup_quantum_field from quantum_field_calculations.h.
+ *
+ * @param field Field to cleanup (must have been created with init_quantum_field from this module)
+ */
+void cleanup_quantum_field_gpu(QuantumField* field);
+
+/**
+ * @brief Apply rotation to field qubit (CPU version)
+ * @param field Quantum field
+ * @param qubit Qubit index
+ * @param theta Rotation angle theta
+ * @param phi Rotation angle phi
+ * @return 0 on success
+ */
+int apply_rotation_cpu(QuantumField* field, size_t qubit, double theta, double phi);
+
+/**
+ * @brief Apply rotation to field qubit (GPU version)
+ * @param field Quantum field
+ * @param qubit Qubit index
+ * @param theta Rotation angle theta
+ * @param phi Rotation angle phi
+ * @return 0 on success
+ */
+int apply_rotation_gpu(QuantumField* field, size_t qubit, double theta, double phi);
+
+/**
+ * @brief Calculate field energy (CPU version)
+ * @param field Quantum field
+ * @return Field energy
+ */
+double calculate_field_energy_cpu(const QuantumField* field);
+
+/**
+ * @brief Calculate field energy (GPU version)
+ * @param field Quantum field
+ * @return Field energy
+ */
+double calculate_field_energy_gpu(const QuantumField* field);
+
+/**
+ * @brief Calculate field equations (CPU version)
+ * @param field Quantum field
+ * @param equations Output tensor for equations
+ * @return 0 on success
+ */
+int calculate_field_equations_cpu(const QuantumField* field, Tensor* equations);
+
+/**
+ * @brief Calculate field equations (GPU version)
+ * @param field Quantum field
+ * @param equations Output tensor for equations
+ * @return 0 on success
+ */
+int calculate_field_equations_gpu(const QuantumField* field, Tensor* equations);
+
+// ============================================================================
+// Tensor Operations for Tests
+// ============================================================================
+
+/**
+ * @brief Initialize tensor with given dimensions
+ * @param dims Array of dimensions
+ * @param rank Number of dimensions
+ * @return Allocated tensor or NULL on failure
+ */
+Tensor* init_tensor(const size_t* dims, size_t rank);
+
+/**
+ * @brief Cleanup tensor
+ * @param tensor Tensor to cleanup
+ */
+void cleanup_tensor(Tensor* tensor);
+
 #ifdef __cplusplus
 }
 #endif

@@ -195,6 +195,12 @@ bool add_constraint(DWaveProblem* problem, const void* constraint);
 // Submit job to D-Wave backend
 char* submit_dwave_job(DWaveConfig* config, const DWaveJobConfig* job_config);
 
+// Submit QUBO problem directly (test-compatible interface)
+bool submit_dwave_problem(DWaveConfig* config, QUBO* qubo, QUBOResult* result);
+
+// Clean up QUBO result
+void cleanup_qubo_result(QUBOResult* result);
+
 // Get job status
 DWaveJobStatus get_dwave_job_status(DWaveConfig* config, const char* job_id);
 

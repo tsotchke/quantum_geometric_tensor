@@ -1658,16 +1658,16 @@ void generate_recommendations(void) {
 // Clean up monitoring system
 void cleanup_performance_monitor(void) {
     if (!monitor_state) return;
-    
+
     pthread_mutex_lock(&global_mutex);
-    
+
     if (monitor_state->initialized) {
         pthread_mutex_destroy(&monitor_state->mutex);
     }
-    
+
     free(monitor_state->config_path);
     free(monitor_state->metrics_path);
-    
+
     if (monitor_state->metrics) {
         for (size_t i = 0; i < monitor_state->metrics_count; i++) {
             free(monitor_state->metrics[i].name);
@@ -1675,12 +1675,166 @@ void cleanup_performance_monitor(void) {
         }
         free(monitor_state->metrics);
     }
-    
+
     free(monitor_state->resource_usage);
     free(monitor_state->resource_limits);
     free(monitor_state->metric_history);
     free(monitor_state);
     monitor_state = NULL;
-    
+
     pthread_mutex_unlock(&global_mutex);
+}
+
+// High-precision timing utilities
+
+// Get current timestamp in nanoseconds
+uint64_t qg_get_timestamp_ns(void) {
+    struct timespec ts;
+#ifdef __APPLE__
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+#else
+    clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+#endif
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
+// Get current time in seconds (high-precision)
+double qg_get_time_seconds(void) {
+    struct timespec ts;
+#ifdef __APPLE__
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+#else
+    clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+#endif
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
+
+// Get current performance metrics (comprehensive)
+performance_metrics_t get_current_performance_metrics(void) {
+    performance_metrics_t metrics = {0};
+
+    // Collect all available metrics
+    metrics.cpu_utilization = measure_cpu_utilization();
+    metrics.gpu_utilization = measure_gpu_utilization();
+    metrics.memory_usage = (size_t)measure_memory_usage();
+    metrics.page_faults = (size_t)measure_page_faults();
+
+    // Computational metrics
+    metrics.flops = measure_flops();
+    metrics.memory_bandwidth = measure_memory_bandwidth();
+    metrics.cache_hit_rate = measure_cache_performance();
+
+    // Quantum metrics
+    metrics.quantum_error_rate = measure_quantum_error_rate();
+    metrics.quantum_fidelity = measure_quantum_fidelity();
+    metrics.entanglement_fidelity = measure_entanglement_fidelity();
+    metrics.gate_error_rate = measure_gate_error_rate();
+
+    // Communication metrics
+    metrics.mpi_time = measure_mpi_time();
+    metrics.network_bandwidth = measure_network_bandwidth();
+    metrics.latency = measure_communication_latency();
+    metrics.numa_local_ratio = measure_numa_locality();
+
+    // Performance quality metrics
+    metrics.throughput = measure_throughput();
+    metrics.response_time = measure_response_time();
+    metrics.queue_length = measure_queue_length();
+    metrics.wait_time = measure_wait_time();
+
+    // Resource allocation metrics
+    metrics.allocation_efficiency = measure_allocation_efficiency();
+    metrics.resource_contention = measure_resource_contention();
+    metrics.load_balance = measure_load_balance();
+    metrics.resource_utilization = measure_resource_utilization();
+
+    return metrics;
+}
+
+// Check if performance monitoring is active
+bool is_performance_monitoring_active(void) {
+    if (!monitor_state || !monitor_state->initialized) {
+        return false;
+    }
+
+    pthread_mutex_lock(&monitor_state->mutex);
+
+    // Check if any metric is actively being monitored
+    bool active = false;
+    for (size_t i = 0; i < monitor_state->metrics_count; i++) {
+        if (monitor_state->metrics[i].monitoring_active) {
+            active = true;
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&monitor_state->mutex);
+    return active;
+}
+
+// Reset all performance counters
+void reset_performance_counters(void) {
+    // Reset global tracking variables
+    g_mpi_time = 0.0;
+    g_operations_count = 0.0;
+    g_measurement_time = 0.0;
+    g_response_time = 0.0;
+    g_queue_length = 0.0;
+    g_wait_time = 0.0;
+    g_flop_count = 0.0;
+    g_flop_time = 0.0;
+    g_bytes_transferred = 0.0;
+    g_transfer_time = 0.0;
+
+    // Reset allocation statistics
+    atomic_store(&g_alloc_stats.total_allocations, 0);
+    atomic_store(&g_alloc_stats.cache_hits, 0);
+    atomic_store(&g_alloc_stats.cache_misses, 0);
+    atomic_store(&g_alloc_stats.fragmented_allocations, 0);
+    atomic_store(&g_alloc_stats.total_bytes_requested, 0);
+    atomic_store(&g_alloc_stats.total_bytes_allocated, 0);
+
+    // Reset thread workload tracking
+    pthread_mutex_lock(&g_workload_mutex);
+    for (size_t i = 0; i < MAX_TRACKED_THREADS; i++) {
+        atomic_store(&g_thread_workload[i].work_units, 0);
+        atomic_store(&g_thread_workload[i].active_time_ns, 0);
+    }
+    atomic_store(&g_num_tracked_threads, 0);
+    pthread_mutex_unlock(&g_workload_mutex);
+
+    // Reset bandwidth tracking
+    g_last_bytes_sent = 0;
+    g_last_bytes_recv = 0;
+    g_last_bandwidth_time = 0.0;
+    g_cached_bandwidth = 0.0;
+
+    // Reset latency tracking
+    g_cached_latency = 0.0;
+    g_last_latency_time = 0.0;
+
+    // Reset monitor state history if initialized
+    if (monitor_state && monitor_state->initialized) {
+        pthread_mutex_lock(&monitor_state->mutex);
+
+        // Reset all metric values
+        for (size_t i = 0; i < monitor_state->metrics_count; i++) {
+            monitor_state->metrics[i].current_value = 0.0;
+            monitor_state->metrics[i].average_value = 0.0;
+            monitor_state->metrics[i].peak_value = 0.0;
+        }
+
+        // Clear history
+        monitor_state->history_size = 0;
+        if (monitor_state->metric_history) {
+            memset(monitor_state->metric_history, 0,
+                   monitor_state->history_capacity * sizeof(performance_metrics_t));
+        }
+
+        // Reset baseline
+        monitor_state->baseline_performance = 0.0;
+        monitor_state->peak_performance = 0.0;
+
+        pthread_mutex_unlock(&monitor_state->mutex);
+    }
 }

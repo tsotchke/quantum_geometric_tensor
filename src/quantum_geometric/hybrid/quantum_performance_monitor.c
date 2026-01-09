@@ -359,9 +359,8 @@ static size_t estimate_operation_qubits(const QuantumOperation* op) {
         case OPERATION_GATE:
             // For 2-qubit gates, max of target and control
             {
-                uint32_t max_qubit = op->op.gate.qubit;
-                if (op->op.gate.control_qubit > max_qubit) max_qubit = op->op.gate.control_qubit;
-                if (op->op.gate.target_qubit > max_qubit) max_qubit = op->op.gate.target_qubit;
+                uint32_t max_qubit = op->op.gate.target;
+                if (op->op.gate.control > max_qubit) max_qubit = op->op.gate.control;
                 return (size_t)(max_qubit + 1);  // Qubits are 0-indexed
             }
         case OPERATION_MEASURE:

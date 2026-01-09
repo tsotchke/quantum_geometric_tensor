@@ -59,6 +59,9 @@ typedef struct HardwareGate {
     size_t num_params;     // Number of parameters
 } HardwareGate;
 
+// Note: QuantumGate is defined in quantum_hardware_types.h
+// HardwareGate is used for circuit operations in this module
+
 /**
  * @brief Quantum circuit for hardware backends
  *
@@ -89,20 +92,26 @@ void hw_add_gate(QuantumCircuit* circuit, HardwareGate gate);
 #define replace_gate hw_replace_gate
 // Note: remove_gate and add_gate are too common - use hw_ prefix explicitly
 
-// IonQ configuration
+// IonQ configuration (guarded to avoid redefinition)
+#ifndef IONQ_CONFIG_DEFINED
+#define IONQ_CONFIG_DEFINED
 typedef struct IonQConfig {
     bool use_native_gates;
     double max_gate_time;
     void* custom_options;
 } IonQConfig;
+#endif
 
-// Hardware optimization structures
+// Hardware optimization structures (guarded to avoid redefinition)
+#ifndef HARDWARE_OPTIMIZATIONS_DEFINED
+#define HARDWARE_OPTIMIZATIONS_DEFINED
 typedef struct HardwareOptimizations {
     void (*ibm_optimize)(QuantumCircuit*, const IBMBackendConfig*);
     void (*rigetti_optimize)(QuantumCircuit*, const struct RigettiConfig*);
     void (*ionq_optimize)(QuantumCircuit*, const IonQConfig*);
     void (*dwave_optimize)(QuantumCircuit*, const struct DWaveConfig*);
 } HardwareOptimizations;
+#endif
 
 // Hardware optimization functions
 HardwareOptimizations* init_hardware_optimizations(const char* backend_type);
@@ -163,7 +172,7 @@ typedef enum {
 typedef struct {
     OperationType type;
     union {
-        QuantumGate gate;
+        HardwareGate gate;
         struct {
             uint32_t qubit;
             uint32_t classical_bit;
@@ -278,5 +287,44 @@ void hal_cleanup_dwave_backend(struct DWaveConfig* backend);
 bool hal_init_simulator_capabilities(HardwareCapabilities* caps, const struct SimulatorConfig* config);
 struct SimulatorConfig* hal_init_simulator(const struct SimulatorConfig* config);
 void hal_cleanup_simulator(struct SimulatorConfig* backend);
+
+// ============================================================================
+// Simplified Test API - Wrapper functions for backward compatibility
+// These use qgt_test_ prefix to avoid conflicts with backend-specific APIs
+// ============================================================================
+
+// Result type alias for test compatibility
+// Note: QuantumResult is defined separately in quantum_classical_orchestrator.h
+// for hybrid execution with different fields (expectation_values, num_values)
+typedef ExecutionResult QGTQuantumResult;
+
+// Backend wrapper types (opaque handles for test wrappers)
+typedef struct QGTIBMBackendWrapper QGTIBMBackendWrapper;
+typedef struct QGTRigettiBackendWrapper QGTRigettiBackendWrapper;
+typedef struct QGTDWaveBackendWrapper QGTDWaveBackendWrapper;
+
+// Circuit creation and manipulation (wrapper API)
+QuantumCircuit* qgt_test_create_circuit(size_t num_qubits);
+void qgt_test_add_gate(QuantumCircuit* circuit, HardwareGate gate);
+void qgt_test_cleanup_circuit(QuantumCircuit* circuit);
+
+// QUBO functions for D-Wave backend (uses QUBO from quantum_hardware_types.h)
+void qgt_test_set_qubo_linear(QUBO* qubo, size_t index, double value);
+void qgt_test_set_qubo_quadratic(QUBO* qubo, size_t i, size_t j, double value);
+
+// IBM backend wrapper API
+QGTIBMBackendWrapper* qgt_test_init_ibm_backend(const char* token, const char* backend_name);
+int qgt_test_submit_ibm_circuit(QGTIBMBackendWrapper* backend, QuantumCircuit* circuit, QGTQuantumResult* result);
+void qgt_test_cleanup_ibm_backend(QGTIBMBackendWrapper* backend);
+
+// Rigetti backend wrapper API
+QGTRigettiBackendWrapper* qgt_test_init_rigetti_backend(const char* api_key, const char* device_name);
+int qgt_test_submit_rigetti_circuit(QGTRigettiBackendWrapper* backend, QuantumCircuit* circuit, QGTQuantumResult* result);
+void qgt_test_cleanup_rigetti_backend(QGTRigettiBackendWrapper* backend);
+
+// D-Wave backend wrapper API
+QGTDWaveBackendWrapper* qgt_test_init_dwave_backend(const char* token, const char* solver_name);
+int qgt_test_submit_qubo(QGTDWaveBackendWrapper* backend, QUBO* qubo, QGTQuantumResult* result);
+void qgt_test_cleanup_dwave_backend(QGTDWaveBackendWrapper* backend);
 
 #endif // QUANTUM_HARDWARE_ABSTRACTION_H

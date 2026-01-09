@@ -25,7 +25,7 @@ int init_metal_device(void) {
         // Get default Metal device
         device = MTLCreateSystemDefaultDevice();
         if (!device) {
-            return QGT_ERROR_GPU_UNAVAILABLE;
+            return QGT_ERROR_RESOURCE_UNAVAILABLE;
         }
         
         // Create command queue
@@ -69,8 +69,8 @@ int compile_metal_shaders(void) {
         // Compile shader with optimizations for M1/M2
         MTLCompileOptions* options = [[MTLCompileOptions alloc] init];
         options.languageVersion = MTLLanguageVersion2_4; // Latest version for M1/M2
-        options.optimizationLevel = MTLCompileOptimizationLevelDefault;
-        options.fastMathEnabled = YES; // Enable fast math for M1/M2
+        options.optimizationLevel = MTLLibraryOptimizationLevelDefault;
+        options.mathMode = MTLMathModeFast; // Fast math for M1/M2
         options.preprocessorMacros = @{
             @"THREADS_PER_GROUP": @256, // Optimal threadgroup size
             @"BATCH_SIZE": @32,         // Optimal batch size

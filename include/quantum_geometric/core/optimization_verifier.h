@@ -146,4 +146,97 @@ void free_verification_result(verification_result_t* result);
 const char* get_verification_error(qgt_error_t error);
 bool is_optimization_valid(uint32_t opt_flags);
 
+// ===========================================================================
+// Simplified API for Testing - Complexity and Resource Verification
+// ===========================================================================
+
+// Operation types for complexity verification
+typedef enum {
+    FIELD_COUPLING = 0,
+    TENSOR_CONTRACTION = 1,
+    GEOMETRIC_TRANSFORM = 2,
+    MEMORY_ACCESS = 3,
+    COMMUNICATION = 4
+} operation_type_t;
+
+// Target efficiency thresholds
+#define TARGET_MEMORY_EFFICIENCY 0.85
+#define TARGET_GPU_EFFICIENCY 0.80
+
+// Memory metrics structure
+typedef struct MemoryMetrics {
+    double pool_utilization;       // Memory pool utilization (0-1)
+    double fragmentation_ratio;    // Memory fragmentation ratio (0-1)
+    size_t cache_hits;             // Number of cache hits
+    size_t cache_misses;           // Number of cache misses
+    size_t current_allocated;      // Currently allocated bytes
+    size_t peak_allocated;         // Peak allocated bytes
+    size_t total_allocations;      // Total allocation count
+    size_t total_frees;            // Total free count
+} MemoryMetrics;
+
+// GPU metrics structure
+typedef struct GPUMetrics {
+    double compute_utilization;    // GPU compute utilization (0-1)
+    double memory_utilization;     // GPU memory utilization (0-1)
+    double bandwidth_utilization;  // Memory bandwidth utilization (0-1)
+    size_t memory_used;            // GPU memory used in bytes
+    size_t memory_total;           // Total GPU memory in bytes
+    double temperature;            // GPU temperature in Celsius
+    double power_usage;            // GPU power usage in watts
+    double clock_speed;            // Current clock speed in MHz
+} GPUMetrics;
+
+// Optimization report structure
+typedef struct OptimizationReport {
+    // Complexity optimization flags
+    bool field_coupling_optimized;
+    bool tensor_contraction_optimized;
+    bool geometric_transform_optimized;
+    bool memory_access_optimized;
+    bool communication_optimized;
+
+    // Efficiency metrics
+    double memory_efficiency;
+    double gpu_efficiency;
+    double overall_efficiency;
+
+    // Performance metrics
+    double speedup_factor;
+    double throughput_improvement;
+
+    // Resource usage
+    MemoryMetrics memory_metrics;
+    GPUMetrics gpu_metrics;
+
+    // Timing
+    double verification_time;
+    struct timespec timestamp;
+} OptimizationReport;
+
+// Verify operation has O(log n) complexity
+bool verify_log_complexity(operation_type_t operation);
+
+// Measure current memory usage metrics
+MemoryMetrics measure_memory_usage(void);
+
+// Measure current GPU utilization metrics
+GPUMetrics measure_gpu_utilization(void);
+
+// Verify all optimizations and generate report
+OptimizationReport verify_all_optimizations(void);
+
+// Print optimization report to stdout
+void print_optimization_report(const OptimizationReport* report);
+
+// Calculate field hierarchically (optimized O(log n) version)
+double calculate_field_hierarchical(const double* field, size_t size, size_t index);
+
+// Contract tensors using Strassen algorithm
+void contract_tensors_strassen(double* result, const double* a, const double* b,
+                               size_t m, size_t n, size_t k);
+
+// Fast geometric transform
+void transform_geometric_fast(double* output, const double* input, size_t dimension);
+
 #endif // OPTIMIZATION_VERIFIER_H

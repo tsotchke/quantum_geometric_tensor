@@ -97,10 +97,10 @@ static void test_error_correction(void) {
 
     // Create test syndromes
     SyndromeVertex syndromes[4] = {
-        {.x = 1.0, .y = 1.0, .z = 0.0, .weight = 1.0, .matched = false, .time = 0},
-        {.x = 3.0, .y = 1.0, .z = 0.0, .weight = 1.0, .matched = false, .time = 0},
-        {.x = 1.0, .y = 3.0, .z = 0.0, .weight = 1.0, .matched = false, .time = 0},
-        {.x = 3.0, .y = 3.0, .z = 0.0, .weight = 1.0, .matched = false, .time = 0}
+        {.x = 1, .y = 1, .z = 0, .weight = 1.0, .confidence = 1.0, .timestamp = 0},
+        {.x = 3, .y = 1, .z = 0, .weight = 1.0, .confidence = 1.0, .timestamp = 0},
+        {.x = 1, .y = 3, .z = 0, .weight = 1.0, .confidence = 1.0, .timestamp = 0},
+        {.x = 3, .y = 3, .z = 0, .weight = 1.0, .confidence = 1.0, .timestamp = 0}
     };
 
     // Apply corrections

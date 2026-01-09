@@ -15,6 +15,37 @@ typedef struct workload_manager_t workload_manager_t;
 typedef struct communication_optimizer_t communication_optimizer_t;
 typedef struct quantum_pipeline_t quantum_pipeline_t;
 
+#if defined(QGT_HAS_MPI) || defined(HAS_MPI) || defined(USE_MPI)
+#include <mpi.h>
+
+// Internal state structure with MPI communicators
+typedef struct distributed_internal_state_t {
+    MPI_Comm world_comm;         // World communicator
+    MPI_Comm local_comm;         // Local (node) communicator
+    MPI_Comm model_comm;         // Model parallel communicator
+    MPI_Comm data_comm;          // Data parallel communicator
+    MPI_Comm pipeline_comm;      // Pipeline parallel communicator
+    int world_rank;              // Rank in world communicator
+    int local_rank;              // Rank in local communicator
+    int model_rank;              // Rank in model parallel group
+    int data_rank;               // Rank in data parallel group
+    int pipeline_rank;           // Rank in pipeline parallel group
+    int world_size;              // Size of world communicator
+    int local_size;              // Size of local communicator
+    int model_size;              // Size of model parallel group
+    int data_size;               // Size of data parallel group
+    int pipeline_size;           // Size of pipeline parallel group
+    bool is_initialized;         // Whether MPI is initialized
+} distributed_internal_state_t;
+#else
+// Dummy structure when MPI is not available
+typedef struct distributed_internal_state_t {
+    int world_rank;
+    int world_size;
+    bool is_initialized;
+} distributed_internal_state_t;
+#endif
+
 // Include gradient optimizer header for consistent type definition
 #include "quantum_geometric/distributed/gradient_optimizer.h"
 
@@ -31,6 +62,7 @@ typedef struct distributed_config_t {
     size_t save_interval;        // Checkpoint save frequency
     bool use_model_parallel;     // Enable model parallelism
     bool use_data_parallel;      // Enable data parallelism
+    bool use_pipeline_parallel;  // Enable pipeline parallelism
     bool use_mixed_precision;    // Enable FP16/BF16 training
     bool use_gradient_checkpointing;  // Memory optimization
     char* checkpoint_dir;        // Directory for checkpoints
@@ -81,10 +113,10 @@ typedef struct workload_config_t {
 // Distributed manager structure
 struct distributed_manager_t {
     distributed_config_t config;
-    void* internal_state;                        // Opaque internal state
-    workload_manager_t* workload_manager;        // Workload distribution
-    gradient_optimizer_t* gradient_optimizer;    // Gradient optimization
-    communication_optimizer_t* comm_optimizer;   // Communication optimization
+    distributed_internal_state_t* internal_state;  // Internal state with MPI communicators
+    workload_manager_t* workload_manager;          // Workload distribution
+    gradient_optimizer_t* gradient_optimizer;      // Gradient optimization
+    communication_optimizer_t* comm_optimizer;     // Communication optimization
 };
 
 // Create and destroy

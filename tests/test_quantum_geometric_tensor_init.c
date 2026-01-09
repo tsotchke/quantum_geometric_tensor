@@ -52,7 +52,7 @@ void test_tensor_config(const tensor_test_config_t* config) {
     
     // Initialize with random data
     start_time = get_time_ms();
-    err = geometric_tensor_initialize_random(tensor);
+    err = geometric_tensor_initialize_random(tensor, -1.0f, 1.0f);
     end_time = get_time_ms();
     printf("Random initialization time: %.3f ms\n", end_time - start_time);
     assert(err == QGT_SUCCESS);

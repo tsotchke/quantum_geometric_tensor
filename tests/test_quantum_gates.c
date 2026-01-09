@@ -6,6 +6,9 @@
 
 #define EPSILON 1e-6
 
+// Helper macro to compute magnitude of ComplexFloat (cabs expects _Complex double)
+#define COMPLEX_MAG(c) sqrt((double)(c).real * (c).real + (double)(c).imag * (c).imag)
+
 static void test_single_qubit_gates() {
     printf("Testing single qubit gates...\n");
     
@@ -20,8 +23,8 @@ static void test_single_qubit_gates() {
     // Test Hadamard
     quantum_circuit_hadamard(circuit, 0);
     quantum_circuit_execute(circuit, state);
-    assert(fabs(cabs(state->amplitudes[0]) - M_SQRT1_2) < EPSILON);
-    assert(fabs(cabs(state->amplitudes[1]) - M_SQRT1_2) < EPSILON);
+    assert(fabs(COMPLEX_MAG(state->amplitudes[0]) - M_SQRT1_2) < EPSILON);
+    assert(fabs(COMPLEX_MAG(state->amplitudes[1]) - M_SQRT1_2) < EPSILON);
     
     // Reset circuit and state
     quantum_circuit_reset(circuit);
@@ -30,12 +33,12 @@ static void test_single_qubit_gates() {
     // Test Pauli-X (NOT gate)
     quantum_circuit_pauli_x(circuit, 0);
     quantum_circuit_execute(circuit, state);
-    assert(fabs(cabs(state->amplitudes[0])) < EPSILON);
-    assert(fabs(cabs(state->amplitudes[1]) - 1.0) < EPSILON);
+    assert(fabs(COMPLEX_MAG(state->amplitudes[0])) < EPSILON);
+    assert(fabs(COMPLEX_MAG(state->amplitudes[1]) - 1.0) < EPSILON);
     
     // Clean up
     quantum_circuit_destroy(circuit);
-    quantum_state_destroy(state);
+    quantum_state_cleanup(state);
     
     printf("✓ Single qubit gates test passed\n");
 }
@@ -54,10 +57,10 @@ static void test_two_qubit_gates() {
     // Test CNOT: |00⟩ -> |00⟩
     quantum_circuit_cnot(circuit, 0, 1);
     quantum_circuit_execute(circuit, state);
-    assert(fabs(cabs(state->amplitudes[0]) - 1.0) < EPSILON);
-    assert(fabs(cabs(state->amplitudes[1])) < EPSILON);
-    assert(fabs(cabs(state->amplitudes[2])) < EPSILON);
-    assert(fabs(cabs(state->amplitudes[3])) < EPSILON);
+    assert(fabs(COMPLEX_MAG(state->amplitudes[0]) - 1.0) < EPSILON);
+    assert(fabs(COMPLEX_MAG(state->amplitudes[1])) < EPSILON);
+    assert(fabs(COMPLEX_MAG(state->amplitudes[2])) < EPSILON);
+    assert(fabs(COMPLEX_MAG(state->amplitudes[3])) < EPSILON);
     
     // Reset circuit and state
     quantum_circuit_reset(circuit);
@@ -70,14 +73,14 @@ static void test_two_qubit_gates() {
     // Test CNOT: |10⟩ -> |11⟩
     quantum_circuit_cnot(circuit, 0, 1);
     quantum_circuit_execute(circuit, state);
-    assert(fabs(cabs(state->amplitudes[0])) < EPSILON);
-    assert(fabs(cabs(state->amplitudes[1])) < EPSILON);
-    assert(fabs(cabs(state->amplitudes[2])) < EPSILON);
-    assert(fabs(cabs(state->amplitudes[3]) - 1.0) < EPSILON);
+    assert(fabs(COMPLEX_MAG(state->amplitudes[0])) < EPSILON);
+    assert(fabs(COMPLEX_MAG(state->amplitudes[1])) < EPSILON);
+    assert(fabs(COMPLEX_MAG(state->amplitudes[2])) < EPSILON);
+    assert(fabs(COMPLEX_MAG(state->amplitudes[3]) - 1.0) < EPSILON);
     
     // Clean up
     quantum_circuit_destroy(circuit);
-    quantum_state_destroy(state);
+    quantum_state_cleanup(state);
     
     printf("✓ Two qubit gates test passed\n");
 }
@@ -109,12 +112,12 @@ static void test_quantum_fourier_transform() {
     // Verify output state is uniform superposition
     double expected = 0.5; // 1/sqrt(4)
     for (int i = 0; i < 4; i++) {
-        assert(fabs(cabs(state->amplitudes[i]) - expected) < EPSILON);
+        assert(fabs(COMPLEX_MAG(state->amplitudes[i]) - expected) < EPSILON);
     }
     
     // Clean up
     quantum_circuit_destroy(circuit);
-    quantum_state_destroy(state);
+    quantum_state_cleanup(state);
     
     printf("✓ Quantum Fourier transform test passed\n");
 }

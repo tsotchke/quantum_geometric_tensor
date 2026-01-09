@@ -23,7 +23,7 @@ static void quantum_encode_complex(quantum_register_t* reg, simplicial_complex_t
                                    quantum_system_t* system, quantum_circuit_t* circuit,
                                    const quantum_phase_config_t* config);
 
-static void quantum_encode_matrix(quantum_register_t* reg, int* matrix, size_t size,
+static void topological_encode_matrix(quantum_register_t* reg, int* matrix, size_t size,
                                   quantum_system_t* system, quantum_circuit_t* circuit,
                                   const quantum_amplitude_config_t* config);
 
@@ -293,7 +293,7 @@ static qgt_error_t compute_smith_normal_form(int* matrix,
     
     if (reg_matrix && reg_factors) {
         /* Encode matrix */
-        quantum_encode_matrix(
+        topological_encode_matrix(
             reg_matrix,
             matrix,
             size,
@@ -911,7 +911,7 @@ static void quantum_encode_complex(quantum_register_t* reg, simplicial_complex_t
     }
 }
 
-static void quantum_encode_matrix(quantum_register_t* reg, int* matrix, size_t size,
+static void topological_encode_matrix(quantum_register_t* reg, int* matrix, size_t size,
                                   quantum_system_t* system, quantum_circuit_t* circuit,
                                   const quantum_amplitude_config_t* config) {
     if (!reg || !matrix) return;
@@ -1465,7 +1465,7 @@ quantum_register_t* quantum_register_create_region(TreeTensorNetwork* network,
     if (!reg) return NULL;
 
     // Initialize with uniform distribution based on entanglement entropy
-    double entropy_val = network->entanglement_entropy;
+    double entropy_val = network->total_entanglement_entropy;
     for (size_t i = 0; i < reg_size; i++) {
         // Distribute entropy across region
         double val = entropy_val / (double)reg_size;
@@ -1819,8 +1819,8 @@ double quantum_estimate_correlation(TreeTensorNetwork* network, quantum_annealin
     (void)annealer; (void)circuit; (void)config; (void)qws;
 
     // Estimate long-range correlation length from entanglement entropy
-    // entanglement_entropy is a single value representing total entropy
-    double xi = network->entanglement_entropy;
+    // Use total_entanglement_entropy for correlation estimate
+    double xi = network->total_entanglement_entropy;
 
     return xi;
 }
@@ -1915,7 +1915,14 @@ void quantum_apply_spectral_flow(TreeTensorNetwork* network, EntanglementSpectru
     // Apply spectral flow to improve coherence
     // Update entanglement entropy from spectrum's computed entropy
     if (spectrum->eigenvalues) {
-        network->entanglement_entropy = spectrum->entropy;
+        network->total_entanglement_entropy = spectrum->entropy;
+        // Distribute entropy uniformly across sites
+        if (network->entanglement_entropy && network->num_sites > 0) {
+            double per_site = spectrum->entropy / (double)network->num_sites;
+            for (size_t i = 0; i < network->num_sites; i++) {
+                network->entanglement_entropy[i] = per_site;
+            }
+        }
     }
 }
 
@@ -1923,10 +1930,74 @@ void quantum_update_protection(TreeTensorNetwork* network, EntanglementSpectrum*
                               quantum_annealing_t* annealer, quantum_circuit_t* circuit,
                               quantum_annealing_config_t* config, QuantumWorkspace* qws) {
     if (!network) return;
-    (void)spectrum; (void)annealer; (void)circuit; (void)config; (void)qws;
+    (void)annealer; (void)circuit; (void)config; (void)qws;
 
-    // Update protection parameters
-    // This is a placeholder for more complex protection updates
+    // Update topological protection based on entanglement spectrum
+    // The spectral gap determines the protection strength against local perturbations
+
+    // 1. Update entanglement entropy from spectrum
+    if (spectrum && spectrum->eigenvalues && spectrum->num_eigenvalues > 0) {
+        // Update total entropy
+        network->total_entanglement_entropy = spectrum->entropy;
+
+        // Distribute entropy based on eigenvalue distribution
+        if (network->entanglement_entropy && network->num_sites > 0) {
+            size_t num_levels = spectrum->num_eigenvalues < network->num_sites ?
+                                spectrum->num_eigenvalues : network->num_sites;
+
+            // Weight entropy distribution by eigenvalue magnitudes
+            double entropy_sum = 0.0;
+            for (size_t i = 0; i < num_levels; i++) {
+                // Von Neumann entropy contribution: -p * log(p)
+                double p = spectrum->eigenvalues[i];
+                double site_entropy = (p > 1e-10) ? -p * log2(p) : 0.0;
+                network->entanglement_entropy[i] = site_entropy;
+                entropy_sum += site_entropy;
+            }
+
+            // Fill remaining sites with average entropy
+            if (num_levels < network->num_sites) {
+                double avg_entropy = (num_levels > 0) ? entropy_sum / num_levels : 0.0;
+                for (size_t i = num_levels; i < network->num_sites; i++) {
+                    network->entanglement_entropy[i] = avg_entropy;
+                }
+            }
+        }
+
+        // 2. Adapt bond dimension based on spectral gap
+        // Larger gap = better topological protection, can use smaller bond dim
+        // Smaller gap = weaker protection, need larger bond dim for accuracy
+        if (spectrum->gap > 0.1) {
+            // Strong gap - topological protection is good
+            // Can maintain or slightly reduce bond dimension
+            if (network->bond_dim > 4 && spectrum->gap > 0.5) {
+                // Very strong gap, can reduce computational cost
+                network->bond_dim = (network->bond_dim * 3) / 4;
+                if (network->bond_dim < 4) network->bond_dim = 4;
+            }
+        } else if (spectrum->gap < 0.01 && spectrum->gap > 0) {
+            // Weak gap - near phase transition, increase bond dim
+            size_t new_bond_dim = (network->bond_dim * 5) / 4;
+            if (new_bond_dim > network->max_rank) new_bond_dim = network->max_rank;
+            network->bond_dim = new_bond_dim;
+        }
+
+        // 3. Update tolerance based on entropy
+        // Higher entropy = more entanglement = need tighter tolerance
+        if (spectrum->entropy > 2.0 && network->tolerance > 1e-8) {
+            network->tolerance *= 0.5;
+            if (network->tolerance < 1e-12) network->tolerance = 1e-12;
+        } else if (spectrum->entropy < 0.5 && network->tolerance < 1e-4) {
+            // Low entropy state, can relax tolerance slightly
+            network->tolerance *= 1.5;
+            if (network->tolerance > 1e-4) network->tolerance = 1e-4;
+        }
+    }
+
+    // 4. Update max_rank to match bond_dim for consistency
+    if (network->bond_dim > 0) {
+        network->max_rank = network->bond_dim;
+    }
 }
 
 void quantum_free_spectrum(EntanglementSpectrum* spectrum) {

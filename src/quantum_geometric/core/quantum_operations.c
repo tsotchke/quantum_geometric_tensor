@@ -1760,6 +1760,41 @@ qgt_error_t quantum_operator_clone(quantum_operator_t** dest,
     return QGT_SUCCESS;
 }
 
+qgt_error_t quantum_operator_apply(quantum_operator_t* operator,
+                                  quantum_state_t* state) {
+    if (!operator || !state) {
+        return QGT_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (operator->dimension != state->dimension) {
+        return QGT_ERROR_INVALID_ARGUMENT;
+    }
+
+    // Allocate temporary buffer for result
+    ComplexFloat* result = calloc(state->dimension, sizeof(ComplexFloat));
+    if (!result) {
+        return QGT_ERROR_MEMORY_ALLOCATION;
+    }
+
+    // Matrix-vector multiplication: result = operator * state
+    for (size_t i = 0; i < state->dimension; i++) {
+        ComplexFloat sum = {0.0f, 0.0f};
+        for (size_t j = 0; j < state->dimension; j++) {
+            ComplexFloat op_elem = operator->matrix[i * state->dimension + j];
+            ComplexFloat state_elem = state->coordinates[j];
+            ComplexFloat prod = complex_float_multiply(op_elem, state_elem);
+            sum = complex_float_add(sum, prod);
+        }
+        result[i] = sum;
+    }
+
+    // Copy result back to state
+    memcpy(state->coordinates, result, state->dimension * sizeof(ComplexFloat));
+    free(result);
+
+    return QGT_SUCCESS;
+}
+
 qgt_error_t quantum_operator_add(quantum_operator_t* result,
                                const quantum_operator_t* a,
                                const quantum_operator_t* b) {

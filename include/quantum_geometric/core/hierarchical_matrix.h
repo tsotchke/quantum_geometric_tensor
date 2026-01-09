@@ -1,9 +1,21 @@
 #ifndef HIERARCHICAL_MATRIX_H
 #define HIERARCHICAL_MATRIX_H
 
-#include <complex.h>
 #include <stddef.h>
 #include <stdbool.h>
+
+// C/C++/Objective-C++ complex type compatibility
+#ifdef __cplusplus
+    #include <complex>
+    typedef std::complex<double> qgt_complex_t;
+    #define QGT_COMPLEX_REAL(z) ((z).real())
+    #define QGT_COMPLEX_IMAG(z) ((z).imag())
+#else
+    #include <complex.h>
+    typedef double _Complex qgt_complex_t;
+    #define QGT_COMPLEX_REAL(z) (creal(z))
+    #define QGT_COMPLEX_IMAG(z) (cimag(z))
+#endif
 
 // Matrix types
 typedef enum {
@@ -67,10 +79,10 @@ typedef struct {
 typedef struct HierarchicalMatrix {
     matrix_type_t type;            // Matrix type
     storage_format_t format;       // Storage format
-    double complex* data;          // Raw data for leaf nodes
-    double complex* grad;          // Gradient data for backpropagation
-    double complex* U;             // Left singular vectors
-    double complex* V;             // Right singular vectors
+    qgt_complex_t* data;          // Raw data for leaf nodes
+    qgt_complex_t* grad;          // Gradient data for backpropagation
+    qgt_complex_t* U;             // Left singular vectors
+    qgt_complex_t* V;             // Right singular vectors
     size_t n;                     // Matrix dimension
     size_t rows;                  // Number of rows
     size_t cols;                  // Number of columns
@@ -96,13 +108,13 @@ bool validate_hierarchical_matrix(const HierarchicalMatrix* matrix);
 bool set_block_sizes(HierarchicalMatrix* matrix,
                     const size_t* sizes,
                     size_t num_blocks);
-double complex* get_block(HierarchicalMatrix* matrix,
+qgt_complex_t* get_block(HierarchicalMatrix* matrix,
                           size_t block_idx);
 size_t get_block_size(const HierarchicalMatrix* matrix,
                       size_t block_idx);
 bool set_block_data(HierarchicalMatrix* matrix,
                     size_t block_idx,
-                    const double complex* data);
+                    const qgt_complex_t* data);
 
 // Matrix operations
 bool multiply_matrices(HierarchicalMatrix* result,
@@ -115,7 +127,7 @@ bool subtract_matrices(HierarchicalMatrix* result,
                       const HierarchicalMatrix* a,
                       const HierarchicalMatrix* b);
 bool scale_matrix(HierarchicalMatrix* matrix,
-                  double complex scalar);
+                  qgt_complex_t scalar);
 
 // Compression operations
 bool compress_matrix(HierarchicalMatrix* matrix,
@@ -126,14 +138,14 @@ bool truncate_singular_values(HierarchicalMatrix* matrix,
                             double threshold);
 
 // Decomposition operations
-void compute_svd(double complex* data, size_t rows, size_t cols,
-                double complex* U, double complex* S, double complex* V);
+void compute_svd(qgt_complex_t* data, size_t rows, size_t cols,
+                qgt_complex_t* U, qgt_complex_t* S, qgt_complex_t* V);
 bool compute_qr(HierarchicalMatrix* matrix,
-               double complex** Q,
-               double complex** R);
+               qgt_complex_t** Q,
+               qgt_complex_t** R);
 bool compute_lu(HierarchicalMatrix* matrix,
-               double complex** L,
-               double complex** U);
+               qgt_complex_t** L,
+               qgt_complex_t** U);
 
 // Analysis functions
 bool compute_norm(const HierarchicalMatrix* matrix,
@@ -153,7 +165,7 @@ bool quantum_multiply(HierarchicalMatrix* result,
                      const HierarchicalMatrix* a,
                      const HierarchicalMatrix* b);
 bool quantum_decompose(HierarchicalMatrix* matrix,
-                      double complex** factors);
+                      qgt_complex_t** factors);
 
 // Utility functions
 bool export_matrix(const HierarchicalMatrix* matrix,
@@ -165,8 +177,8 @@ void print_matrix(const HierarchicalMatrix* matrix);
 // Element access
 bool hierarchical_matrix_set_element(HierarchicalMatrix* matrix,
                                      size_t index,
-                                     double complex value);
-double complex hierarchical_matrix_get_element(const HierarchicalMatrix* matrix,
+                                     qgt_complex_t value);
+qgt_complex_t hierarchical_matrix_get_element(const HierarchicalMatrix* matrix,
                                                size_t index);
 
 // ============================================================================
@@ -194,23 +206,23 @@ void hmatrix_multiply(HierarchicalMatrix* dst,
  * @brief Matrix-vector multiplication for tensor networks
  */
 void hmatrix_multiply_vector(const HierarchicalMatrix* matrix,
-                            const double complex* input,
-                            double complex* output,
+                            const qgt_complex_t* input,
+                            qgt_complex_t* output,
                             size_t batch_size);
 
 /**
  * @brief Matrix conjugate transpose multiplication
  */
 void hmatrix_multiply_conjugate_transpose(const HierarchicalMatrix* matrix,
-                                         const double complex* input,
-                                         double complex* output,
+                                         const qgt_complex_t* input,
+                                         qgt_complex_t* output,
                                          size_t batch_size);
 
 /**
  * @brief Apply gradient update to matrix
  */
 void hmatrix_apply_gradient(HierarchicalMatrix* matrix,
-                           const double complex* gradient,
+                           const qgt_complex_t* gradient,
                            double learning_rate);
 
 // ============================================================================

@@ -3,10 +3,12 @@
  * @brief Tests for language model quantum geometric functionality
  */
 
-#include <quantum_geometric_core.h>
-#include <quantum_geometric_tensor_network.h>
-#include <quantum_ai_operations.h>
-#include <unity.h>
+#include "quantum_geometric/core/quantum_geometric_core.h"
+#include "quantum_geometric/core/quantum_geometric_tensor_network.h"
+#include "quantum_geometric/ai/quantum_ai_operations.h"
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <math.h>
 
 /* Test configuration */
@@ -22,7 +24,7 @@
 /* Test fixtures */
 static ModelConfig config;
 static TreeTensorNetwork** layers;
-static quantum_geometric_tensor* embeddings;
+static qgt_advanced_geometry_t* embeddings;
 
 void setUp(void) {
     // Initialize test configuration
@@ -34,77 +36,83 @@ void setUp(void) {
         .seq_length = TEST_SEQ_LENGTH,
         .bond_dim = TEST_BOND_DIM
     };
-    
-    // Create embeddings
-    embeddings = create_quantum_tensor(
-        config.vocab_size,
+
+    // Create embeddings (dimension first, num_spins second)
+    embeddings = qgt_ai_create_tensor(
         config.hidden_dim,
+        config.vocab_size,
         QGT_MEM_HUGE_PAGES
     );
-    TEST_ASSERT_NOT_NULL(embeddings);
-    
+    assert(embeddings != NULL);
+
     // Initialize embeddings
-    initialize_geometric_embeddings(embeddings, QGT_EMBED_HYPERBOLIC);
-    
+    qgt_ai_initialize_geometric_embeddings(embeddings, QGT_EMBED_HYPERBOLIC);
+
     // Create layers
     layers = malloc(config.num_layers * sizeof(TreeTensorNetwork*));
-    TEST_ASSERT_NOT_NULL(layers);
-    
+    assert(layers != NULL);
+
     for (size_t i = 0; i < config.num_layers; i++) {
-        layers[i] = create_transformer_layer(&config);
-        TEST_ASSERT_NOT_NULL(layers[i]);
+        layers[i] = qgt_ai_create_transformer_layer(&config);
+        assert(layers[i] != NULL);
     }
 }
 
 void tearDown(void) {
     // Clean up
-    free_quantum_tensor(embeddings);
+    qgt_ai_free_tensor(embeddings);
     for (size_t i = 0; i < config.num_layers; i++) {
-        physicsml_ttn_destroy(layers[i]);
+        qgt_ai_destroy_ttn(layers[i]);
     }
     free(layers);
 }
 
 /* Test geometric properties */
-void test_geometric_properties(void) {
+static void test_geometric_properties(void) {
+    printf("Testing geometric properties...\n");
+
     // Create test input
-    quantum_geometric_tensor* input = create_quantum_tensor(
-        TEST_BATCH_SIZE,
+    qgt_advanced_geometry_t* input = qgt_ai_create_tensor(
         config.hidden_dim,
+        TEST_BATCH_SIZE,
         QGT_MEM_HUGE_PAGES
     );
-    
+
     // Initialize with random values
-    initialize_random_state(input, 42);
-    
+    qgt_ai_initialize_random_state(input, 42);
+
     // Forward pass
-    TreeTensorNetwork* output = forward_geometric_network(
+    TreeTensorNetwork* output = qgt_ai_forward_geometric_network(
         layers,
         config.num_layers,
         input,
         QGT_FORWARD_STANDARD
     );
-    TEST_ASSERT_NOT_NULL(output);
-    
+    assert(output != NULL);
+
     // Check geometric properties
-    double curvature = calculate_geometric_curvature(output);
-    TEST_ASSERT_FLOAT_WITHIN(TEST_TOLERANCE, -1.0, curvature);
-    
+    double curvature = qgt_ai_calculate_geometric_curvature(output);
+    assert(fabs(curvature - (-1.0)) <= TEST_TOLERANCE);
+
     // Check metric preservation
-    quantum_geometric_tensor* final = extract_geometric_properties(output);
-    TEST_ASSERT_NOT_NULL(final);
-    
-    double metric_diff = compare_metric_tensors(input, final);
-    TEST_ASSERT_FLOAT_WITHIN(TEST_TOLERANCE, 0.0, metric_diff);
-    
+    qgt_advanced_geometry_t* final = qgt_ai_extract_geometric_properties(output);
+    assert(final != NULL);
+
+    double metric_diff = qgt_ai_compare_metric_tensors(input, final);
+    assert(fabs(metric_diff - 0.0) <= TEST_TOLERANCE);
+
     // Clean up
-    free_quantum_tensor(input);
-    free_quantum_tensor(final);
-    physicsml_ttn_destroy(output);
+    qgt_ai_free_tensor(input);
+    qgt_ai_free_tensor(final);
+    qgt_ai_destroy_ttn(output);
+
+    printf("Geometric properties tests passed\n");
 }
 
 /* Test physical constraints */
-void test_physical_constraints(void) {
+static void test_physical_constraints(void) {
+    printf("Testing physical constraints...\n");
+
     // Create constraints
     PhysicalConstraints constraints = {
         .energy_threshold = 1.0,
@@ -115,81 +123,92 @@ void test_physical_constraints(void) {
         .renormalization_scale = 1.0,
         .causality_tolerance = 1e-6
     };
-    
+
     // Apply constraints to each layer
     for (size_t i = 0; i < config.num_layers; i++) {
-        quantum_geometric_tensor* state = extract_geometric_properties(layers[i]);
-        TEST_ASSERT_NOT_NULL(state);
-        
-        qgt_error_t err = apply_physical_constraints(state, &constraints);
-        TEST_ASSERT_EQUAL(QGT_SUCCESS, err);
-        
+        qgt_advanced_geometry_t* state = qgt_ai_extract_geometric_properties(layers[i]);
+        assert(state != NULL);
+
+        qgt_error_t err = qgt_ai_apply_physical_constraints(state, &constraints);
+        assert(err == QGT_SUCCESS);
+
         // Verify constraints
-        double energy = calculate_total_energy(state);
-        TEST_ASSERT_FLOAT_WITHIN(TEST_TOLERANCE, constraints.energy_threshold, energy);
-        
-        bool symmetric = verify_symmetry_constraints(state, constraints.symmetry_tolerance);
-        TEST_ASSERT_TRUE(symmetric);
-        
-        bool causal = verify_causality_constraints(state, constraints.causality_tolerance);
-        TEST_ASSERT_TRUE(causal);
-        
-        free_quantum_tensor(state);
+        double energy = qgt_ai_calculate_total_energy(state);
+        assert(fabs(energy - constraints.energy_threshold) <= TEST_TOLERANCE);
+
+        bool symmetric = qgt_ai_verify_symmetry_constraints(state, constraints.symmetry_tolerance);
+        assert(symmetric);
+
+        bool causal = qgt_ai_verify_causality_constraints(state, constraints.causality_tolerance);
+        assert(causal);
+
+        qgt_ai_free_tensor(state);
     }
+
+    printf("Physical constraints tests passed\n");
 }
 
 /* Test tensor network compression */
-void test_tensor_compression(void) {
+static void test_tensor_compression(void) {
+    printf("Testing tensor network compression...\n");
+
     // Get original parameter count
     size_t original_params = config.hidden_dim * config.hidden_dim * config.num_layers;
-    
+
     // Get compressed parameter count
     size_t compressed_params = 0;
     for (size_t i = 0; i < config.num_layers; i++) {
-        compressed_params += count_network_parameters(layers[i]);
+        compressed_params += qgt_ai_count_network_parameters(layers[i]);
     }
-    
+
     // Verify compression ratio
     double compression_ratio = (double)original_params / compressed_params;
-    TEST_ASSERT_FLOAT_WITHIN(1.0, 10.0, compression_ratio);
-    
+    assert(fabs(compression_ratio - 10.0) <= 1.0);
+
     // Verify quality preservation
-    quantum_geometric_tensor* input = create_quantum_tensor(
-        TEST_BATCH_SIZE,
+    qgt_advanced_geometry_t* input = qgt_ai_create_tensor(
         config.hidden_dim,
+        TEST_BATCH_SIZE,
         QGT_MEM_HUGE_PAGES
     );
-    initialize_random_state(input, 42);
-    
+    qgt_ai_initialize_random_state(input, 42);
+
     // Compare original vs compressed output
-    TreeTensorNetwork* compressed_output = forward_geometric_network(
+    TreeTensorNetwork* compressed_output = qgt_ai_forward_geometric_network(
         layers,
         config.num_layers,
         input,
         QGT_FORWARD_STANDARD
     );
-    
-    quantum_geometric_tensor* original_output = forward_uncompressed_network(
+
+    TreeTensorNetwork* uncompressed_output = qgt_ai_forward_uncompressed_network(
         layers,
         config.num_layers,
         input
     );
-    
-    double output_diff = compare_tensor_outputs(
+
+    qgt_advanced_geometry_t* uncompressed_tensor = qgt_ai_extract_geometric_properties(uncompressed_output);
+
+    double output_diff = qgt_ai_compare_tensor_outputs(
         compressed_output,
-        original_output,
+        uncompressed_tensor,
         TEST_TOLERANCE
     );
-    TEST_ASSERT_FLOAT_WITHIN(TEST_TOLERANCE, 0.0, output_diff);
-    
+    assert(fabs(output_diff - 0.0) <= TEST_TOLERANCE);
+
     // Clean up
-    free_quantum_tensor(input);
-    free_quantum_tensor(original_output);
-    physicsml_ttn_destroy(compressed_output);
+    qgt_ai_free_tensor(input);
+    qgt_ai_free_tensor(uncompressed_tensor);
+    qgt_ai_destroy_ttn(compressed_output);
+    qgt_ai_destroy_ttn(uncompressed_output);
+
+    printf("Tensor network compression tests passed\n");
 }
 
 /* Test distributed operations */
-void test_distributed_operations(void) {
+static void test_distributed_operations(void) {
+    printf("Testing distributed operations...\n");
+
     // Set up distributed config
     DistributedConfig dist_config = {
         .world_size = 2,
@@ -199,37 +218,41 @@ void test_distributed_operations(void) {
         .zero_optimization_stage = 3,
         .mixed_precision = true
     };
-    
-    initialize_distributed_training(&dist_config);
-    
+
+    qgt_ai_initialize_distributed_training(&dist_config);
+
     // Create distributed input
-    quantum_geometric_tensor* input = create_quantum_tensor(
-        TEST_BATCH_SIZE,
+    qgt_advanced_geometry_t* input = qgt_ai_create_tensor(
         config.hidden_dim,
+        TEST_BATCH_SIZE,
         QGT_MEM_HUGE_PAGES
     );
-    initialize_random_state(input, 42);
-    
+    qgt_ai_initialize_random_state(input, 42);
+
     // Forward pass
-    TreeTensorNetwork* output = forward_geometric_network(
+    TreeTensorNetwork* output = qgt_ai_forward_geometric_network(
         layers,
         config.num_layers,
         input,
         QGT_FORWARD_DISTRIBUTED
     );
-    TEST_ASSERT_NOT_NULL(output);
-    
+    assert(output != NULL);
+
     // Verify output consistency
-    bool consistent = verify_distributed_consistency(output, TEST_TOLERANCE);
-    TEST_ASSERT_TRUE(consistent);
-    
+    bool consistent = qgt_ai_verify_distributed_consistency(output, TEST_TOLERANCE);
+    assert(consistent);
+
     // Clean up
-    free_quantum_tensor(input);
-    physicsml_ttn_destroy(output);
+    qgt_ai_free_tensor(input);
+    qgt_ai_destroy_ttn(output);
+
+    printf("Distributed operations tests passed\n");
 }
 
 /* Test optimization */
-void test_optimization(void) {
+static void test_optimization(void) {
+    printf("Testing optimization...\n");
+
     // Create optimizer
     TrainingConfig train_config = {
         .batch_size = TEST_BATCH_SIZE,
@@ -239,81 +262,88 @@ void test_optimization(void) {
         .weight_decay = 0.1,
         .gradient_clipping = 1.0
     };
-    
-    GeometricOptimizer* optimizer = create_geometric_optimizer(
+
+    GeometricOptimizer* optimizer = qgt_ai_create_geometric_optimizer(
         OPTIMIZER_ADAM,
         &train_config,
-        QGT_OPT_PRESERVE_GEOMETRY
+        QGT_UPDATE_PRESERVE_GEOMETRY
     );
-    TEST_ASSERT_NOT_NULL(optimizer);
-    
+    assert(optimizer != NULL);
+
     // Training step
-    quantum_geometric_tensor* input = create_quantum_tensor(
-        TEST_BATCH_SIZE,
+    qgt_advanced_geometry_t* input = qgt_ai_create_tensor(
         config.hidden_dim,
+        TEST_BATCH_SIZE,
         QGT_MEM_HUGE_PAGES
     );
-    initialize_random_state(input, 42);
-    
-    TreeTensorNetwork* output = forward_geometric_network(
+    qgt_ai_initialize_random_state(input, 42);
+
+    TreeTensorNetwork* output = qgt_ai_forward_geometric_network(
         layers,
         config.num_layers,
         input,
         QGT_FORWARD_STANDARD
     );
-    
-    double initial_loss = calculate_geometric_loss(
+
+    double initial_loss = qgt_ai_calculate_geometric_loss(
         output,
         input,
         QGT_LOSS_HYPERBOLIC
     );
-    
-    backward_geometric_network(
+
+    qgt_ai_backward_geometric_network(
         output,
         initial_loss,
         optimizer,
         QGT_BACKWARD_STANDARD
     );
-    
-    update_geometric_parameters(
+
+    qgt_ai_update_geometric_parameters(
         layers,
         config.num_layers,
         optimizer,
         QGT_UPDATE_PRESERVE_GEOMETRY
     );
-    
+
     // Verify loss improvement
-    TreeTensorNetwork* new_output = forward_geometric_network(
+    TreeTensorNetwork* new_output = qgt_ai_forward_geometric_network(
         layers,
         config.num_layers,
         input,
         QGT_FORWARD_STANDARD
     );
-    
-    double final_loss = calculate_geometric_loss(
+
+    double final_loss = qgt_ai_calculate_geometric_loss(
         new_output,
         input,
         QGT_LOSS_HYPERBOLIC
     );
-    
-    TEST_ASSERT_TRUE(final_loss < initial_loss);
-    
+
+    assert(final_loss < initial_loss);
+
     // Clean up
-    free_quantum_tensor(input);
-    physicsml_ttn_destroy(output);
-    physicsml_ttn_destroy(new_output);
-    free_geometric_optimizer(optimizer);
+    qgt_ai_free_tensor(input);
+    qgt_ai_destroy_ttn(output);
+    qgt_ai_destroy_ttn(new_output);
+    qgt_ai_free_geometric_optimizer(optimizer);
+
+    printf("Optimization tests passed\n");
 }
 
 /* Run all tests */
 int main(void) {
-    UNITY_BEGIN();
-    
-    RUN_TEST(test_geometric_properties);
-    RUN_TEST(test_physical_constraints);
-    RUN_TEST(test_tensor_compression);
-    RUN_TEST(test_distributed_operations);
-    RUN_TEST(test_optimization);
-    
-    return UNITY_END();
+    printf("Running language model tests...\n\n");
+
+    setUp();
+
+    test_geometric_properties();
+    test_physical_constraints();
+    test_tensor_compression();
+    test_distributed_operations();
+    test_optimization();
+
+    tearDown();
+
+    printf("\nAll language model tests passed!\n");
+    return 0;
 }

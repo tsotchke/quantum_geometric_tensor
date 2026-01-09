@@ -5,16 +5,10 @@
 #include <stddef.h>
 #include <time.h>
 #include <stdio.h>
+#include "quantum_geometric/physics/error_types.h"
 
 // Maximum history buffer length
 #define MAX_HISTORY_LENGTH 1024
-
-// Error types for pattern detection
-typedef enum {
-    ERROR_X,
-    ERROR_Y,
-    ERROR_Z
-} error_type_t;
 
 // Performance trend direction
 typedef enum {
@@ -30,6 +24,15 @@ typedef enum {
     ALERT_ERROR,
     ALERT_CRITICAL
 } AlertLevel;
+
+// Health status for system monitoring
+typedef enum {
+    HEALTH_EXCELLENT,
+    HEALTH_GOOD,
+    HEALTH_FAIR,
+    HEALTH_POOR,
+    HEALTH_CRITICAL
+} HealthStatus;
 
 // Configuration for the error correction monitor
 typedef struct {
@@ -59,6 +62,7 @@ typedef struct {
     double latency;               // Average correction latency
     size_t correction_count;      // Number of corrections in period
     size_t total_corrections;     // Total number of corrections
+    size_t total_successes;       // Total number of successful corrections
     size_t failed_corrections;    // Number of failed corrections
 } CorrectionMetrics;
 
@@ -116,6 +120,9 @@ typedef struct {
     const char* message;         // Alert message
 } AlertInfo;
 
+// Type alias for compatibility
+typedef AlertInfo Alert;
+
 // Full monitor state structure
 typedef struct MonitorState {
     MonitorConfig config;                  // Configuration
@@ -146,8 +153,8 @@ bool check_correction_health(const MonitorState* state);
 
 // Performance analysis functions
 bool analyze_performance_trend(const MonitorState* state, PerformanceTrend* trend);
-bool detect_performance_degradation(const MonitorState* state);
-bool detect_performance_improvement(const MonitorState* state);
+bool monitor_detect_performance_degradation(const MonitorState* state);
+bool monitor_detect_performance_improvement(const MonitorState* state);
 
 // Resource monitoring functions
 bool record_resource_metrics(MonitorState* state, const ResourceMetrics* metrics);
@@ -156,7 +163,7 @@ bool check_resource_thresholds(const MonitorState* state);
 
 // Error pattern analysis functions
 bool record_error_pattern(MonitorState* state, const ErrorPattern* pattern);
-ErrorPattern* detect_error_patterns(const MonitorState* state, size_t* num_patterns);
+ErrorPattern* monitor_detect_error_patterns(const MonitorState* state, size_t* num_patterns);
 bool match_error_pattern(const MonitorState* state, const ErrorPattern* pattern);
 
 // Real-time monitoring functions
@@ -166,5 +173,10 @@ bool get_monitoring_stats(const MonitorState* state, MonitoringStats* stats);
 
 // Pipeline integration functions
 bool get_pipeline_statistics(const MonitorState* state, PipelineStats* stats);
+
+// Additional monitoring functions
+Alert* get_pending_alerts(const MonitorState* state, size_t* num_alerts);
+HealthStatus check_system_health(const MonitorState* state);
+char* generate_monitoring_report(const MonitorState* state);
 
 #endif // ERROR_CORRECTION_MONITOR_H

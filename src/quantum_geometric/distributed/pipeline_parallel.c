@@ -1,33 +1,12 @@
 #include "quantum_geometric/distributed/pipeline_parallel.h"
-#include <pthread.h>
-#include <semaphore.h>
 
-// Pipeline parameters
-#define MAX_PIPELINE_STAGES 8
-#define MAX_BATCH_SIZE 1024
-#define QUEUE_SIZE 4
+// Additional constants (MAX_PIPELINE_STAGES, MAX_BATCH_SIZE, QUEUE_SIZE defined in header)
+// PipelineStage and PipelineContext types defined in header
 
-// Pipeline stage
-typedef struct {
-    void* input_buffer;
-    void* output_buffer;
-    size_t buffer_size;
-    PipelineFunction function;
-    void* function_args;
-    sem_t input_ready;
-    sem_t output_ready;
-    pthread_t thread;
-    bool active;
-} PipelineStage;
-
-// Pipeline context
-typedef struct {
-    PipelineStage stages[MAX_PIPELINE_STAGES];
-    size_t num_stages;
-    size_t batch_size;
-    pthread_mutex_t mutex;
-    bool initialized;
-} PipelineContext;
+// Forward declarations for static wrapper functions
+static void forward_pass_wrapper(const void* input, void* output, size_t size, void* args);
+static void backward_pass_wrapper(const void* input, void* output, size_t size, void* args);
+static void gradient_computation_wrapper(const void* input, void* output, size_t size, void* args);
 
 // Stage thread function
 static void* stage_thread(void* arg) {

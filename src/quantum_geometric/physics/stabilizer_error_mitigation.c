@@ -404,20 +404,21 @@ static double calculate_confidence_weight(const measurement_result* result,
     double measurement_fidelity = get_measurement_fidelity(result->qubit_index);
     double coherence_factor = get_coherence_factor(result->qubit_index);
     double noise_level = get_noise_factor();
-    
+
     // Calculate base confidence
-    double confidence = qubit_reliability * measurement_fidelity * 
+    double confidence = qubit_reliability * measurement_fidelity *
                        coherence_factor * (1.0 - noise_level);
-    
+
     // Adjust based on measurement stability
     confidence *= get_measurement_stability(result->qubit_index);
-    
+
     // Apply hardware-specific scaling
     confidence *= hw_profile->confidence_scale_factor;
-    
+
     // Clamp to valid range
     if (confidence > 1.0) confidence = 1.0;
     if (confidence < 0.0) confidence = 0.0;
-    
+
     return confidence;
 }
+

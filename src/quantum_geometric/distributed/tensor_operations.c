@@ -227,19 +227,301 @@ bool check_symmetry(const TensorStorage* tensor, const SymmetryOperation* symmet
 void apply_permutation_symmetry(TensorOperations* ops, TensorStorage* tensor,
                                  const SymmetryOperation* symmetry) {
     if (!ops || !tensor || !symmetry) return;
-    // Placeholder for permutation symmetry
+    if (!tensor->data || tensor->num_elements == 0) return;
+    if (!symmetry->indices || symmetry->num_indices == 0) return;
+    if (symmetry->num_indices > tensor->rank) return;
+
+    // For permutation symmetry, we swap indices according to the permutation
+    // The permutation is specified by symmetry->indices
+    // If indices = [1, 0, 2], it means swap axes 0 and 1
+
+    // Calculate strides for each dimension
+    size_t* strides = calloc(tensor->rank, sizeof(size_t));
+    if (!strides) return;
+
+    strides[tensor->rank - 1] = 1;
+    for (size_t i = tensor->rank - 1; i > 0; i--) {
+        strides[i - 1] = strides[i] * tensor->dimensions[i];
+    }
+
+    // Create workspace for permuted data
+    double* workspace = ops->workspace;
+    size_t workspace_needed = tensor->num_elements * sizeof(double);
+    bool allocated_workspace = false;
+
+    if (!workspace || ops->workspace_size < workspace_needed) {
+        workspace = malloc(workspace_needed);
+        if (!workspace) {
+            free(strides);
+            return;
+        }
+        allocated_workspace = true;
+    }
+    memset(workspace, 0, workspace_needed);
+
+    // Permute the tensor data
+    size_t* coords = calloc(tensor->rank, sizeof(size_t));
+    size_t* perm_coords = calloc(tensor->rank, sizeof(size_t));
+    if (!coords || !perm_coords) {
+        free(strides);
+        free(coords);
+        free(perm_coords);
+        if (allocated_workspace) free(workspace);
+        return;
+    }
+
+    for (size_t i = 0; i < tensor->num_elements; i++) {
+        // Convert linear index to multi-index
+        size_t temp = i;
+        for (size_t d = 0; d < tensor->rank; d++) {
+            coords[d] = temp / strides[d];
+            temp %= strides[d];
+        }
+
+        // Apply permutation
+        for (size_t d = 0; d < symmetry->num_indices && d < tensor->rank; d++) {
+            size_t perm_idx = symmetry->indices[d];
+            if (perm_idx < tensor->rank) {
+                perm_coords[d] = coords[perm_idx];
+            } else {
+                perm_coords[d] = coords[d];
+            }
+        }
+        // Keep remaining dimensions unchanged
+        for (size_t d = symmetry->num_indices; d < tensor->rank; d++) {
+            perm_coords[d] = coords[d];
+        }
+
+        // Convert permuted multi-index back to linear index
+        size_t perm_idx = 0;
+        for (size_t d = 0; d < tensor->rank; d++) {
+            perm_idx += perm_coords[d] * strides[d];
+        }
+
+        // Apply phase factor if specified
+        double phase_factor = (symmetry->phase != 0.0) ? cos(symmetry->phase) : 1.0;
+        workspace[perm_idx] = tensor->data[i] * phase_factor;
+    }
+
+    // Copy back to tensor
+    memcpy(tensor->data, workspace, tensor->num_elements * sizeof(double));
+
+    free(strides);
+    free(coords);
+    free(perm_coords);
+    if (allocated_workspace) free(workspace);
+
+    update_symmetry_info(tensor, symmetry);
 }
 
 void apply_reflection_symmetry(TensorOperations* ops, TensorStorage* tensor,
                                 const SymmetryOperation* symmetry) {
     if (!ops || !tensor || !symmetry) return;
-    // Placeholder for reflection symmetry
+    if (!tensor->data || tensor->num_elements == 0) return;
+    if (!symmetry->indices || symmetry->num_indices == 0) return;
+
+    // For reflection symmetry, we reverse the order along specified axes
+    // The indices array specifies which axes to reflect
+
+    // Calculate strides for each dimension
+    size_t* strides = calloc(tensor->rank, sizeof(size_t));
+    if (!strides) return;
+
+    strides[tensor->rank - 1] = 1;
+    for (size_t i = tensor->rank - 1; i > 0; i--) {
+        strides[i - 1] = strides[i] * tensor->dimensions[i];
+    }
+
+    // Create a boolean mask for reflected dimensions
+    bool* reflect_dim = calloc(tensor->rank, sizeof(bool));
+    if (!reflect_dim) {
+        free(strides);
+        return;
+    }
+    for (size_t i = 0; i < symmetry->num_indices; i++) {
+        if (symmetry->indices[i] < tensor->rank) {
+            reflect_dim[symmetry->indices[i]] = true;
+        }
+    }
+
+    // Create workspace for reflected data
+    double* workspace = ops->workspace;
+    size_t workspace_needed = tensor->num_elements * sizeof(double);
+    bool allocated_workspace = false;
+
+    if (!workspace || ops->workspace_size < workspace_needed) {
+        workspace = malloc(workspace_needed);
+        if (!workspace) {
+            free(strides);
+            free(reflect_dim);
+            return;
+        }
+        allocated_workspace = true;
+    }
+
+    // Reflect the tensor data
+    size_t* coords = calloc(tensor->rank, sizeof(size_t));
+    if (!coords) {
+        free(strides);
+        free(reflect_dim);
+        if (allocated_workspace) free(workspace);
+        return;
+    }
+
+    for (size_t i = 0; i < tensor->num_elements; i++) {
+        // Convert linear index to multi-index
+        size_t temp = i;
+        for (size_t d = 0; d < tensor->rank; d++) {
+            coords[d] = temp / strides[d];
+            temp %= strides[d];
+        }
+
+        // Apply reflection: reverse index along reflected dimensions
+        size_t reflected_idx = 0;
+        for (size_t d = 0; d < tensor->rank; d++) {
+            size_t coord = coords[d];
+            if (reflect_dim[d]) {
+                coord = tensor->dimensions[d] - 1 - coord;
+            }
+            reflected_idx += coord * strides[d];
+        }
+
+        // Apply phase factor if specified
+        double phase_factor = (symmetry->phase != 0.0) ? cos(symmetry->phase) : 1.0;
+        workspace[reflected_idx] = tensor->data[i] * phase_factor;
+    }
+
+    // Copy back to tensor
+    memcpy(tensor->data, workspace, tensor->num_elements * sizeof(double));
+
+    free(strides);
+    free(reflect_dim);
+    free(coords);
+    if (allocated_workspace) free(workspace);
+
+    update_symmetry_info(tensor, symmetry);
 }
 
 void apply_rotation_symmetry(TensorOperations* ops, TensorStorage* tensor,
                               const SymmetryOperation* symmetry) {
     if (!ops || !tensor || !symmetry) return;
-    // Placeholder for rotation symmetry
+    if (!tensor->data || tensor->num_elements == 0) return;
+    if (symmetry->num_indices < 2) return;  // Need at least 2 axes for rotation
+
+    // For rotation symmetry, we perform a cyclic permutation of specified axes
+    // The rotation is in the plane defined by the first two indices in symmetry->indices
+    // The phase determines the rotation angle: phase = 2*pi*k/n for n-fold rotation
+
+    // For discrete rotations, we apply a cyclic shift
+    // For continuous rotations, we interpolate (not fully supported here)
+
+    // Calculate strides
+    size_t* strides = calloc(tensor->rank, sizeof(size_t));
+    if (!strides) return;
+
+    strides[tensor->rank - 1] = 1;
+    for (size_t i = tensor->rank - 1; i > 0; i--) {
+        strides[i - 1] = strides[i] * tensor->dimensions[i];
+    }
+
+    // Get rotation axes
+    size_t axis1 = symmetry->indices[0];
+    size_t axis2 = symmetry->indices[1];
+    if (axis1 >= tensor->rank || axis2 >= tensor->rank) {
+        free(strides);
+        return;
+    }
+
+    // Create workspace
+    double* workspace = ops->workspace;
+    size_t workspace_needed = tensor->num_elements * sizeof(double);
+    bool allocated_workspace = false;
+
+    if (!workspace || ops->workspace_size < workspace_needed) {
+        workspace = malloc(workspace_needed);
+        if (!workspace) {
+            free(strides);
+            return;
+        }
+        allocated_workspace = true;
+    }
+    memset(workspace, 0, workspace_needed);
+
+    // Rotation parameters
+    double angle = symmetry->phase;  // Rotation angle in radians
+    double cos_a = cos(angle);
+    double sin_a = sin(angle);
+
+    // Apply rotation in the (axis1, axis2) plane
+    size_t* coords = calloc(tensor->rank, sizeof(size_t));
+    if (!coords) {
+        free(strides);
+        if (allocated_workspace) free(workspace);
+        return;
+    }
+
+    // For discrete tensors, we implement a 90-degree rotation (swap + negate)
+    // For the general case, we'd need to interpolate between grid points
+    bool is_90_deg = (fabs(fabs(angle) - M_PI / 2.0) < 0.01);
+    bool is_180_deg = (fabs(fabs(angle) - M_PI) < 0.01);
+
+    for (size_t i = 0; i < tensor->num_elements; i++) {
+        // Convert linear index to multi-index
+        size_t temp = i;
+        for (size_t d = 0; d < tensor->rank; d++) {
+            coords[d] = temp / strides[d];
+            temp %= strides[d];
+        }
+
+        size_t new_coord1, new_coord2;
+        size_t dim1 = tensor->dimensions[axis1];
+        size_t dim2 = tensor->dimensions[axis2];
+
+        if (is_90_deg) {
+            // 90-degree rotation: (x, y) -> (-y, x), mapped to grid
+            new_coord1 = coords[axis2];
+            new_coord2 = dim2 - 1 - coords[axis1];
+        } else if (is_180_deg) {
+            // 180-degree rotation: (x, y) -> (-x, -y)
+            new_coord1 = dim1 - 1 - coords[axis1];
+            new_coord2 = dim2 - 1 - coords[axis2];
+        } else {
+            // General rotation: round to nearest grid point
+            double x = (double)coords[axis1] - (double)(dim1 - 1) / 2.0;
+            double y = (double)coords[axis2] - (double)(dim2 - 1) / 2.0;
+            double new_x = cos_a * x - sin_a * y;
+            double new_y = sin_a * x + cos_a * y;
+            new_x += (double)(dim1 - 1) / 2.0;
+            new_y += (double)(dim2 - 1) / 2.0;
+
+            // Round and clamp to valid range
+            new_coord1 = (new_x < 0) ? 0 : ((new_x >= dim1) ? dim1 - 1 : (size_t)(new_x + 0.5));
+            new_coord2 = (new_y < 0) ? 0 : ((new_y >= dim2) ? dim2 - 1 : (size_t)(new_y + 0.5));
+        }
+
+        // Build rotated index
+        size_t rotated_idx = 0;
+        for (size_t d = 0; d < tensor->rank; d++) {
+            if (d == axis1) {
+                rotated_idx += new_coord1 * strides[d];
+            } else if (d == axis2) {
+                rotated_idx += new_coord2 * strides[d];
+            } else {
+                rotated_idx += coords[d] * strides[d];
+            }
+        }
+
+        workspace[rotated_idx] = tensor->data[i];
+    }
+
+    // Copy back to tensor
+    memcpy(tensor->data, workspace, tensor->num_elements * sizeof(double));
+
+    free(strides);
+    free(coords);
+    if (allocated_workspace) free(workspace);
+
+    update_symmetry_info(tensor, symmetry);
 }
 
 void update_symmetry_info(TensorStorage* tensor, const SymmetryOperation* symmetry) {

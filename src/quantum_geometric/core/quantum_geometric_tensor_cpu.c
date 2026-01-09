@@ -288,13 +288,32 @@ static void convert_real_to_complex_array(ComplexFloat* complex_array, const flo
     }
 }
 
+qgt_error_t geometric_tensor_initialize(quantum_geometric_tensor_t* tensor,
+                                       const ComplexFloat* data) {
+    if (!tensor || !data) {
+        return QGT_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (!tensor->components || tensor->total_elements == 0) {
+        return QGT_ERROR_INVALID_STATE;
+    }
+
+    // Copy data into tensor components
+    #pragma omp parallel for simd schedule(guided)
+    for (size_t i = 0; i < tensor->total_elements; i++) {
+        tensor->components[i] = data[i];
+    }
+
+    return QGT_SUCCESS;
+}
+
 qgt_error_t geometric_tensor_initialize_zero(quantum_geometric_tensor_t* tensor) {
     if (!tensor) {
         return QGT_ERROR_INVALID_ARGUMENT;
     }
 
     const ComplexFloat zero = {0.0f, 0.0f};
-    
+
     #pragma omp parallel for simd schedule(guided)
     for (size_t i = 0; i < tensor->total_elements; i++) {
         tensor->components[i] = zero;

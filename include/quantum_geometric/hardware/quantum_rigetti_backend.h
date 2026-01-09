@@ -94,8 +94,17 @@ typedef struct {
     double* parametric_values;
 } RigettiJobResult;
 
-// Initialize Rigetti backend
-struct RigettiConfig* init_rigetti_backend(const struct RigettiBackendConfig* config);
+// Initialize Rigetti backend - legacy interface with state
+bool init_rigetti_backend_with_state(struct RigettiState* state, const struct RigettiConfig* config);
+
+// Initialize Rigetti backend - returns config directly (test-compatible signature)
+struct RigettiConfig* init_rigetti_backend(const RigettiBackendConfig* config);
+
+// Submit circuit and get results directly
+int submit_rigetti_circuit(struct RigettiConfig* config,
+                          struct QuantumCircuit* circuit,
+                          void* options,
+                          struct ExecutionResult* result);
 
 // Create quantum circuit
 struct QuantumCircuit* create_rigetti_circuit(uint32_t num_qubits, uint32_t num_classical_bits);

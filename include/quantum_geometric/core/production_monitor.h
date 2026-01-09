@@ -136,6 +136,7 @@ void start_operation_timing(const char* operation_name);
 void end_operation_timing(const char* operation_name);
 void update_resource_usage(void);
 void record_operation_result(bool success, double latency);
+void record_recovery_result(bool recovery_success);
 
 #ifdef __cplusplus
 }

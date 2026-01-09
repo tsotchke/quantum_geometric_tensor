@@ -2,11 +2,23 @@
 # Quantum Geometric Tensor Library - CMake Build System
 # =============================================================================
 cmake_minimum_required(VERSION 3.16)
-project(quantum_geometric_tensor VERSION 1.0.0 LANGUAGES C)
+project(quantum_geometric_tensor VERSION 0.777 LANGUAGES C)
+
+# Enable Objective-C/C++ on Apple platforms for Metal support
+if(APPLE)
+    enable_language(OBJC)
+    enable_language(OBJCXX)
+endif()
 
 # C Standard
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+
+# C++ Standard (for Objective-C++ Metal backends)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_OBJCXX_STANDARD 17)
+set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
 
 # Build type defaults
 if(NOT CMAKE_BUILD_TYPE)
@@ -461,28 +473,26 @@ configure_file(
 file(GLOB QGT_CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/quantum_geometric/core/*.c
 )
+# Exclude test-specific API wrapper - it's only for test_integration
+list(FILTER QGT_CORE_SOURCES EXCLUDE REGEX "test_integration_api\\.c$")
 
-# Distributed module sources
+# Distributed module sources - all included for production build
 file(GLOB QGT_DISTRIBUTED_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/quantum_geometric/distributed/*.c
 )
-# Exclude files with incomplete implementations (require MPI/hwloc at compile time or missing headers)
-list(FILTER QGT_DISTRIBUTED_SOURCES EXCLUDE REGEX "differential_geometry\\.c$")
-list(FILTER QGT_DISTRIBUTED_SOURCES EXCLUDE REGEX "quantum_distributed_operations\\.c$")
-list(FILTER QGT_DISTRIBUTED_SOURCES EXCLUDE REGEX "quantum_distributed_system\\.c$")
-list(FILTER QGT_DISTRIBUTED_SOURCES EXCLUDE REGEX "distributed_training\\.c$")
-list(FILTER QGT_DISTRIBUTED_SOURCES EXCLUDE REGEX "pipeline_parallel\\.c$")
-
-# Conditionally exclude files that require hwloc
-if(NOT HWLOC_FOUND)
-    list(FILTER QGT_DISTRIBUTED_SOURCES EXCLUDE REGEX "workload_balancer\\.c$")
-    list(FILTER QGT_DISTRIBUTED_SOURCES EXCLUDE REGEX "communication_optimizer\\.c$")
-endif()
 
 # Hardware module sources
 file(GLOB QGT_HARDWARE_SOURCES
     ${CMAKE_SOURCE_DIR}/src/quantum_geometric/hardware/*.c
 )
+
+# Metal GPU acceleration sources (macOS/iOS only)
+if(APPLE)
+    file(GLOB QGT_METAL_SOURCES
+        ${CMAKE_SOURCE_DIR}/src/quantum_geometric/hardware/metal/*.c
+    )
+    list(APPEND QGT_HARDWARE_SOURCES ${QGT_METAL_SOURCES})
+endif()
 
 # Conditionally exclude files that require json-c
 if(NOT JSON_C_FOUND)
@@ -589,13 +599,14 @@ if(UNIX AND NOT APPLE)
     list(FILTER QGT_ALL_SOURCES EXCLUDE REGEX ".*/memory_optimization\\.c$")
 endif()
 
-# Remove CUDA/Metal sources if not enabled
+# Note: GPU source files contain CPU fallbacks and use conditional compilation
+# Only exclude pure CUDA files when CUDA is not enabled
 if(NOT QGT_ENABLE_CUDA)
     list(FILTER QGT_ALL_SOURCES EXCLUDE REGEX ".*_cuda\\.c$")
-    list(FILTER QGT_ALL_SOURCES EXCLUDE REGEX ".*_gpu\\.c$")
 endif()
 
-if(NOT QGT_ENABLE_METAL)
+# Metal sources are only relevant on Apple platforms
+if(NOT QGT_ENABLE_METAL OR NOT APPLE)
     list(FILTER QGT_ALL_SOURCES EXCLUDE REGEX ".*_metal\\.c$")
 endif()
 
@@ -643,9 +654,9 @@ if(QGT_MODULAR_BUILD)
         endif()
     endfunction()
 
-    # Core module - basic tensor operations, memory, no external deps
+    # Core module - basic tensor operations, memory
+    # GPU files contain CPU fallbacks and are conditionally compiled
     set(QGT_CORE_MINIMAL_SOURCES ${QGT_CORE_SOURCES})
-    list(FILTER QGT_CORE_MINIMAL_SOURCES EXCLUDE REGEX ".*_gpu\\.c$")
     list(FILTER QGT_CORE_MINIMAL_SOURCES EXCLUDE REGEX ".*_cuda\\.c$")
     list(FILTER QGT_CORE_MINIMAL_SOURCES EXCLUDE REGEX ".*_metal\\.c$")
     qgt_filter_platform_sources(QGT_CORE_MINIMAL_SOURCES)
@@ -683,18 +694,8 @@ if(QGT_MODULAR_BUILD)
         target_link_libraries(qgtl_hybrid PUBLIC qgtl_core qgtl_learning)
     endif()
 
-    # Simulator backend - always available, no cloud deps
+    # Simulator backend - all hardware sources
     set(QGT_HARDWARE_SIM_SOURCES ${QGT_HARDWARE_SOURCES})
-    list(FILTER QGT_HARDWARE_SIM_SOURCES EXCLUDE REGEX "quantum_ibm.*\\.c$")
-    list(FILTER QGT_HARDWARE_SIM_SOURCES EXCLUDE REGEX "quantum_dwave.*\\.c$")
-    list(FILTER QGT_HARDWARE_SIM_SOURCES EXCLUDE REGEX "quantum_rigetti.*\\.c$")
-    # Exclude files that require MPI
-    list(FILTER QGT_HARDWARE_SIM_SOURCES EXCLUDE REGEX "quantum_distributed_execution\\.c$")
-    list(FILTER QGT_HARDWARE_SIM_SOURCES EXCLUDE REGEX "quantum_error_correction\\.c$")
-    list(FILTER QGT_HARDWARE_SIM_SOURCES EXCLUDE REGEX "quantum_error_mitigation\\.c$")
-    # Exclude GPU-specific files (these have missing type definitions)
-    list(FILTER QGT_HARDWARE_SIM_SOURCES EXCLUDE REGEX "quantum_field_gpu\\.c$")
-    list(FILTER QGT_HARDWARE_SIM_SOURCES EXCLUDE REGEX ".*_gpu\\.c$")
     qgt_filter_platform_sources(QGT_HARDWARE_SIM_SOURCES)
     qgt_add_module(hardware_sim "${QGT_HARDWARE_SIM_SOURCES}")
     if(TARGET qgtl_hardware_sim)
@@ -882,7 +883,17 @@ if(QGT_BUILD_TESTS)
     # Create test executables
     foreach(TEST_SOURCE ${QGT_TEST_SOURCES})
         get_filename_component(TEST_NAME ${TEST_SOURCE} NAME_WE)
-        add_executable(${TEST_NAME} ${TEST_SOURCE})
+
+        # Special handling for test_hardware_operations which needs mock implementations
+        if(TEST_NAME STREQUAL "test_hardware_operations")
+            add_executable(${TEST_NAME} ${TEST_SOURCE} ${CMAKE_SOURCE_DIR}/tests/mocks/mock_quantum_state.c)
+        # Special handling for test_integration which needs test_integration_api.c
+        elseif(TEST_NAME STREQUAL "test_integration")
+            add_executable(${TEST_NAME} ${TEST_SOURCE} ${CMAKE_SOURCE_DIR}/src/quantum_geometric/core/test_integration_api.c)
+        else()
+            add_executable(${TEST_NAME} ${TEST_SOURCE})
+        endif()
+
         target_link_libraries(${TEST_NAME} PRIVATE quantum_geometric)
         target_include_directories(${TEST_NAME} PRIVATE ${CMAKE_SOURCE_DIR}/tests)
         set_target_properties(${TEST_NAME} PROPERTIES

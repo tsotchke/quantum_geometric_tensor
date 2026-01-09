@@ -3,10 +3,15 @@
 
 #include <stdbool.h>
 #include <stddef.h>
-#include <complex.h>
 
+// C/C++ complex type compatibility
 #ifdef __cplusplus
-extern "C" {
+    // In C++, use _Complex directly (C99 extension supported by clang/gcc)
+    typedef double _Complex qgt_complex_double;
+    extern "C" {
+#else
+    #include <complex.h>
+    typedef complex double qgt_complex_double;
 #endif
 
 // Transformer types
@@ -167,12 +172,12 @@ bool clip_gradients(differential_transformer_t* transformer,
 
 // Quantum-specific functions
 bool quantum_attention(differential_transformer_t* transformer,
-                      const complex double* quantum_state,
-                      complex double* output,
+                      const qgt_complex_double* quantum_state,
+                      qgt_complex_double* output,
                       layer_state_t* state);
 bool quantum_layer_norm(differential_transformer_t* transformer,
-                       const complex double* input,
-                       complex double* output,
+                       const qgt_complex_double* input,
+                       qgt_complex_double* output,
                        layer_state_t* state);
 bool quantum_optimization(differential_transformer_t* transformer,
                         model_state_t* state,
@@ -199,6 +204,11 @@ void free_diff_transformer(DiffTransformerState* state);
 void diff_transformer_forward(DiffTransformerState* state,
                              const double* input,
                              double* output);
+void diff_transformer_backward(DiffTransformerState* state,
+                              const double* target,
+                              double* input_gradient);
+void diff_transformer_update_parameters(DiffTransformerState* state, double learning_rate);
+double compute_differential_stability(const DiffTransformerState* state);
 
 // Legacy differential attention functions
 DiffAttention* create_diff_attention(size_t hidden_dim, size_t num_heads);

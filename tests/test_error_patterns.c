@@ -19,7 +19,8 @@ static const size_t TEST_MIN_OCCURRENCES = 2;
 
 // Helper function to create test matching graph
 static MatchingGraph* create_test_graph(void) {
-    MatchingGraph* graph = init_matching_graph(TEST_PATTERN_SIZE * 2, TEST_PATTERN_SIZE * 4);
+    MatchingGraph* graph;
+    assert(init_matching_graph(TEST_PATTERN_SIZE * 2, TEST_PATTERN_SIZE * 4, &graph) == QGT_SUCCESS);
     assert(graph != NULL);
 
     // Add test vertices forming a line pattern
@@ -57,7 +58,11 @@ static void test_pattern_initialization(void) {
         .min_occurrences = TEST_MIN_OCCURRENCES,
         .max_patterns = MAX_ERROR_PATTERNS,
         .track_timing = true,
-        .enable_prediction = true
+        .detection_threshold = 0.5,
+        .decay_rate = 0.1,
+        .max_pattern_size = MAX_PATTERN_SIZE,
+        .enable_merging = true,
+        .merge_threshold = 0.8
     };
 
     bool init_success = init_error_patterns(&config);
@@ -77,7 +82,11 @@ static void test_pattern_detection(void) {
         .min_occurrences = TEST_MIN_OCCURRENCES,
         .max_patterns = MAX_ERROR_PATTERNS,
         .track_timing = true,
-        .enable_prediction = true
+        .detection_threshold = 0.5,
+        .decay_rate = 0.1,
+        .max_pattern_size = MAX_PATTERN_SIZE,
+        .enable_merging = true,
+        .merge_threshold = 0.8
     };
 
     bool init_success = init_error_patterns(&config);
@@ -178,7 +187,11 @@ static void test_pattern_tracking(void) {
         .min_occurrences = TEST_MIN_OCCURRENCES,
         .max_patterns = MAX_ERROR_PATTERNS,
         .track_timing = true,
-        .enable_prediction = true
+        .detection_threshold = 0.5,
+        .decay_rate = 0.1,
+        .max_pattern_size = MAX_PATTERN_SIZE,
+        .enable_merging = true,
+        .merge_threshold = 0.8
     };
 
     bool init_success = init_error_patterns(&config);

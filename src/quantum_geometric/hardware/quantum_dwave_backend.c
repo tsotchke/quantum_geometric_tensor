@@ -931,19 +931,67 @@ bool apply_dwave_error_mitigation(DWaveJobResult* result, const struct Mitigatio
     }
 
     // Apply readout error correction using majority voting for chain breaks
+    // Chain breaks occur when embedded qubits in a chain disagree on their value
+
+    // Determine number of variables from chain_breaks array (terminated by negative value)
+    size_t num_vars = 0;
+    if (result->num_samples > 0 && result->samples[0].chain_breaks) {
+        while (result->samples[0].chain_breaks[num_vars] >= 0.0 && num_vars < 10000) {
+            num_vars++;
+        }
+    }
+
     for (size_t s = 0; s < result->num_samples; s++) {
         DWaveSample* sample = &result->samples[s];
         if (!sample || !sample->variables) continue;
 
-        // If chain break information is available, resolve using energy-based correction
-        if (sample->chain_breaks) {
-            // For each qubit with chain break, use the value that minimizes local energy
-            // This is a simplified version - full implementation would use the problem structure
-            for (size_t i = 0; sample->chain_breaks[i] >= 0.0; i++) {
-                if (sample->chain_breaks[i] > 0.5) {
-                    // High chain break fraction - flip with probability based on mitigation
-                    // Simple strategy: keep the current value (it's already been resolved by D-Wave)
-                    // More sophisticated: use local field information
+        // If chain break information is available, resolve using energy-based voting
+        if (sample->chain_breaks && num_vars > 0) {
+            // Process each variable that has chain break information
+            for (size_t i = 0; i < num_vars; i++) {
+                double break_fraction = sample->chain_breaks[i];
+                if (break_fraction < 0.0) break;  // End of valid data
+
+                if (break_fraction > 0.01) {
+                    // Chain break detected - need to resolve the variable value
+                    // Use weighted majority voting based on neighbors and energy
+
+                    // Calculate local field contribution from neighboring variables
+                    double local_field = 0.0;
+                    int neighbor_count = 0;
+
+                    // Check left neighbor
+                    if (i > 0 && sample->chain_breaks[i - 1] >= 0.0) {
+                        local_field += (double)sample->variables[i - 1];
+                        neighbor_count++;
+                    }
+                    // Check right neighbor
+                    if (i + 1 < num_vars && sample->chain_breaks[i + 1] >= 0.0) {
+                        local_field += (double)sample->variables[i + 1];
+                        neighbor_count++;
+                    }
+
+                    if (neighbor_count > 0) {
+                        // Majority vote: if neighbors mostly positive, prefer +1, else -1
+                        double avg_neighbor = local_field / neighbor_count;
+
+                        // Apply correction based on break severity and neighbor consensus
+                        if (break_fraction > 0.5) {
+                            // Severe break - use neighbor majority
+                            int32_t corrected = (avg_neighbor >= 0.0) ? 1 : -1;
+                            sample->variables[i] = corrected;
+                        } else if (break_fraction > 0.25) {
+                            // Moderate break - flip only if strong neighbor consensus
+                            if (fabs(avg_neighbor) > 0.5) {
+                                int32_t corrected = (avg_neighbor >= 0.0) ? 1 : -1;
+                                // Only flip if disagrees with current value
+                                if ((sample->variables[i] > 0) != (corrected > 0)) {
+                                    sample->variables[i] = corrected;
+                                }
+                            }
+                        }
+                        // Light breaks (< 0.25) - keep D-Wave's resolution
+                    }
                 }
             }
         }

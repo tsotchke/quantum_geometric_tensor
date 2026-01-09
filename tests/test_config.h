@@ -10,6 +10,9 @@
 // Maximum number of tests
 #define MAX_TESTS 1000
 
+// Test epsilon for floating point comparisons
+#define TEST_EPSILON 1e-6f
+
 // Test case structure
 struct test_case {
     const char* name;
@@ -17,11 +20,11 @@ struct test_case {
 };
 
 // Test registration macro
-#define REGISTER_TEST(func) \
+#define REGISTER_TEST(test_fn) \
     do { \
         if (g_test_count < MAX_TESTS) { \
-            g_tests[g_test_count].name = #func; \
-            g_tests[g_test_count].func = func; \
+            g_tests[g_test_count].name = #test_fn; \
+            g_tests[g_test_count].func = (test_fn); \
             g_test_count++; \
         } \
     } while (0)
@@ -56,14 +59,19 @@ struct test_case {
         } \
     } while (0)
 
+// Helper function to compare ComplexFloat values
+static inline bool complex_float_eq(ComplexFloat a, ComplexFloat b, float eps) {
+    return fabsf(a.real - b.real) < eps && fabsf(a.imag - b.imag) < eps;
+}
+
 #define TEST_ASSERT_COMPLEX_EQ(actual, expected) \
     do { \
         ComplexFloat a = (actual); \
         ComplexFloat e = (expected); \
-        if (!complex_eq(a, e, 1e-6f)) { \
+        if (!complex_float_eq(a, e, 1e-6f)) { \
             printf("Complex assertion failed\n"); \
-            printf("Expected: %f + %fi\n", crealf(e), cimagf(e)); \
-            printf("Actual: %f + %fi\n", crealf(a), cimagf(a)); \
+            printf("Expected: %f + %fi\n", (double)e.real, (double)e.imag); \
+            printf("Actual: %f + %fi\n", (double)a.real, (double)a.imag); \
             printf("File: %s, Line: %d\n", __FILE__, __LINE__); \
             exit(1); \
         } \
@@ -101,27 +109,6 @@ struct test_case {
 #else
 #define TEST_CUDA_INIT()
 #define TEST_CUDA_CLEANUP()
-#endif
-
-// Test runner (if not using CTest)
-#ifdef STANDALONE_TEST
-int main(int argc, char** argv) {
-    TEST_MPI_INIT();
-    TEST_METAL_INIT();
-    TEST_CUDA_INIT();
-    
-    // Run all registered tests
-    for (int i = 0; i < g_test_count; i++) {
-        g_tests[i].func();
-    }
-    
-    TEST_CUDA_CLEANUP();
-    TEST_METAL_CLEANUP();
-    TEST_MPI_FINALIZE();
-    
-    printf("All tests passed!\n");
-    return 0;
-}
 #endif
 
 #endif // TEST_CONFIG_H

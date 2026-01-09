@@ -60,10 +60,14 @@ extern "C" {
 // Mutex types for thread safety
 // =============================================================================
 
+#ifndef QGT_MUTEX_TYPE_DEFINED
+#define QGT_MUTEX_TYPE_DEFINED
 typedef struct qgt_mutex_t {
     pthread_rwlock_t rwlock;
     pthread_mutex_t mutex;
+    bool initialized;
 } qgt_mutex_t;
+#endif
 
 // =============================================================================
 // Simplicial complex types

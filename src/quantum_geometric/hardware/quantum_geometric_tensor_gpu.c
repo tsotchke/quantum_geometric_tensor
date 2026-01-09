@@ -53,10 +53,11 @@ const char* qgt_error_string(qgt_error_t error) {
     }
 }
 
-// Utility functions
-bool validate_quantum_state(const ComplexFloat* state,
-                          size_t dim,
-                          float tolerance) {
+// Utility functions for GPU tensor operations
+// Note: validate_quantum_state(const double complex*, size_t) is in quantum_error_correction.c
+bool validate_quantum_state_gpu(const ComplexFloat* state,
+                                size_t dim,
+                                float tolerance) {
     if (!state || dim == 0) return false;
     
     // Check normalization
@@ -108,7 +109,7 @@ qgt_error_t compute_quantum_metric_gpu(GPUContext* ctx,
         return QGT_ERROR_INVALID_PARAMETER;
     }
     
-    if (!validate_quantum_state(state, rows * cols, config->precision)) {
+    if (!validate_quantum_state_gpu(state, rows * cols, config->precision)) {
         return QGT_ERROR_INVALID_STATE;
     }
     
@@ -188,7 +189,7 @@ qgt_error_t compute_quantum_connection_gpu(GPUContext* ctx,
         return QGT_ERROR_INVALID_PARAMETER;
     }
     
-    if (!validate_quantum_state(state, rows * cols, config->precision)) {
+    if (!validate_quantum_state_gpu(state, rows * cols, config->precision)) {
         return QGT_ERROR_INVALID_STATE;
     }
     
@@ -268,7 +269,7 @@ qgt_error_t compute_quantum_curvature_gpu(GPUContext* ctx,
         return QGT_ERROR_INVALID_PARAMETER;
     }
     
-    if (!validate_quantum_state(state, rows * cols, config->precision)) {
+    if (!validate_quantum_state_gpu(state, rows * cols, config->precision)) {
         return QGT_ERROR_INVALID_STATE;
     }
     

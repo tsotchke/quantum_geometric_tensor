@@ -27,11 +27,11 @@ static void init_test_logging(void) {
 static void test_basic_allocation(void) {
     printf("Running basic allocation test...\n");
     
-    MemoryPool* pool = init_memory_pool(&test_config);
+    MemoryPool* pool = create_memory_pool(&test_config);
     assert(pool != NULL);
     
     // Allocate and verify
-    void* ptr = pool_malloc(pool, 64);
+    void* ptr = pool_allocate(pool, 64);
     assert(ptr != NULL);
     assert(get_total_allocated(pool) == 64);
     assert(get_num_allocations(pool) == 1);
@@ -43,7 +43,7 @@ static void test_basic_allocation(void) {
     pool_free(pool, ptr);
     assert(get_total_allocated(pool) == 0);
     
-    cleanup_memory_pool(pool);
+    destroy_memory_pool(pool);
     printf("Basic allocation test passed\n");
 }
 
@@ -51,7 +51,7 @@ static void test_basic_allocation(void) {
 static void test_size_classes(void) {
     printf("Running size classes test...\n");
     
-    MemoryPool* pool = init_memory_pool(&test_config);
+    MemoryPool* pool = create_memory_pool(&test_config);
     assert(pool != NULL);
     
     // Test different sizes
@@ -60,7 +60,7 @@ static void test_size_classes(void) {
     size_t total = 0;
     
     for (int i = 0; i < 5; i++) {
-        ptrs[i] = pool_malloc(pool, sizes[i]);
+        ptrs[i] = pool_allocate(pool, sizes[i]);
         assert(ptrs[i] != NULL);
         total += sizes[i];
         assert(get_total_allocated(pool) == total);
@@ -74,7 +74,7 @@ static void test_size_classes(void) {
         assert(get_total_allocated(pool) == total);
     }
     
-    cleanup_memory_pool(pool);
+    destroy_memory_pool(pool);
     printf("Size classes test passed\n");
 }
 
@@ -82,13 +82,13 @@ static void test_size_classes(void) {
 static void test_thread_cache(void) {
     printf("Running thread cache test...\n");
     
-    MemoryPool* pool = init_memory_pool(&test_config);
+    MemoryPool* pool = create_memory_pool(&test_config);
     assert(pool != NULL);
     
     // Allocate and free repeatedly to exercise thread cache
     void* ptrs[100];
     for (int i = 0; i < 100; i++) {
-        ptrs[i] = pool_malloc(pool, 64);
+        ptrs[i] = pool_allocate(pool, 64);
         assert(ptrs[i] != NULL);
         memset(ptrs[i], 0xCC, 64);
     }
@@ -101,7 +101,7 @@ static void test_thread_cache(void) {
     // Verify stats
     assert(get_total_allocated(pool) == 0);
     
-    cleanup_memory_pool(pool);
+    destroy_memory_pool(pool);
     printf("Thread cache test passed\n");
 }
 
@@ -109,12 +109,12 @@ static void test_thread_cache(void) {
 static void test_large_allocations(void) {
     printf("Running large allocations test...\n");
     
-    MemoryPool* pool = init_memory_pool(&test_config);
+    MemoryPool* pool = create_memory_pool(&test_config);
     assert(pool != NULL);
     
     // Test allocation larger than max size class
     size_t large_size = 5 * 1024 * 1024; // 5MB
-    void* ptr = pool_malloc(pool, large_size);
+    void* ptr = pool_allocate(pool, large_size);
     assert(ptr != NULL);
     assert(get_total_allocated(pool) == large_size);
     
@@ -122,7 +122,7 @@ static void test_large_allocations(void) {
     pool_free(pool, ptr);
     
     assert(get_total_allocated(pool) == 0);
-    cleanup_memory_pool(pool);
+    destroy_memory_pool(pool);
     printf("Large allocations test passed\n");
 }
 
@@ -130,21 +130,21 @@ static void test_large_allocations(void) {
 static void test_error_handling(void) {
     printf("Running error handling test...\n");
     
-    MemoryPool* pool = init_memory_pool(&test_config);
+    MemoryPool* pool = create_memory_pool(&test_config);
     assert(pool != NULL);
     
     // Test null pointer free
     pool_free(pool, NULL);
     
     // Test zero size allocation
-    void* ptr = pool_malloc(pool, 0);
+    void* ptr = pool_allocate(pool, 0);
     assert(ptr == NULL);
     
     // Test invalid pointer free
     char invalid[64];
     pool_free(pool, invalid);
     
-    cleanup_memory_pool(pool);
+    destroy_memory_pool(pool);
     printf("Error handling test passed\n");
 }
 
@@ -152,7 +152,7 @@ static void test_error_handling(void) {
 static void test_peak_memory(void) {
     printf("Running peak memory test...\n");
     
-    MemoryPool* pool = init_memory_pool(&test_config);
+    MemoryPool* pool = create_memory_pool(&test_config);
     assert(pool != NULL);
     
     void* ptrs[3];
@@ -161,7 +161,7 @@ static void test_peak_memory(void) {
     
     // Allocate incrementally
     for (int i = 0; i < 3; i++) {
-        ptrs[i] = pool_malloc(pool, sizes[i]);
+        ptrs[i] = pool_allocate(pool, sizes[i]);
         assert(ptrs[i] != NULL);
         total += sizes[i];
         assert(get_peak_allocated(pool) == total);
@@ -176,7 +176,7 @@ static void test_peak_memory(void) {
     assert(get_peak_allocated(pool) == total);
     assert(get_total_allocated(pool) == 0);
     
-    cleanup_memory_pool(pool);
+    destroy_memory_pool(pool);
     printf("Peak memory test passed\n");
 }
 
@@ -187,7 +187,7 @@ static void* concurrent_allocation_thread(void* arg) {
     
     // Perform allocations
     for (int i = 0; i < 100; i++) {
-        ptrs[i] = pool_malloc(pool, 128);
+        ptrs[i] = pool_allocate(pool, 128);
         assert(ptrs[i] != NULL);
         memset(ptrs[i], 0xEE, 128);
     }
@@ -203,7 +203,7 @@ static void* concurrent_allocation_thread(void* arg) {
 static void test_concurrent_allocations(void) {
     printf("Running concurrent allocations test...\n");
     
-    MemoryPool* pool = init_memory_pool(&test_config);
+    MemoryPool* pool = create_memory_pool(&test_config);
     assert(pool != NULL);
     
     pthread_t threads[4];
@@ -220,7 +220,7 @@ static void test_concurrent_allocations(void) {
     }
     
     assert(get_total_allocated(pool) == 0);
-    cleanup_memory_pool(pool);
+    destroy_memory_pool(pool);
     printf("Concurrent allocations test passed\n");
 }
 

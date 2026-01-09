@@ -126,6 +126,26 @@ bool measure_stabilizers_parallel(const quantum_state* state,
                                  double* results,
                                  const HardwareProfile* hw_profile);
 
+/**
+ * @brief Measure a single stabilizer operator (serial/non-parallel)
+ *
+ * Measures the expectation value of a multi-qubit Pauli stabilizer:
+ * - STABILIZER_PLAQUETTE (Z-type): Z⊗Z⊗Z⊗Z
+ * - STABILIZER_VERTEX (X-type): X⊗X⊗X⊗X
+ *
+ * @param state Quantum state to measure
+ * @param qubit_indices Array of qubit indices comprising the stabilizer
+ * @param num_qubits Number of qubits in the stabilizer
+ * @param type Type of stabilizer (PLAQUETTE or VERTEX)
+ * @param result Output: expectation value in [-1, +1]
+ * @return true on success, false on failure
+ */
+bool measure_stabilizer(const quantum_state* state,
+                       const size_t* qubit_indices,
+                       size_t num_qubits,
+                       StabilizerType type,
+                       double* result);
+
 // ============================================================================
 // Hardware Query Functions
 // ============================================================================

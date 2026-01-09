@@ -15,6 +15,9 @@
 #include <string.h>
 #include <math.h>
 #include <stdio.h>
+#include <time.h>
+#include <stdbool.h>
+#include <stdint.h>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -259,9 +262,32 @@ static ComputeResult cpu_synchronize_stream(ComputeBackend* backend, ComputeStre
     return COMPUTE_SUCCESS;  // CPU operations are synchronous
 }
 
+/**
+ * CPU Event structure for synchronization and timing
+ *
+ * Since CPU operations are synchronous, events serve primarily for:
+ * - Timing/profiling operations
+ * - API compatibility with GPU backends
+ * - Recording completion timestamps
+ */
+typedef struct CPUEvent {
+    bool recorded;              // Whether event has been recorded
+    struct timespec timestamp;  // High-resolution timestamp when recorded
+    uint64_t sequence_id;       // Sequence number for ordering
+} CPUEvent;
+
+static uint64_t g_cpu_event_sequence = 0;
+
 static ComputeEvent* cpu_create_event(ComputeBackend* backend) {
     (void)backend;
-    return calloc(1, sizeof(int));  // Placeholder
+    CPUEvent* event = calloc(1, sizeof(CPUEvent));
+    if (!event) return NULL;
+
+    event->recorded = false;
+    event->sequence_id = __sync_fetch_and_add(&g_cpu_event_sequence, 1);
+    memset(&event->timestamp, 0, sizeof(event->timestamp));
+
+    return (ComputeEvent*)event;
 }
 
 static void cpu_destroy_event(ComputeBackend* backend, ComputeEvent* event) {
@@ -273,8 +299,16 @@ static ComputeResult cpu_record_event(ComputeBackend* backend,
                                        ComputeEvent* event,
                                        ComputeStream* stream) {
     (void)backend;
-    (void)event;
     (void)stream;
+
+    if (!event) return COMPUTE_ERROR_INVALID_ARGUMENT;
+
+    CPUEvent* cpu_event = (CPUEvent*)event;
+
+    // Record current timestamp
+    clock_gettime(CLOCK_MONOTONIC, &cpu_event->timestamp);
+    cpu_event->recorded = true;
+
     return COMPUTE_SUCCESS;
 }
 
@@ -283,7 +317,20 @@ static ComputeResult cpu_wait_event(ComputeBackend* backend,
                                      ComputeEvent* event) {
     (void)backend;
     (void)stream;
-    (void)event;
+
+    if (!event) return COMPUTE_ERROR_INVALID_ARGUMENT;
+
+    CPUEvent* cpu_event = (CPUEvent*)event;
+
+    // For CPU backend, operations are synchronous, so if the event
+    // was recorded, the operation has already completed.
+    // This is a no-op but we validate the event was recorded.
+    if (!cpu_event->recorded) {
+        // Event not yet recorded - this is technically a usage error
+        // but we return success since there's nothing to wait for
+        return COMPUTE_SUCCESS;
+    }
+
     return COMPUTE_SUCCESS;
 }
 

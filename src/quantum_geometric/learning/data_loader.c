@@ -58,7 +58,7 @@ static void* quantum_gpu_malloc(size_t size) {
 
 static void quantum_gpu_free(void* ptr) {
     if (ptr) {
-        gpu_free(ptr);
+        qgt_gpu_free_buffer(ptr);
     }
 }
 

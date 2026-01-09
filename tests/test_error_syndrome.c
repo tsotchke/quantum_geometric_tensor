@@ -7,6 +7,7 @@
 #include "quantum_geometric/physics/quantum_state_operations.h"
 #include "quantum_geometric/core/quantum_state.h"
 #include "quantum_geometric/core/quantum_operations.h"
+#include "quantum_geometric/core/quantum_complex.h"
 #include "quantum_geometric/physics/error_types.h"
 #include <stdlib.h>
 #include <stdio.h>
@@ -32,7 +33,7 @@ static void verify_correction_result(const quantum_state_t* state);
 static void inject_error(quantum_state_t* state, size_t location, error_type_t type) {
     qgt_error_t err;
     quantum_operator_t* op;
-    err = quantum_operator_create(&op, QUANTUM_OPERATOR_PAULI, state->dimension);
+    err = quantum_operator_create(&op, QUANTUM_OPERATOR_UNITARY, state->dimension);
     assert(err == QGT_SUCCESS);
 
     switch (type) {
@@ -311,14 +312,13 @@ static void test_error_correlations(void) {
 static quantum_state_t* create_test_state(void) {
     quantum_state_t* state = malloc(sizeof(quantum_state_t));
     state->dimension = 32;  // 4x4 lattice with 2 qubits per site
-    state->coordinates = calloc(state->dimension * 2, sizeof(double));
-    
+    state->coordinates = calloc(state->dimension, sizeof(ComplexFloat));
+
     // Initialize to |0⟩ state
     for (size_t i = 0; i < state->dimension; i++) {
-        state->coordinates[i * 2] = 1.0;
-        state->coordinates[i * 2 + 1] = 0.0;
+        state->coordinates[i] = complex_float_create(1.0f, 0.0f);
     }
-    
+
     return state;
 }
 
@@ -333,7 +333,7 @@ static void verify_correction_result(const quantum_state_t* state) {
     // Calculate fidelity with |0⟩ state
     double fidelity = 0.0;
     for (size_t i = 0; i < state->dimension; i++) {
-        fidelity += state->coordinates[i * 2] * state->coordinates[i * 2];
+        fidelity += complex_float_abs_squared(state->coordinates[i]);
     }
     assert(fidelity > 0.9);  // 90% fidelity threshold
 }

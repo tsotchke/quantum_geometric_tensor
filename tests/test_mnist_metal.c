@@ -119,13 +119,16 @@ int main() {
         return 1;
     }
 
-    // Get GPU metrics
-    float gpu_metrics[2];  // utilization, TFLOPS
-    result = quantum_pipeline_get_gpu_metrics(pipeline, gpu_metrics);
+    // Get pipeline metrics
+    float gpu_utilization;
+    size_t memory_usage;
+    float throughput;
+    result = quantum_pipeline_get_metrics(pipeline, &gpu_utilization, &memory_usage, &throughput);
     if (result == QGT_SUCCESS) {
-        printf("\nGPU Metrics:\n");
-        printf("GPU Utilization: %.1f%%\n", gpu_metrics[0] * 100);
-        printf("Performance: %.2f TFLOPS\n", gpu_metrics[1]);
+        printf("\nPipeline Metrics:\n");
+        printf("GPU Utilization: %.1f%%\n", gpu_utilization * 100);
+        printf("Throughput: %.2f samples/sec\n", throughput);
+        printf("Memory Usage: %.2f MB\n", memory_usage / (1024.0 * 1024.0));
     }
 
     // Print results

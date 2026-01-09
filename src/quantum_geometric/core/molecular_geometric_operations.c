@@ -19,7 +19,52 @@
 #define CUTOFF_RADIUS 10.0
 #define EPSILON 1e-6
 
-// Helper function for computing spherical harmonics
+// Compute factorials for normalization (cached for efficiency)
+static double factorial(int n) {
+    if (n <= 1) return 1.0;
+    double result = 1.0;
+    for (int i = 2; i <= n; i++) {
+        result *= i;
+    }
+    return result;
+}
+
+// Associated Legendre polynomial P_l^m(x) using recurrence relations
+// Uses the stable recurrence: (l-m)P_l^m = x(2l-1)P_{l-1}^m - (l+m-1)P_{l-2}^m
+static double associated_legendre(int l, int m, double x) {
+    if (m < 0 || m > l) return 0.0;
+
+    // P_m^m = (-1)^m (2m-1)!! (1-x^2)^(m/2)
+    double pmm = 1.0;
+    if (m > 0) {
+        double somx2 = sqrt((1.0 - x) * (1.0 + x));
+        double fact = 1.0;
+        for (int i = 1; i <= m; i++) {
+            pmm *= -fact * somx2;
+            fact += 2.0;
+        }
+    }
+
+    if (l == m) return pmm;
+
+    // P_{m+1}^m = x(2m+1)P_m^m
+    double pmmp1 = x * (2 * m + 1) * pmm;
+    if (l == m + 1) return pmmp1;
+
+    // Use recurrence for l > m+1
+    double pll = 0.0;
+    for (int ll = m + 2; ll <= l; ll++) {
+        pll = (x * (2 * ll - 1) * pmmp1 - (ll + m - 1) * pmm) / (ll - m);
+        pmm = pmmp1;
+        pmmp1 = pll;
+    }
+
+    return pll;
+}
+
+// Helper function for computing real spherical harmonics Y_lm
+// Uses the convention: Y_l^m = N_l^m * P_l^|m|(cos θ) * {cos(mφ) for m>=0, sin(|m|φ) for m<0}
+// Output array is indexed as Y_lm[l*(l+1) + m] for m in [-l, l]
 static void compute_spherical_harmonics(
     const double* r,
     double* Y_lm,
@@ -28,27 +73,52 @@ static void compute_spherical_harmonics(
     double x = r[0], y = r[1], z = r[2];
     double r2 = x*x + y*y + z*z;
     double r_norm = sqrt(r2);
-    
+
+    // Total size needed: sum_{l=0}^{l_max} (2l+1) = (l_max+1)^2
+    size_t total_size = (l_max + 1) * (l_max + 1);
+    memset(Y_lm, 0, total_size * sizeof(double));
+
     if (r_norm < EPSILON) {
-        memset(Y_lm, 0, (l_max + 1) * (l_max + 1) * sizeof(double));
+        // At origin, only Y_00 is non-zero
         Y_lm[0] = 1.0 / sqrt(4.0 * M_PI);  // Y_00
         return;
     }
-    
-    // Normalize coordinates
-    x /= r_norm;
-    y /= r_norm;
-    z /= r_norm;
-    
-    // Compute associated Legendre polynomials and spherical harmonics
-    // Implementation follows recursive formulation for efficiency
-    // This is a simplified version - full implementation would include all m values
-    for (size_t l = 0; l <= l_max; l++) {
-        for (size_t m = 0; m <= l; m++) {
-            size_t idx = l * l + m;
-            // Actual spherical harmonic computation would go here
-            // This is a placeholder that captures the basic angular dependence
-            Y_lm[idx] = pow(z, l) * sqrt((2*l + 1) / (4.0 * M_PI));
+
+    // Compute spherical coordinates
+    double cos_theta = z / r_norm;
+    double phi = atan2(y, x);
+
+    // Compute real spherical harmonics for each (l, m)
+    for (int l = 0; l <= (int)l_max; l++) {
+        for (int m = -l; m <= l; m++) {
+            // Normalization factor
+            // N_l^m = sqrt((2l+1)/(4π) * (l-|m|)!/(l+|m|)!)
+            int abs_m = abs(m);
+            double norm = sqrt((2.0 * l + 1.0) / (4.0 * M_PI) *
+                               factorial(l - abs_m) / factorial(l + abs_m));
+
+            // Associated Legendre polynomial P_l^|m|(cos θ)
+            double plm = associated_legendre(l, abs_m, cos_theta);
+
+            // Azimuthal factor
+            double azimuthal;
+            if (m > 0) {
+                // Real spherical harmonic with cos(mφ)
+                azimuthal = sqrt(2.0) * cos(m * phi);
+            } else if (m < 0) {
+                // Real spherical harmonic with sin(|m|φ)
+                azimuthal = sqrt(2.0) * sin(abs_m * phi);
+            } else {
+                // m = 0: no azimuthal factor
+                azimuthal = 1.0;
+            }
+
+            // Store in array with index l*(l+1) + m (which maps m in [-l,l] to [0, 2l])
+            // Using standard indexing: l^2 + l + m gives unique index
+            size_t idx = (size_t)(l * l + l + m);
+            if (idx < total_size) {
+                Y_lm[idx] = norm * plm * azimuthal;
+            }
         }
     }
 }

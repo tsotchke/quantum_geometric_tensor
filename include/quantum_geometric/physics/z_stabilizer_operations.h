@@ -62,6 +62,14 @@ typedef struct {
     double* stabilizer_values;          // Current stabilizer values
     size_t history_size;               // Current history size
     double phase_error_rate;           // Current phase error rate
+
+    // Enhanced state tracking (required by syndrome extraction)
+    bool phase_tracking_enabled;        // Whether phase tracking is active
+    bool error_correction_active;       // Whether error correction is active
+    double phase_stability;             // Phase stability metric [0,1]
+    double coherence_metric;            // Coherence metric [0,1]
+    size_t measurement_count;           // Total measurements performed
+    size_t correction_count;            // Number of corrections applied
 } ZStabilizerState;
 
 // Z stabilizer results

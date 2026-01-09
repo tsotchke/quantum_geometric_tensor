@@ -1,6 +1,6 @@
-#include "../include/quantum_geometric/core/quantum_geometric_operations.h"
-#include "../include/quantum_geometric/core/quantum_geometric_gpu.h"
-#include "../include/quantum_geometric/hardware/metal/quantum_geometric_metal.h"
+#include "quantum_geometric/core/quantum_geometric_operations.h"
+#include "quantum_geometric/core/quantum_geometric_gpu.h"
+#include "quantum_geometric/hardware/metal/quantum_geometric_metal.h"
 #include "mocks/mock_quantum_state.h"
 #include "test_config.h"
 #include <stdio.h>

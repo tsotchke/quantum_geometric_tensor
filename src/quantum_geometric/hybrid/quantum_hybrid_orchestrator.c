@@ -94,9 +94,19 @@ HybridQuantumSystem* hybrid_system_init(
 
     // Initialize backends using existing backend functions
     if (rigetti_config) {
-        sys->rigetti = init_rigetti_backend(rigetti_config);
+        // Allocate RigettiConfig and copy from RigettiBackendConfig
+        sys->rigetti = calloc(1, sizeof(struct RigettiConfig));
         if (sys->rigetti) {
-            // Get qubits from the initialized config
+            // Copy config parameters from RigettiBackendConfig to RigettiConfig
+            if (rigetti_config->api_key) {
+                sys->rigetti->api_key = strdup(rigetti_config->api_key);
+            }
+            if (rigetti_config->backend_name) {
+                sys->rigetti->backend_name = strdup(rigetti_config->backend_name);
+            }
+            sys->rigetti->max_shots = rigetti_config->max_shots;
+            sys->rigetti->max_qubits = HYBRID_MAX_QUBITS;  // Default, RigettiBackendConfig doesn't have max_qubits
+            sys->rigetti->optimize_mapping = rigetti_config->optimize_mapping;
             sys->num_qubits = sys->rigetti->max_qubits;
         }
     }

@@ -345,32 +345,92 @@ tree_tensor_network_t* create_tree_tensor_network(
     size_t num_qubits,
     size_t max_rank,
     double tolerance) {
-    
+
     printf("DEBUG: Creating tree tensor network with %zu qubits, max_rank=%zu, tolerance=%.6f\n",
            num_qubits, max_rank, tolerance);
-    
+
     tree_tensor_network_t* ttn = malloc(sizeof(tree_tensor_network_t));
     if (!ttn) {
         printf("DEBUG: Failed to allocate tree tensor network\n");
         return NULL;
     }
-    
-    // Initialize fields
+
+    // Initialize core fields
     ttn->root = NULL;
     ttn->num_nodes = 0;
     ttn->max_rank = max_rank;
     ttn->num_qubits = num_qubits;
     ttn->tolerance = tolerance;
-    ttn->memory_pool = create_default_memory_pool();
-    ttn->memory_system = get_global_memory_system();
-    memset(&ttn->metrics, 0, sizeof(tensor_network_metrics_t));
-    
-    if (!ttn->memory_pool) {
-        printf("DEBUG: Failed to create memory pool\n");
+
+    // Initialize topological properties
+    ttn->num_sites = num_qubits;
+    ttn->bond_dim = max_rank;
+    ttn->total_entanglement_entropy = 0.0;
+
+    // Allocate site tensors (each site has bond_dim^2 elements)
+    size_t site_tensor_size = num_qubits * max_rank * max_rank;
+    ttn->site_tensors = (double*)calloc(site_tensor_size, sizeof(double));
+    if (!ttn->site_tensors) {
+        printf("DEBUG: Failed to allocate site tensors\n");
         free(ttn);
         return NULL;
     }
-    
+
+    // Initialize site tensors to identity-like state
+    for (size_t i = 0; i < num_qubits; i++) {
+        size_t site_offset = i * max_rank * max_rank;
+        // Set diagonal elements
+        for (size_t j = 0; j < max_rank; j++) {
+            ttn->site_tensors[site_offset + j * max_rank + j] = 1.0 / sqrt((double)max_rank);
+        }
+    }
+
+    // Allocate connectivity graph
+    ttn->connectivity = (size_t*)calloc(num_qubits * num_qubits, sizeof(size_t));
+    if (!ttn->connectivity) {
+        printf("DEBUG: Failed to allocate connectivity\n");
+        free(ttn->site_tensors);
+        free(ttn);
+        return NULL;
+    }
+
+    // Initialize linear connectivity (chain)
+    for (size_t i = 0; i + 1 < num_qubits; i++) {
+        ttn->connectivity[i * num_qubits + (i + 1)] = 1;
+        ttn->connectivity[(i + 1) * num_qubits + i] = 1;
+    }
+
+    // Allocate per-site entanglement entropy array
+    ttn->entanglement_entropy = (double*)calloc(num_qubits, sizeof(double));
+    if (!ttn->entanglement_entropy) {
+        printf("DEBUG: Failed to allocate entanglement entropy\n");
+        free(ttn->connectivity);
+        free(ttn->site_tensors);
+        free(ttn);
+        return NULL;
+    }
+
+    // Initialize entanglement entropy (uniform initial state)
+    for (size_t i = 0; i < num_qubits; i++) {
+        // Initial entropy based on bond dimension
+        ttn->entanglement_entropy[i] = log((double)max_rank) / (double)num_qubits;
+        ttn->total_entanglement_entropy += ttn->entanglement_entropy[i];
+    }
+
+    // Initialize memory management
+    ttn->memory_pool = create_default_memory_pool();
+    ttn->memory_system = get_global_memory_system();
+    memset(&ttn->metrics, 0, sizeof(tensor_network_metrics_t));
+
+    if (!ttn->memory_pool) {
+        printf("DEBUG: Failed to create memory pool\n");
+        free(ttn->entanglement_entropy);
+        free(ttn->connectivity);
+        free(ttn->site_tensors);
+        free(ttn);
+        return NULL;
+    }
+
     printf("DEBUG: Tree tensor network created successfully\n");
     return ttn;
 }
@@ -407,10 +467,15 @@ static void destroy_tree_tensor_node(tree_tensor_network_t* ttn, tree_tensor_nod
 // Destroy a tree tensor network
 void destroy_tree_tensor_network(tree_tensor_network_t* ttn) {
     if (!ttn) return;
-    
+
     // Destroy root node and all children
     destroy_tree_tensor_node(ttn, ttn->root);
-    
+
+    // Free topological property arrays
+    free(ttn->site_tensors);
+    free(ttn->connectivity);
+    free(ttn->entanglement_entropy);
+
     // Cleanup memory pool
     if (ttn->memory_pool) {
         // Get global memory system
@@ -420,7 +485,7 @@ void destroy_tree_tensor_network(tree_tensor_network_t* ttn) {
         }
         free(ttn->memory_pool);
     }
-    
+
     free(ttn);
 }
 
@@ -836,9 +901,8 @@ bool contract_tree_tensor_nodes(
         memcpy(result_dims + node1->num_dimensions, node2->dimensions, 
                node2->num_dimensions * sizeof(size_t));
         
-        // Create result node
-        // For now, we'll just create a placeholder node
-        // In a real implementation, this would be filled with the contraction result
+        // Create result node to hold streaming contraction output
+        // The node data is populated by contract_tensor_streams below
         *result = pool_alloc(ttn->memory_pool, sizeof(tree_tensor_node_t));
         if (!*result) {
             printf("DEBUG: Failed to allocate result node\n");
@@ -859,8 +923,8 @@ bool contract_tree_tensor_nodes(
         (*result)->is_leaf = true;
         (*result)->use_hierarchical = true;  // Use hierarchical for large results
         
-        // Create hierarchical matrix for result
-        size_t result_size = total_size1 * total_size2;  // Simplified
+        // Create hierarchical matrix for result (outer product dimensions)
+        size_t result_size = total_size1 * total_size2;
         (*result)->h_matrix = create_hierarchical_matrix(result_size, ttn->tolerance);
         if (!(*result)->h_matrix) {
             printf("DEBUG: Failed to create result hierarchical matrix\n");

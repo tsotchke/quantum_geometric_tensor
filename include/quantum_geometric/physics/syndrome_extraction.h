@@ -8,7 +8,7 @@
 #include <stdbool.h>
 #include <time.h>
 
-// ZStabilizerConfig and ZHardwareConfig are defined in z_stabilizer_operations.h
+// ZStabilizerConfig, ZHardwareConfig, ZStabilizerState are defined in z_stabilizer_operations.h
 // quantum_state_t is defined in quantum_types.h
 // SyndromeVertex, SyndromeEdge, MatchingGraph, ErrorSyndrome, SyndromeConfig
 // are defined in error_syndrome.h
@@ -29,9 +29,6 @@ typedef struct {
     double hardware_factor;  // Hardware reliability factor
 } measurement_result;
 
-// Forward declaration for Z stabilizer state
-struct ZStabilizerState;
-
 // Syndrome cache for optimization
 typedef struct {
     double* error_rates;       // Error rates for each qubit
@@ -43,7 +40,7 @@ typedef struct {
     double* confidence_history; // History of confidence values
 
     // Enhanced fields (TDD - required by tests)
-    struct ZStabilizerState* z_state;  // Z-stabilizer state for optimization
+    ZStabilizerState* z_state;         // Z-stabilizer state for optimization
     double* temporal_correlations;     // Temporal correlation data
     double* spatial_correlations;      // Spatial correlation matrix
     double* phase_correlations;        // Phase correlation data

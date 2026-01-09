@@ -1,6 +1,11 @@
-# Quantum Geometric Learning Documentation
+# Quantum Geometric Tensor Library Documentation
 
-Welcome to the documentation for the Quantum Geometric Learning Library. This documentation is organized into several sections to help you find the information you need.
+**Version:** 0.777 Beta
+**Last Updated:** January 2026
+
+---
+
+Welcome to the documentation for the Quantum Geometric Tensor Library (QGTL). This documentation is organized into several sections to help you find the information you need.
 
 ## Documentation Structure
 
@@ -84,20 +89,17 @@ If you can't find what you need in the documentation:
 
 ## Citation
 
-If you use this library in your research, please cite:
+If you use QGTL in your research, please cite:
 
 ```bibtex
-@software{quantum_geometric_learning,
-  title = {Quantum Geometric Tensor Library},
-  author = {tsotchke},
-  year = {2024},
-  url = {https://github.com/tsotchke/quantum_geometric_learning}
+@software{QGTL2026,
+  author       = {tsotchke},
+  title        = {Quantum Geometric Tensor Library: a framework for high-peformance geometric quantum computing and hybrid quantum-classical artificial intelligence},
+  version      = {0.777},
+  year         = {2026},
+  url          = {https://github.com/tsotchke/quantum_geometric_tensor},
+  note         = {A framework for advanced geometric quantum computing and machine learning}
 }
-```
-
-Or in text format:
-```
-tsotchke. (2024). Quantum Geometric Tensor Library. GitHub. https://github.com/tsotchke/quantum_geometric_learning
 ```
 
 ## References

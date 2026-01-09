@@ -6,10 +6,12 @@
 #include "quantum_geometric/physics/error_weight.h"
 #include "quantum_geometric/core/quantum_geometric_core.h"
 #include "quantum_geometric/physics/quantum_state_operations.h"
+#include "quantum_geometric/core/quantum_complex.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
 #include <math.h>
+#include <time.h>
 
 // Test helper functions
 static void test_initialization(void);
@@ -20,8 +22,8 @@ static void test_error_cases(void);
 static void test_performance_requirements(void);
 
 // Mock functions and data
-static quantum_state* create_test_state(size_t width, size_t height, size_t depth);
-static void cleanup_test_state(quantum_state* state);
+static quantum_state_t* create_test_state(size_t width, size_t height, size_t depth);
+static void cleanup_test_state(quantum_state_t* state);
 
 int main(void) {
     printf("Running error weight tests...\n");
@@ -101,7 +103,7 @@ static void test_weight_calculation(void) {
     assert(success);
 
     // Create test quantum state
-    quantum_state* qstate = create_test_state(4, 4, 4);
+    quantum_state_t* qstate = create_test_state(4, 4, 4);
     assert(qstate != NULL);
 
     // Calculate weights
@@ -153,7 +155,7 @@ static void test_weight_statistics(void) {
     assert(success);
 
     // Create test quantum state
-    quantum_state* qstate = create_test_state(4, 4, 4);
+    quantum_state_t* qstate = create_test_state(4, 4, 4);
     assert(qstate != NULL);
 
     // Calculate weights
@@ -197,7 +199,7 @@ static void test_geometric_scaling(void) {
     assert(success);
 
     // Create test quantum state
-    quantum_state* qstate = create_test_state(4, 4, 4);
+    quantum_state_t* qstate = create_test_state(4, 4, 4);
     assert(qstate != NULL);
 
     // Calculate weights
@@ -237,7 +239,7 @@ static void test_error_cases(void) {
     bool success = calculate_error_weights(NULL, NULL);
     assert(!success);
 
-    quantum_state* qstate = create_test_state(4, 4, 4);
+    quantum_state_t* qstate = create_test_state(4, 4, 4);
     success = calculate_error_weights(&state, NULL);
     assert(!success);
     success = calculate_error_weights(NULL, qstate);
@@ -282,7 +284,7 @@ static void test_performance_requirements(void) {
     assert(success);
 
     // Create large test state
-    quantum_state* qstate = create_test_state(100, 100, 100);
+    quantum_state_t* qstate = create_test_state(100, 100, 100);
     assert(qstate != NULL);
 
     // Measure initialization time
@@ -313,17 +315,30 @@ static void test_performance_requirements(void) {
 }
 
 // Mock implementation of test helpers
-static quantum_state* create_test_state(size_t width, size_t height, size_t depth) {
-    quantum_state* state = malloc(sizeof(quantum_state));
+static quantum_state_t* create_test_state(size_t width, size_t height, size_t depth) {
+    quantum_state_t* state = malloc(sizeof(quantum_state_t));
     if (state) {
-        state->width = width;
-        state->height = height;
-        state->depth = depth;
-        // Initialize with test data
+        // Calculate total dimension from lattice dimensions
+        state->dimension = width * height * depth;
+        state->num_qubits = state->dimension;
+
+        // Allocate and initialize coordinates
+        state->coordinates = calloc(state->dimension, sizeof(ComplexFloat));
+        if (state->coordinates) {
+            // Initialize to |0⟩ state
+            for (size_t i = 0; i < state->dimension; i++) {
+                state->coordinates[i] = complex_float_create(1.0f, 0.0f);
+            }
+        }
+
+        state->is_normalized = true;
     }
     return state;
 }
 
-static void cleanup_test_state(quantum_state* state) {
-    free(state);
+static void cleanup_test_state(quantum_state_t* state) {
+    if (state) {
+        free(state->coordinates);
+        free(state);
+    }
 }

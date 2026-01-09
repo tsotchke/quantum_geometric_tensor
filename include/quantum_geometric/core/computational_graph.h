@@ -15,7 +15,7 @@ typedef enum {
     NODE_OUTPUT          // Output node
 } node_type_t;
 
-// Operation types
+// Graph operation types (renamed to avoid conflict with production_monitor.h)
 typedef enum {
     OP_UNARY,            // Unary operation
     OP_BINARY,           // Binary operation
@@ -23,12 +23,12 @@ typedef enum {
     OP_TRANSFORM,        // Transform operation
     OP_QUANTUM,          // Quantum operation
     OP_CUSTOM           // Custom operation
-} operation_type_t;
+} graph_operation_type_t;
 
 // Node structure
 typedef struct computation_node_t {
     node_type_t type;                    // Node type
-    operation_type_t op_type;            // Operation type
+    graph_operation_type_t op_type;      // Operation type
     void* data;                          // Node data
     size_t num_inputs;                   // Number of input edges
     size_t num_outputs;                  // Number of output edges
@@ -56,9 +56,9 @@ computational_graph_t* create_computational_graph(geometric_processor_t* process
 void destroy_computational_graph(computational_graph_t* graph);
 
 // Node management
-computation_node_t* add_node(struct computational_graph_t* graph, 
+computation_node_t* add_node(struct computational_graph_t* graph,
                            node_type_t type,
-                           operation_type_t op_type,
+                           graph_operation_type_t op_type,
                            void* data);
 bool connect_nodes(computation_node_t* source, 
                   computation_node_t* target);

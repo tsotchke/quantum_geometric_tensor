@@ -104,6 +104,51 @@ static void wrapped_objective(void* obj, const void* x) {
     *o = -*o;
 }
 
+// ============================================================================
+// QuantumGeometricCore Context Management
+// ============================================================================
+
+QuantumGeometricCore* quantum_geometric_core_create(void) {
+    QuantumGeometricCore* core = calloc(1, sizeof(QuantumGeometricCore));
+    if (!core) return NULL;
+
+    // Initialize global systems if needed
+    if (!is_initialized) {
+        qgt_error_t err = geometric_core_initialize();
+        if (err != QGT_SUCCESS) {
+            free(core);
+            return NULL;
+        }
+    }
+
+    core->initialized = true;
+    core->device_id = 0;
+    core->num_devices = 1;  // Default to single device
+    core->memory_pool = global_pool;
+    core->memory_pool_size = global_pool ? global_pool->total_size : 0;
+    core->total_allocated = 0;
+    core->peak_allocated = 0;
+    core->allocation_count = 0;
+    core->debug_mode = false;
+    core->log_level = 1;  // Default log level
+    core->stream = NULL;
+    core->profiling_data = NULL;
+
+    return core;
+}
+
+void quantum_geometric_core_free(QuantumGeometricCore* core) {
+    if (!core) return;
+
+    // Clean up any profiling data
+    if (core->profiling_data) {
+        free(core->profiling_data);
+    }
+
+    // Note: We don't free the global memory pool here since it's shared
+    free(core);
+}
+
 // Core initialization
 qgt_error_t geometric_core_initialize(void) {
     // Initialize default configuration

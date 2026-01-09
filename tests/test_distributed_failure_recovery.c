@@ -292,9 +292,12 @@ static void test_workload_redistribution(void) {
             result = distributed_manager_get_local_batch(manager, 1000,
                                                        &start_idx, &end_idx);
             assert(result == 0 && "Workload redistribution failed");
-            
+
             size_t new_samples = end_idx - start_idx;
-            
+
+            // Verify workload redistribution occurred
+            assert(new_samples > 0 && "No samples assigned after redistribution");
+
             // Verify workload increased to handle failed process
             if (rank > 1) {
                 assert(new_samples > initial_samples);

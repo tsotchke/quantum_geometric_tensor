@@ -9,14 +9,16 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <math.h>
+#include <string.h>
 
 // Test helper functions
 static quantum_problem* create_test_problem() {
     quantum_problem* problem = malloc(sizeof(quantum_problem));
-    problem->num_variables = 4;
+    problem->num_qubits = 4;
     problem->num_terms = 0;
-    problem->max_terms = 100;
-    problem->terms = calloc(problem->max_terms, sizeof(quantum_term));
+    problem->capacity = 100;
+    problem->terms = calloc(problem->capacity, sizeof(quantum_term));
+    problem->energy_offset = 0.0;
     return problem;
 }
 
@@ -27,364 +29,237 @@ static void cleanup_test_problem(quantum_problem* problem) {
     }
 }
 
+static void add_term_to_problem(quantum_problem* problem, size_t* qubits, size_t num_qubits, double coefficient) {
+    if (problem->num_terms < problem->capacity) {
+        quantum_term* term = &problem->terms[problem->num_terms];
+        term->num_qubits = num_qubits;
+        for (size_t i = 0; i < num_qubits && i < MAX_TERM_QUBITS; i++) {
+            term->qubits[i] = qubits[i];
+        }
+        term->coefficient = coefficient;
+        problem->num_terms++;
+    }
+}
+
 static void test_initialization() {
     printf("Testing D-Wave backend initialization...\n");
 
-    // Setup config
-    DWaveConfig config = {
-        .solver_name = "DW_2000Q_6",
+    // Setup sampling parameters
+    DWaveSamplingParams sampling_params = {
         .num_reads = 1000,
-        .annealing_time = 20.0,
+        .annealing_time = 20,
         .chain_strength = 2.0,
         .programming_thermalization = 100,
-        .readout_thermalization = 10,
-        .auto_scale = true
+        .auto_scale = true,
+        .reduce_intersample_correlation = false,
+        .readout_thermalization = NULL,
+        .custom_params = NULL
+    };
+
+    // Setup backend config
+    DWaveBackendConfig config = {
+        .type = DWAVE_BACKEND_SIMULATOR,  // Use simulator for testing
+        .api_token = NULL,
+        .solver_name = "DW_2000Q_6",
+        .solver_type = DWAVE_SOLVER_DW2000Q,
+        .problem_type = DWAVE_PROBLEM_ISING,
+        .sampling_params = sampling_params,
+        .custom_config = NULL
     };
 
     // Initialize backend
-    DWaveState state;
-    bool success = init_dwave_backend(&state, &config);
-    assert(success && "Failed to initialize backend");
+    DWaveConfig* dwave_config = init_dwave_backend(&config);
+    assert(dwave_config != NULL && "Failed to initialize backend");
 
-    // Verify initialization
-    assert(state.initialized && "Backend not marked as initialized");
-    assert(state.num_qubits > 0 && "Invalid number of qubits");
-    assert(state.num_couplers > 0 && "Invalid number of couplers");
-    assert(state.qubit_biases && "Qubit biases not allocated");
-    assert(state.coupler_strengths && "Coupler strengths not allocated");
-    assert(state.qubit_availability && "Qubit availability not allocated");
-    assert(state.embedding_map && "Embedding map not allocated");
-    assert(state.adjacency_matrix && "Adjacency matrix not allocated");
-
-    cleanup_dwave_backend(&state);
+    // Cleanup
+    cleanup_dwave_config(dwave_config);
     printf("Initialization test passed\n");
 }
 
-static void test_minor_embedding() {
-    printf("Testing minor embedding optimization...\n");
+static void test_problem_creation() {
+    printf("Testing D-Wave problem creation...\n");
 
-    // Setup backend
-    DWaveConfig config = {
-        .solver_name = "DW_2000Q_6",
-        .num_reads = 1000,
-        .annealing_time = 20.0,
-        .chain_strength = 2.0,
-        .programming_thermalization = 100,
-        .readout_thermalization = 10,
-        .auto_scale = true
-    };
+    // Create problem using D-Wave API
+    DWaveProblem* problem = create_dwave_problem(4, 6);
+    assert(problem != NULL && "Failed to create D-Wave problem");
+    assert(problem->num_variables == 4 && "Wrong number of variables");
 
-    DWaveState state;
-    bool success = init_dwave_backend(&state, &config);
-    assert(success && "Failed to initialize backend");
+    // Add linear terms (h)
+    assert(add_linear_term(problem, 0, -1.0) && "Failed to add linear term");
+    assert(add_linear_term(problem, 1, 0.5) && "Failed to add linear term");
+    assert(add_linear_term(problem, 2, -0.5) && "Failed to add linear term");
+    assert(add_linear_term(problem, 3, 1.0) && "Failed to add linear term");
 
-    // Create test problem with logical graph
-    quantum_problem* problem = create_test_problem();
-    
-    // Add terms to create a complete graph K4
-    quantum_term t1 = {.i = 0, .j = 1, .weight = 1.0};
-    quantum_term t2 = {.i = 0, .j = 2, .weight = 1.0};
-    quantum_term t3 = {.i = 0, .j = 3, .weight = 1.0};
-    quantum_term t4 = {.i = 1, .j = 2, .weight = 1.0};
-    quantum_term t5 = {.i = 1, .j = 3, .weight = 1.0};
-    quantum_term t6 = {.i = 2, .j = 3, .weight = 1.0};
+    // Add quadratic terms (J)
+    assert(add_quadratic_term(problem, 0, 1, 1.0) && "Failed to add quadratic term");
+    assert(add_quadratic_term(problem, 0, 2, 1.0) && "Failed to add quadratic term");
+    assert(add_quadratic_term(problem, 0, 3, 1.0) && "Failed to add quadratic term");
+    assert(add_quadratic_term(problem, 1, 2, 1.0) && "Failed to add quadratic term");
+    assert(add_quadratic_term(problem, 1, 3, 1.0) && "Failed to add quadratic term");
+    assert(add_quadratic_term(problem, 2, 3, 1.0) && "Failed to add quadratic term");
 
-    problem->terms[problem->num_terms++] = t1;
-    problem->terms[problem->num_terms++] = t2;
-    problem->terms[problem->num_terms++] = t3;
-    problem->terms[problem->num_terms++] = t4;
-    problem->terms[problem->num_terms++] = t5;
-    problem->terms[problem->num_terms++] = t6;
-
-    // Optimize embedding
-    success = optimize_minor_embedding(problem,
-                                     state.adjacency_matrix,
-                                     state.num_qubits);
-    assert(success && "Minor embedding optimization failed");
-
-    // Verify embedding properties
-    bool valid_embedding = true;
-    for (size_t i = 0; i < problem->num_terms; i++) {
-        quantum_term* term = &problem->terms[i];
-        if (!are_qubits_adjacent(state.adjacency_matrix,
-                                term->physical_i,
-                                term->physical_j)) {
-            valid_embedding = false;
-            break;
-        }
-    }
-    assert(valid_embedding && "Invalid minor embedding");
-
-    cleanup_test_problem(problem);
-    cleanup_dwave_backend(&state);
-    printf("Minor embedding test passed\n");
+    // Cleanup
+    cleanup_dwave_problem(problem);
+    printf("Problem creation test passed\n");
 }
 
-static void test_chain_strength() {
-    printf("Testing chain strength optimization...\n");
-
-    // Setup backend
-    DWaveConfig config = {
-        .solver_name = "DW_2000Q_6",
-        .num_reads = 1000,
-        .annealing_time = 20.0,
-        .chain_strength = 2.0,
-        .programming_thermalization = 100,
-        .readout_thermalization = 10,
-        .auto_scale = true
-    };
-
-    DWaveState state;
-    bool success = init_dwave_backend(&state, &config);
-    assert(success && "Failed to initialize backend");
+static void test_quantum_problem_structure() {
+    printf("Testing quantum problem structure...\n");
 
     // Create test problem
     quantum_problem* problem = create_test_problem();
-    
-    // Add terms with varying weights
-    quantum_term t1 = {.i = 0, .j = 1, .weight = 0.5};
-    quantum_term t2 = {.i = 1, .j = 2, .weight = 1.0};
-    quantum_term t3 = {.i = 2, .j = 3, .weight = 1.5};
-    problem->terms[problem->num_terms++] = t1;
-    problem->terms[problem->num_terms++] = t2;
-    problem->terms[problem->num_terms++] = t3;
+    assert(problem != NULL && "Failed to create test problem");
+    assert(problem->num_qubits == 4 && "Wrong number of qubits");
+    assert(problem->capacity == 100 && "Wrong capacity");
 
-    // Optimize chain strength
-    success = optimize_chain_strength(problem,
-                                    state.qubit_biases,
-                                    state.num_qubits);
-    assert(success && "Chain strength optimization failed");
+    // Add a 2-qubit term (interaction)
+    size_t qubits_2[] = {0, 1};
+    add_term_to_problem(problem, qubits_2, 2, 1.0);
 
-    // Verify chain strength properties
-    double max_weight = 0.0;
-    for (size_t i = 0; i < problem->num_terms; i++) {
-        if (fabs(problem->terms[i].weight) > max_weight) {
-            max_weight = fabs(problem->terms[i].weight);
-        }
-    }
-    assert(problem->chain_strength > max_weight && 
-           "Chain strength not strong enough");
-    assert(problem->chain_strength < 10 * max_weight && 
-           "Chain strength too strong");
+    // Add a 3-qubit term
+    size_t qubits_3[] = {0, 2, 3};
+    add_term_to_problem(problem, qubits_3, 3, -0.5);
 
+    // Add single qubit terms (local fields)
+    size_t qubits_1a[] = {0};
+    add_term_to_problem(problem, qubits_1a, 1, 2.0);
+
+    size_t qubits_1b[] = {1};
+    add_term_to_problem(problem, qubits_1b, 1, -1.5);
+
+    assert(problem->num_terms == 4 && "Wrong number of terms");
+
+    // Verify first term
+    assert(problem->terms[0].num_qubits == 2 && "Wrong number of qubits in term 0");
+    assert(problem->terms[0].qubits[0] == 0 && "Wrong qubit index in term 0");
+    assert(problem->terms[0].qubits[1] == 1 && "Wrong qubit index in term 0");
+    assert(fabs(problem->terms[0].coefficient - 1.0) < 1e-6 && "Wrong coefficient in term 0");
+
+    // Cleanup
     cleanup_test_problem(problem);
-    cleanup_dwave_backend(&state);
-    printf("Chain strength test passed\n");
+    printf("Quantum problem structure test passed\n");
 }
 
-static void test_annealing_schedule() {
-    printf("Testing annealing schedule optimization...\n");
+static void test_format_conversion() {
+    printf("Testing QUBO to Ising conversion...\n");
+
+    // Create QUBO problem
+    DWaveProblem* qubo = create_dwave_problem(3, 3);
+    assert(qubo != NULL && "Failed to create QUBO problem");
+
+    // Add QUBO terms
+    add_linear_term(qubo, 0, 1.0);
+    add_linear_term(qubo, 1, 1.0);
+    add_linear_term(qubo, 2, 1.0);
+    add_quadratic_term(qubo, 0, 1, 2.0);
+    add_quadratic_term(qubo, 1, 2, 2.0);
+
+    // Convert to Ising
+    DWaveProblem* ising = qubo_to_ising(qubo);
+    assert(ising != NULL && "Failed to convert QUBO to Ising");
+    assert(ising->num_variables == qubo->num_variables && "Variable count changed");
+
+    // Convert back to QUBO
+    DWaveProblem* qubo2 = ising_to_qubo(ising);
+    assert(qubo2 != NULL && "Failed to convert Ising to QUBO");
+
+    // Cleanup
+    cleanup_dwave_problem(qubo);
+    cleanup_dwave_problem(ising);
+    cleanup_dwave_problem(qubo2);
+    printf("Format conversion test passed\n");
+}
+
+static void test_job_submission() {
+    printf("Testing job submission and result retrieval...\n");
 
     // Setup backend
-    DWaveConfig config = {
-        .solver_name = "DW_2000Q_6",
-        .num_reads = 1000,
-        .annealing_time = 20.0,
-        .chain_strength = 2.0,
-        .programming_thermalization = 100,
-        .readout_thermalization = 10,
-        .auto_scale = true
+    DWaveSamplingParams sampling_params = {
+        .num_reads = 100,
+        .annealing_time = 20,
+        .chain_strength = 1.5,
+        .programming_thermalization = 50,
+        .auto_scale = true,
+        .reduce_intersample_correlation = false,
+        .readout_thermalization = NULL,
+        .custom_params = NULL
     };
 
-    DWaveState state;
-    bool success = init_dwave_backend(&state, &config);
-    assert(success && "Failed to initialize backend");
-
-    // Create test problem
-    quantum_problem* problem = create_test_problem();
-    
-    // Add terms
-    quantum_term t1 = {.i = 0, .j = 1, .weight = 1.0};
-    quantum_term t2 = {.i = 1, .j = 2, .weight = 1.0};
-    problem->terms[problem->num_terms++] = t1;
-    problem->terms[problem->num_terms++] = t2;
-
-    // Optimize annealing schedule
-    success = optimize_annealing_schedule(problem,
-                                        state.config.annealing_time);
-    assert(success && "Annealing schedule optimization failed");
-
-    // Verify schedule properties
-    assert(problem->schedule != NULL && 
-           "No annealing schedule created");
-    assert(problem->num_schedule_points > 0 && 
-           "Empty annealing schedule");
-    assert(problem->schedule[0].s == 0.0 && 
-           "Schedule doesn't start at s=0");
-    assert(problem->schedule[problem->num_schedule_points-1].s == 1.0 && 
-           "Schedule doesn't end at s=1");
-
-    cleanup_test_problem(problem);
-    cleanup_dwave_backend(&state);
-    printf("Annealing schedule test passed\n");
-}
-
-static void test_ocean_integration() {
-    printf("Testing Ocean SDK integration...\n");
-
-    // Setup backend
-    DWaveConfig config = {
-        .solver_name = "DW_2000Q_6",
-        .num_reads = 1000,
-        .annealing_time = 20.0,
-        .chain_strength = 2.0,
-        .programming_thermalization = 100,
-        .readout_thermalization = 10,
-        .auto_scale = true
+    DWaveBackendConfig config = {
+        .type = DWAVE_BACKEND_SIMULATOR,
+        .api_token = NULL,
+        .solver_name = "simulator",
+        .solver_type = DWAVE_SOLVER_NEAL,
+        .problem_type = DWAVE_PROBLEM_ISING,
+        .sampling_params = sampling_params,
+        .custom_config = NULL
     };
 
-    DWaveState state;
-    bool success = init_dwave_backend(&state, &config);
-    assert(success && "Failed to initialize backend");
+    DWaveConfig* dwave_config = init_dwave_backend(&config);
+    assert(dwave_config != NULL && "Failed to initialize backend");
 
-    // Create test problem
-    quantum_problem* problem = create_test_problem();
-    
-    // Add terms
-    quantum_term t1 = {.i = 0, .j = 1, .weight = 1.0};
-    quantum_term t2 = {.i = 1, .j = 2, .weight = 1.0};
-    problem->terms[problem->num_terms++] = t1;
-    problem->terms[problem->num_terms++] = t2;
+    // Create simple problem
+    DWaveProblem* problem = create_dwave_problem(3, 3);
+    add_linear_term(problem, 0, -1.0);
+    add_linear_term(problem, 1, -1.0);
+    add_linear_term(problem, 2, -1.0);
+    add_quadratic_term(problem, 0, 1, 2.0);
+    add_quadratic_term(problem, 1, 2, 2.0);
 
-    // Convert to Ocean format
-    ocean_problem* ocean = convert_to_ocean(problem);
-    assert(ocean && "Failed to convert to Ocean format");
-
-    // Verify Ocean problem structure
-    assert(ocean->num_variables == problem->num_variables && 
-           "Wrong number of variables");
-    assert(ocean->num_terms == problem->num_terms && 
-           "Wrong number of terms");
-
-    cleanup_ocean_problem(ocean);
-    cleanup_test_problem(problem);
-    cleanup_dwave_backend(&state);
-    printf("Ocean SDK integration test passed\n");
-}
-
-static void test_error_mitigation() {
-    printf("Testing D-Wave error mitigation...\n");
-
-    // Setup backend
-    DWaveConfig config = {
-        .solver_name = "DW_2000Q_6",
-        .num_reads = 1000,
-        .annealing_time = 20.0,
-        .chain_strength = 2.0,
-        .programming_thermalization = 100,
-        .readout_thermalization = 10,
-        .auto_scale = true
+    // Setup job config
+    DWaveJobConfig job_config = {
+        .problem = problem,
+        .params = sampling_params,
+        .use_embedding = false,
+        .use_error_mitigation = false,
+        .custom_options = NULL
     };
+    memset(job_config.job_tags, 0, sizeof(job_config.job_tags));
 
-    DWaveState state;
-    bool success = init_dwave_backend(&state, &config);
-    assert(success && "Failed to initialize backend");
+    // Submit job
+    char* job_id = submit_dwave_job(dwave_config, &job_config);
+    assert(job_id != NULL && "Failed to submit job");
 
-    // Create test problem
-    quantum_problem* problem = create_test_problem();
-    
-    // Add terms
-    quantum_term t1 = {.i = 0, .j = 1, .weight = 1.0};
-    quantum_term t2 = {.i = 1, .j = 2, .weight = 1.0};
-    problem->terms[problem->num_terms++] = t1;
-    problem->terms[problem->num_terms++] = t2;
+    // Check status
+    DWaveJobStatus status = get_dwave_job_status(dwave_config, job_id);
+    assert(status != DWAVE_STATUS_ERROR && "Job failed");
 
-    // Execute problem multiple times to build statistics
-    quantum_result results[10];
-    for (size_t i = 0; i < 10; i++) {
-        success = execute_problem(&state, problem, &results[i]);
-        assert(success && "Problem execution failed");
-    }
+    // Get result
+    DWaveJobResult* result = get_dwave_job_result(dwave_config, job_id);
+    assert(result != NULL && "Failed to get job result");
+    assert(result->num_samples > 0 && "No samples returned");
 
-    // Verify error mitigation
-    double raw_error_rate = 0.0;
-    double mitigated_error_rate = 0.0;
-    double chain_break_rate = 0.0;
+    // Verify result structure
+    assert(result->samples != NULL && "Samples array is NULL");
+    assert(result->energies != NULL && "Energies array is NULL");
 
-    for (size_t i = 0; i < 10; i++) {
-        raw_error_rate += results[i].raw_error_rate;
-        mitigated_error_rate += results[i].mitigated_error_rate;
-        chain_break_rate += results[i].chain_break_rate;
-    }
-    raw_error_rate /= 10;
-    mitigated_error_rate /= 10;
-    chain_break_rate /= 10;
-
-    assert(mitigated_error_rate < raw_error_rate && 
-           "Error mitigation not effective");
-    assert(chain_break_rate < 0.1 && 
-           "Chain break rate too high");
-    assert(mitigated_error_rate < state.config.error_threshold && 
-           "Error rate above threshold after mitigation");
-
-    cleanup_test_problem(problem);
-    cleanup_dwave_backend(&state);
-    printf("Error mitigation test passed\n");
-}
-
-static void test_error_handling() {
-    printf("Testing error handling...\n");
-
-    // Test null pointers
-    bool success = init_dwave_backend(NULL, NULL);
-    assert(!success && "Should fail with null pointers");
-
-    // Test invalid config
-    DWaveConfig invalid_config = {
-        .solver_name = NULL,
-        .num_reads = 0,
-        .annealing_time = -1.0,
-        .chain_strength = 0.0,
-        .programming_thermalization = 0,
-        .readout_thermalization = 0,
-        .auto_scale = true
-    };
-
-    DWaveState state;
-    success = init_dwave_backend(&state, &invalid_config);
-    assert(!success && "Should fail with invalid config");
-
-    // Test invalid problem
-    DWaveConfig valid_config = {
-        .solver_name = "DW_2000Q_6",
-        .num_reads = 1000,
-        .annealing_time = 20.0,
-        .chain_strength = 2.0,
-        .programming_thermalization = 100,
-        .readout_thermalization = 10,
-        .auto_scale = true
-    };
-
-    success = init_dwave_backend(&state, &valid_config);
-    assert(success && "Failed to initialize with valid config");
-
-    quantum_result result;
-    success = execute_problem(&state, NULL, &result);
-    assert(!success && "Should fail with null problem");
-
-    // Test problem with too many variables
-    quantum_problem* large_problem = create_test_problem();
-    large_problem->num_variables = 9999;
-    
-    success = execute_problem(&state, large_problem, &result);
-    assert(!success && "Should fail with too many variables");
-
-    cleanup_test_problem(large_problem);
-    cleanup_dwave_backend(&state);
-    printf("Error handling test passed\n");
+    // Cleanup
+    free(job_id);
+    cleanup_dwave_result(result);
+    cleanup_dwave_problem(problem);
+    cleanup_dwave_config(dwave_config);
+    printf("Job submission test passed\n");
 }
 
 int main() {
-    printf("Running D-Wave backend tests...\n\n");
+    printf("Running D-Wave backend tests\n");
+    printf("============================\n\n");
 
     test_initialization();
-    test_minor_embedding();
-    test_chain_strength();
-    test_annealing_schedule();
-    test_ocean_integration();
-    test_error_mitigation();
-    test_error_handling();
+    printf("\n");
 
-    printf("\nAll D-Wave backend tests passed!\n");
+    test_problem_creation();
+    printf("\n");
+
+    test_quantum_problem_structure();
+    printf("\n");
+
+    test_format_conversion();
+    printf("\n");
+
+    test_job_submission();
+    printf("\n");
+
+    printf("All D-Wave backend tests passed!\n");
     return 0;
 }

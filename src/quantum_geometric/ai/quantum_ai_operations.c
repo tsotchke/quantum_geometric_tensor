@@ -1538,66 +1538,222 @@ void qgt_ai_update_geometric_parameters(TreeTensorNetwork** layers, size_t num_l
 // Tensor Conversion Functions (from quantum_geometric_tensor_network.h)
 // =============================================================================
 
-// Internal definition of PhysicsMLTensor for conversion operations
-// This is the internal representation; external frameworks use opaque handles
-struct PhysicsMLTensor {
-    void* data;                     // Raw tensor data
-    size_t* shape;                  // Tensor shape
-    size_t ndim;                    // Number of dimensions
-    size_t total_size;              // Total number of elements
-    int dtype;                      // Data type identifier
-    void* backend_handle;           // Optional backend-specific handle
-};
+// PhysicsMLTensor structure is defined in quantum_geometric_tensor_network.h
+// It provides ML framework integration with these fields:
+//   - data: ComplexDouble* tensor data in ML framework format
+//   - shape: size_t* tensor shape array
+//   - ndim: size_t number of dimensions
+//   - size: size_t total number of elements
+//   - is_contiguous: bool whether data is contiguous
+//   - ml_handle: void* handle to external ML framework tensor
+//   - device: char* device location
 
+/**
+ * @brief Convert quantum geometric tensor to PhysicsML tensor format
+ *
+ * Creates a PhysicsMLTensor that bridges our quantum geometric tensor
+ * to external physics ML frameworks (PyTorch, TensorFlow, JAX).
+ * The conversion preserves spin states and geometric structure.
+ *
+ * @param qgt Source quantum geometric tensor with spin_system and geometry
+ * @return PhysicsMLTensor* Newly allocated ML tensor, NULL on error
+ */
 PhysicsMLTensor* qgt_to_physicsml_tensor(const qgt_advanced_geometry_t* qgt) {
     if (!qgt) return NULL;
 
-    // PhysicsMLTensor bridges our quantum geometric tensor to external physics ML frameworks
+    double start = g_metrics_enabled ? get_time_seconds() : 0;
+
     PhysicsMLTensor* pml = calloc(1, sizeof(PhysicsMLTensor));
     if (!pml) return NULL;
 
-    // Copy dimension information
-    pml->ndim = 2;  // [dimension, spin_dim]
+    // Set tensor dimensions [dimension, spin_dim]
+    pml->ndim = 2;
     pml->shape = calloc(2, sizeof(size_t));
-    if (pml->shape) {
-        pml->shape[0] = qgt->dimension;
-        pml->shape[1] = qgt->spin_system.spin_dim;
-        pml->total_size = qgt->dimension * qgt->spin_system.spin_dim;
+    if (!pml->shape) {
+        free(pml);
+        return NULL;
     }
-    pml->dtype = 2;  // COMPLEX64
-    pml->backend_handle = NULL;
 
-    // Copy spin state data if available
-    if (qgt->spin_system.spin_states && pml->total_size > 0) {
-        pml->data = calloc(pml->total_size, sizeof(ComplexDouble));
-        if (pml->data) {
-            memcpy(pml->data, qgt->spin_system.spin_states,
-                   pml->total_size * sizeof(ComplexDouble));
+    pml->shape[0] = qgt->dimension;
+    pml->shape[1] = qgt->spin_system.spin_dim;
+    pml->size = qgt->dimension * qgt->spin_system.spin_dim;
+    pml->is_contiguous = true;
+    pml->ml_handle = NULL;
+
+    // Set device location (default to CPU)
+    pml->device = strdup("cpu");
+
+    // Allocate and copy spin state data
+    if (qgt->spin_system.spin_states && pml->size > 0) {
+        pml->data = calloc(pml->size, sizeof(ComplexDouble));
+        if (!pml->data) {
+            free(pml->shape);
+            free(pml->device);
+            free(pml);
+            return NULL;
         }
+        memcpy(pml->data, qgt->spin_system.spin_states,
+               pml->size * sizeof(ComplexDouble));
+    }
+
+    if (g_metrics_enabled) {
+        g_performance_metrics.conversion_time += get_time_seconds() - start;
+        g_performance_metrics.num_operations++;
     }
 
     return pml;
 }
 
+/**
+ * @brief Convert PhysicsML tensor back to quantum geometric tensor format
+ *
+ * Reconstructs a quantum geometric tensor from a PhysicsML tensor,
+ * initializing geometric structures (metric tensor, spin operators)
+ * based on the ML tensor data.
+ *
+ * @param pml Source PhysicsML tensor
+ * @return qgt_advanced_geometry_t* Newly allocated quantum tensor, NULL on error
+ */
 qgt_advanced_geometry_t* physicsml_to_qgt_tensor(const PhysicsMLTensor* pml) {
     if (!pml) return NULL;
 
-    // Create quantum tensor from physics ML tensor
-    // Default reasonable dimensions if not available from pml
-    qgt_advanced_geometry_t* qgt = qgt_ai_create_tensor(64, 8, QGT_MEM_STANDARD);
+    double start = g_metrics_enabled ? get_time_seconds() : 0;
+
+    // Determine dimensions from PhysicsML tensor
+    size_t dimension = 64;  // Default
+    size_t num_spins = 8;   // Default
+
+    if (pml->shape && pml->ndim >= 2) {
+        dimension = pml->shape[0];
+        num_spins = pml->shape[1];
+    } else if (pml->size > 0) {
+        // Infer dimensions from size
+        dimension = (size_t)sqrt((double)pml->size);
+        if (dimension == 0) dimension = 1;
+        num_spins = pml->size / dimension;
+        if (num_spins == 0) num_spins = 1;
+    }
+
+    // Create quantum tensor
+    qgt_advanced_geometry_t* qgt = qgt_ai_create_tensor(dimension, num_spins, QGT_MEM_STANDARD);
+    if (!qgt) return NULL;
+
+    // Copy data from PhysicsML tensor to spin states
+    if (pml->data && qgt->spin_system.spin_states) {
+        size_t copy_size = dimension * num_spins;
+        if (pml->size < copy_size) {
+            copy_size = pml->size;
+        }
+        memcpy(qgt->spin_system.spin_states, pml->data,
+               copy_size * sizeof(ComplexDouble));
+    }
+
+    if (g_metrics_enabled) {
+        g_performance_metrics.conversion_time += get_time_seconds() - start;
+        g_performance_metrics.num_operations++;
+    }
 
     return qgt;
 }
 
+/**
+ * @brief Destroy PhysicsML tensor and free all resources
+ *
+ * Properly deallocates all memory associated with a PhysicsML tensor,
+ * including data arrays, shape arrays, device strings, and any
+ * external ML framework handles.
+ *
+ * @param tensor PhysicsML tensor to destroy
+ */
+void physicsml_tensor_destroy(PhysicsMLTensor* tensor) {
+    if (!tensor) return;
+
+    // Free data array
+    if (tensor->data) {
+        free(tensor->data);
+        tensor->data = NULL;
+    }
+
+    // Free shape array
+    if (tensor->shape) {
+        free(tensor->shape);
+        tensor->shape = NULL;
+    }
+
+    // Free device string
+    if (tensor->device) {
+        free(tensor->device);
+        tensor->device = NULL;
+    }
+
+    // Note: ml_handle is an opaque handle to external framework
+    // The external framework is responsible for its lifecycle
+    // We just clear our reference
+    tensor->ml_handle = NULL;
+
+    // Zero out structure before freeing
+    tensor->ndim = 0;
+    tensor->size = 0;
+    tensor->is_contiguous = false;
+
+    free(tensor);
+}
+
+/**
+ * @brief Verify consistency between quantum geometric and PhysicsML tensor formats
+ *
+ * Checks that the two tensor representations are numerically equivalent
+ * within the specified tolerance. This validates that conversions between
+ * formats preserve tensor data integrity.
+ *
+ * @param qgt Quantum geometric tensor
+ * @param pml PhysicsML tensor
+ * @param tolerance Maximum allowed absolute difference per element
+ * @return true if tensors are consistent within tolerance, false otherwise
+ */
 bool verify_tensor_consistency(const qgt_advanced_geometry_t* qgt,
                               const PhysicsMLTensor* pml,
                               double tolerance) {
     if (!qgt || !pml) return false;
 
-    // Verify that conversions maintain consistency
-    // Convert back and forth and check difference
+    // Verify dimensions match
+    size_t qgt_size = qgt->dimension * qgt->spin_system.spin_dim;
 
-    (void)tolerance;  // Would be used in actual comparison
+    if (pml->size != qgt_size) {
+        return false;
+    }
+
+    // Check shape consistency
+    if (pml->shape && pml->ndim >= 2) {
+        if (pml->shape[0] != qgt->dimension ||
+            pml->shape[1] != qgt->spin_system.spin_dim) {
+            return false;
+        }
+    }
+
+    // Verify data consistency
+    if (!qgt->spin_system.spin_states || !pml->data) {
+        // Both must have data or both must be empty
+        return (qgt->spin_system.spin_states == NULL) == (pml->data == NULL);
+    }
+
+    // Compare element by element
+    ComplexDouble* pml_data = (ComplexDouble*)pml->data;
+    double max_diff = 0.0;
+
+    for (size_t i = 0; i < qgt_size; i++) {
+        double diff_real = fabs(qgt->spin_system.spin_states[i].real - pml_data[i].real);
+        double diff_imag = fabs(qgt->spin_system.spin_states[i].imag - pml_data[i].imag);
+        double diff = sqrt(diff_real * diff_real + diff_imag * diff_imag);
+
+        if (diff > max_diff) {
+            max_diff = diff;
+        }
+
+        if (diff > tolerance) {
+            return false;
+        }
+    }
 
     return true;
 }
@@ -1777,6 +1933,19 @@ bool qgt_ai_verify_locality_constraint(const qgt_advanced_geometry_t* tensor,
 bool qgt_ai_verify_causality_constraint(const qgt_advanced_geometry_t* tensor,
                                         double tolerance) {
     return qgt_ai_verify_causality_constraints(tensor, tolerance);
+}
+
+// =============================================================================
+// TreeTensorNetwork lifecycle management
+// =============================================================================
+
+void qgt_ai_destroy_ttn(TreeTensorNetwork* network) {
+    if (!network) {
+        return;
+    }
+
+    // Use the core API function to properly destroy the tree tensor network
+    destroy_tree_tensor_network(network);
 }
 
 

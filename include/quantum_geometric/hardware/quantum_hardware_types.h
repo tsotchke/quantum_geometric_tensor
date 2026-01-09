@@ -487,7 +487,7 @@ CrosstalkMap get_ibm_crosstalk(struct IBMConfig* config);
 CrosstalkMap get_dwave_crosstalk(struct DWaveConfig* config);
 
 // Circuit submission functions
-int submit_rigetti_circuit(struct RigettiConfig* config, struct QuantumCircuit* circuit, struct MitigationParams* mitigation, struct ExecutionResult* result);
+int submit_rigetti_circuit(struct RigettiConfig* config, struct QuantumCircuit* circuit, void* options, struct ExecutionResult* result);
 int submit_ibm_circuit(struct IBMConfig* config, struct QuantumCircuit* circuit, struct ExecutionResult* result);
 bool submit_dwave_problem(struct DWaveConfig* config, QUBO* qubo, QUBOResult* result);
 int simulate_circuit(struct QuantumCircuit* circuit, struct ExecutionResult* result);

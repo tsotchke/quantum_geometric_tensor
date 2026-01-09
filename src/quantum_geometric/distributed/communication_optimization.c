@@ -810,8 +810,9 @@ int get_rank(const CommunicationManager* manager) {
     return manager->rank;
 }
 
-// Get world size
-int get_world_size(const CommunicationManager* manager) {
+// Get world size from a CommunicationManager
+// Note: get_world_size(void) exists in distributed_training.c for the global world size
+int get_comm_world_size(const CommunicationManager* manager) {
     if (!manager) return -1;
     return manager->world_size;
 }

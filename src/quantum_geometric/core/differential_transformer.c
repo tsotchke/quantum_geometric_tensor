@@ -254,11 +254,54 @@ double compute_differential_stability(
 ) {
     size_t size = state->seq_length * state->hidden_dim;
     double max_deriv = 0.0;
-    
+
     // Find maximum absolute derivative
     for (size_t i = 0; i < size; i++) {
         max_deriv = fmax(max_deriv, fabs(state->derivatives[i]));
     }
-    
+
     return max_deriv;
+}
+
+void diff_transformer_backward(
+    DiffTransformerState* state,
+    const double* target,
+    double* input_gradient
+) {
+    size_t size = state->seq_length * state->hidden_dim;
+
+    // Compute gradients from loss
+    #pragma omp parallel for
+    for (size_t i = 0; i < size; i++) {
+        // Gradient of MSE loss with respect to output
+        double grad = 2.0 * (state->values[i] - target[i]) / size;
+
+        // Backpropagate through derivatives
+        state->derivatives[i] = grad;
+
+        // If input gradient is requested, compute it
+        if (input_gradient != NULL) {
+            input_gradient[i] = grad;
+        }
+    }
+}
+
+void diff_transformer_update_parameters(
+    DiffTransformerState* state,
+    double learning_rate
+) {
+    size_t size = state->seq_length * state->hidden_dim;
+
+    // Apply gradient descent to update values
+    #pragma omp parallel for
+    for (size_t i = 0; i < size; i++) {
+        // Clip gradients to prevent exploding gradients
+        double grad = state->derivatives[i];
+        if (fabs(grad) > MAX_GRAD_NORM) {
+            grad = copysign(MAX_GRAD_NORM, grad);
+        }
+
+        // Update parameters using gradient descent
+        state->values[i] -= learning_rate * grad;
+    }
 }

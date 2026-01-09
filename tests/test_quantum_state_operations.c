@@ -4,6 +4,7 @@
  */
 
 #include "quantum_geometric/physics/quantum_state_operations.h"
+#include "quantum_geometric/physics/stabilizer_measurement.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>

@@ -19,21 +19,30 @@ static const double TEST_SPATIAL_THRESHOLD = 0.3;
 static const double TEST_TEMPORAL_THRESHOLD = 0.2;
 
 // Helper function to create test quantum state
-static quantum_state* create_test_state(void) {
-    quantum_state* state = create_quantum_state(TEST_LATTICE_SIZE);
+static quantum_state_t* create_test_state(void) {
+    quantum_state_t* state = malloc(sizeof(quantum_state_t));
     if (!state) {
         return NULL;
     }
 
     // Initialize with a simple test state
-    initialize_test_state(state);
+    state->num_qubits = TEST_LATTICE_SIZE;
+    state->dimension = 1 << TEST_LATTICE_SIZE; // 2^num_qubits
+    state->coordinates = calloc(state->dimension, sizeof(ComplexFloat));
+
+    // Initialize to |0> state
+    if (state->coordinates) {
+        state->coordinates[0].real = 1.0f;
+        state->coordinates[0].imag = 0.0f;
+    }
+
     return state;
 }
 
 // Helper function to create test syndrome graph
 static MatchingGraph* create_test_graph(void) {
-    MatchingGraph* graph = init_matching_graph(MAX_TEST_SYNDROMES, MAX_TEST_SYNDROMES * 2);
-    if (!graph) {
+    MatchingGraph* graph;
+    if (init_matching_graph(MAX_TEST_SYNDROMES, MAX_TEST_SYNDROMES * 2, &graph) != QGT_SUCCESS) {
         return NULL;
     }
 
@@ -63,8 +72,7 @@ static void test_correlation_initialization(void) {
         .enable_cross_correlation = true
     };
 
-    bool init_success = init_error_correlation(&config);
-    assert(init_success);
+    assert(init_error_correlation(&config));
 
     cleanup_error_correlation();
     printf("Correlation initialization test passed\n");
@@ -74,7 +82,7 @@ static void test_correlation_initialization(void) {
 static void test_correlation_analysis(void) {
     printf("Testing correlation analysis...\n");
 
-    quantum_state* state = create_test_state();
+    quantum_state_t* state = create_test_state();
     assert(state != NULL);
 
     MatchingGraph* graph = create_test_graph();
@@ -88,8 +96,7 @@ static void test_correlation_analysis(void) {
         .enable_cross_correlation = true
     };
 
-    bool init_success = init_error_correlation(&config);
-    assert(init_success);
+    assert(init_error_correlation(&config));
 
     // Test initial correlation analysis
     ErrorCorrelation correlation = analyze_error_correlations(graph, state);
@@ -101,7 +108,8 @@ static void test_correlation_analysis(void) {
     assert(correlation.correlation_time <= TEST_HISTORY_LENGTH);
 
     cleanup_matching_graph(graph);
-    destroy_quantum_state(state);
+    free(state->coordinates);
+    free(state);
     cleanup_error_correlation();
     printf("Correlation analysis test passed\n");
 }
@@ -110,7 +118,7 @@ static void test_correlation_analysis(void) {
 static void test_correlation_model_updates(void) {
     printf("Testing correlation model updates...\n");
 
-    quantum_state* state = create_test_state();
+    quantum_state_t* state = create_test_state();
     assert(state != NULL);
 
     MatchingGraph* graph = create_test_graph();
@@ -124,8 +132,7 @@ static void test_correlation_model_updates(void) {
         .enable_cross_correlation = true
     };
 
-    bool init_success = init_error_correlation(&config);
-    assert(init_success);
+    assert(init_error_correlation(&config));
 
     // Initial correlation
     ErrorCorrelation correlation = analyze_error_correlations(graph, state);
@@ -134,10 +141,10 @@ static void test_correlation_model_updates(void) {
     for (size_t i = 0; i < 5; i++) {
         // Modify graph to simulate error evolution
         add_syndrome_vertex(graph, i+1, i+1, 1, 0.5 + i*0.1, false, i+4);
-        
+
         // Update correlation model
         correlation = update_correlation_model(graph, &correlation);
-        
+
         // Verify updated correlations
         assert(correlation.spatial_correlation >= 0.0);
         assert(correlation.spatial_correlation <= 1.0);
@@ -146,7 +153,8 @@ static void test_correlation_model_updates(void) {
     }
 
     cleanup_matching_graph(graph);
-    destroy_quantum_state(state);
+    free(state->coordinates);
+    free(state);
     cleanup_error_correlation();
     printf("Correlation model updates test passed\n");
 }

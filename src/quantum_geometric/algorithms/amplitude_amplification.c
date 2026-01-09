@@ -278,19 +278,33 @@ static void apply_controlled_grover_power(ComplexFloat* state, size_t total_dim,
             work[w] = state[base | w];
         }
 
-        // Apply G^(2^power)
+        // Apply G^(2^power) - the full Grover iterate
+        // G = S_ψ O where S_ψ = A S₀ A† (state reflection) and O is the oracle
         size_t actual_power = 1ULL << power;
         for (size_t p = 0; p < actual_power; p++) {
-            // Apply oracle
+            // Step 1: Apply oracle O (phase flip marked states)
             amp->oracle(work, work_qubits, amp->oracle_data);
 
-            // Apply state reflection (simplified for work register)
-            // This is an approximation - full implementation would need
-            // proper A and A† operators
-            amp_state_t temp = *amp;
-            temp.amplitudes = work;
-            temp.dimension = work_dim;
-            amp_apply_state_reflection(&temp);
+            // Step 2: Apply state reflection S_ψ = A S₀ A†
+            // Create a properly configured temporary state for the work register
+            amp_state_t work_state;
+            memset(&work_state, 0, sizeof(amp_state_t));
+            work_state.amplitudes = work;
+            work_state.dimension = work_dim;
+            work_state.num_qubits = work_qubits;
+            work_state.iterations = amp->iterations;
+
+            // Copy preparation functions from original state
+            // These implement the state preparation operator A and its inverse
+            work_state.prepare = amp->prepare;
+            work_state.prepare_inv = amp->prepare_inv;
+            work_state.prepare_data = amp->prepare_data;
+            work_state.oracle = amp->oracle;
+            work_state.oracle_data = amp->oracle_data;
+
+            // Apply the state reflection: A S₀ A†
+            // This performs: 2|ψ⟩⟨ψ| - I on the work register
+            amp_apply_state_reflection(&work_state);
         }
 
         // Write back

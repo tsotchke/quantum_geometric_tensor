@@ -44,14 +44,20 @@ extern "C" {
 
 // Context type alias - tests expect qgt_context_t
 // We'll use the quantum_geometric_state_t as the context for now
+#ifndef QGT_CONTEXT_TYPE_DEFINED
+#define QGT_CONTEXT_TYPE_DEFINED
 typedef struct qgt_context {
     void* internal_state;
     size_t max_qubits;
     bool initialized;
 } qgt_context_t;
+#endif
 
 // State type alias - tests expect qgt_state_t
+#ifndef QGT_STATE_TYPE_DEFINED
+#define QGT_STATE_TYPE_DEFINED
 typedef quantum_state_t qgt_state_t;
+#endif
 
 // Error type alias
 typedef qgt_error_t qgt_error_t;
@@ -89,6 +95,14 @@ typedef enum {
 qgt_error_t mock_create_state(qgt_context_t* ctx,
                               size_t num_qubits,
                               qgt_state_t** state);
+
+/**
+ * Create a quantum state (production API)
+ * This is the expected test API that wraps mock_create_state
+ */
+qgt_error_t qgt_create_state(qgt_context_t* ctx,
+                             size_t num_qubits,
+                             qgt_state_t** state);
 
 /**
  * Create an entangled state for testing

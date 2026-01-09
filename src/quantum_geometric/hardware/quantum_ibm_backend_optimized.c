@@ -18,8 +18,8 @@ static IBMBackendState* g_ibm_backend_state __attribute__((unused)) = NULL;
 static bool initialize_backend(IBMBackendState* state,
                              const IBMBackendConfig* config);
 static void cleanup_backend(IBMBackendState* state);
-static bool optimize_circuit(IBMBackendState* state,
-                           ibm_quantum_circuit* circuit);
+static bool optimize_ibm_circuit_internal(IBMBackendState* state,
+                                          ibm_quantum_circuit* circuit);
 static bool execute_optimized(IBMBackendState* state,
                             ibm_quantum_circuit* circuit,
                             IBMJobResult* result);
@@ -443,7 +443,7 @@ bool execute_ibm_circuit_optimized(IBMBackendState* state,
     }
 
     // Optimize circuit for backend
-    if (!optimize_circuit(state, circuit)) {
+    if (!optimize_ibm_circuit_internal(state, circuit)) {
         return false;
     }
 
@@ -532,8 +532,8 @@ static void cleanup_backend(IBMBackendState* state) {
     state->connected = false;
 }
 
-static bool optimize_circuit(IBMBackendState* state,
-                           ibm_quantum_circuit* circuit) {
+static bool optimize_ibm_circuit_internal(IBMBackendState* state,
+                                          ibm_quantum_circuit* circuit) {
     if (!state || !circuit) {
         return false;
     }

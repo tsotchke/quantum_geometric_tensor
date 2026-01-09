@@ -12,8 +12,11 @@
 #include "quantum_geometric/physics/surface_code.h"
 #include "quantum_geometric/physics/error_syndrome.h"
 #include "quantum_geometric/core/performance_monitor.h"
+#include "quantum_geometric/core/production_monitor.h"
+#include "quantum_geometric/core/test_integration_api.h"
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include <assert.h>
 
 // Test scenarios
@@ -82,7 +85,7 @@ static void test_error_correction_pipeline(void) {
 
         // Apply error correction
         start_operation_timing("correction_cycle");
-        bool corrected = apply_error_correction(corrector, syndromes);
+        bool corrected = apply_surface_code_correction(corrector, syndromes);
         end_operation_timing("correction_cycle");
         assert(corrected);
 
@@ -120,27 +123,55 @@ static void test_hardware_integration(void) {
 
     // Test IBM backend
     IBMConfig ibm_config = {
+        .api_key = NULL,
+        .url = NULL,
         .backend_name = "ibmq_brooklyn",
-        .shots = 1000,
-        .optimization_level = 3
+        .hub = NULL,
+        .group = NULL,
+        .project = NULL,
+        .max_shots = 1000,
+        .max_qubits = 65,
+        .coupling_map = {{0}},
+        .noise_model = NULL,
+        .optimize_mapping = true,
+        .optimization_level = 3,
+        .backend_specific_config = NULL
     };
     IBMState ibm_state;
     assert(init_ibm_backend(&ibm_state, &ibm_config));
 
     // Test Rigetti backend
     RigettiConfig rigetti_config = {
-        .solver_name = "Aspen-M-3",
-        .num_shots = 1000,
-        .optimization_level = 3
+        .api_key = NULL,
+        .url = NULL,
+        .backend_name = "Aspen-M-3",
+        .max_shots = 1000,
+        .max_qubits = 40,
+        .coupling_map = {{0}},
+        .noise_model = NULL,
+        .optimize_mapping = true,
+        .use_pulse_control = false,
+        .t1_time = 25.0,
+        .t2_time = 20.0,
+        .backend_specific_config = NULL
     };
     RigettiState rigetti_state;
     assert(init_rigetti_backend(&rigetti_state, &rigetti_config));
 
     // Test D-Wave backend
     DWaveConfig dwave_config = {
-        .solver_name = "Advantage_system4.1",
-        .num_reads = 1000,
-        .chain_strength = 1.5
+        .api_key = NULL,
+        .url = NULL,
+        .backend_name = "Advantage_system4.1",
+        .max_shots = 1000,
+        .max_qubits = 5000,
+        .coupling_map = {{0}},
+        .noise_model = NULL,
+        .optimize_mapping = true,
+        .annealing_time = 20,
+        .chain_strength = 1.5,
+        .energy_scale = 1.0,
+        .backend_specific_config = NULL
     };
     DWaveState dwave_state;
     assert(init_dwave_backend(&dwave_state, &dwave_config));
@@ -222,9 +253,21 @@ static void test_distributed_execution(void) {
 
     // Initialize distributed system
     distributed_config config = {
-        .num_nodes = 4,
-        .node_type = COMPUTE_NODE,
-        .communication_mode = ASYNC
+        .world_size = 4,
+        .local_rank = 0,
+        .num_gpus_per_node = 0,
+        .batch_size = 32,
+        .micro_batch_size = 8,
+        .learning_rate = 0.001f,
+        .warmup_steps = 100,
+        .max_steps = 10000,
+        .save_interval = 1000,
+        .use_model_parallel = false,
+        .use_data_parallel = true,
+        .use_pipeline_parallel = false,
+        .use_mixed_precision = false,
+        .use_gradient_checkpointing = false,
+        .checkpoint_dir = NULL
     };
     assert(init_distributed_system(&config));
 
@@ -249,7 +292,7 @@ static void test_distributed_execution(void) {
 
         // Synchronize results
         start_operation_timing("synchronization");
-        assert(synchronize_results(result));
+        assert(test_synchronize_computation_result(result));
         end_operation_timing("synchronization");
 
         cleanup_computation_result(result);
@@ -311,9 +354,11 @@ static void test_error_cases(void) {
     assert(!init_syndrome_detector(NULL));
 
     // Test invalid operations
-    assert(!perform_quantum_operation(NULL));
+    // Note: perform_quantum_operation returns void, so we just call it with NULL
+    // The implementation should handle NULL gracefully
+    perform_quantum_operation(NULL);  // Should not crash
     assert(!detect_error_syndromes(NULL));
-    assert(!apply_error_correction(NULL, NULL));
+    assert(!apply_surface_code_correction(NULL, NULL));
 
     // Test resource exhaustion
     simulate_resource_exhaustion();
@@ -330,14 +375,12 @@ static void test_error_cases(void) {
 static void setup_test_environment(void) {
     // Initialize test environment
     init_quantum_system();
-    init_error_correction();
     init_hardware_backends();
 }
 
 static void cleanup_test_environment(void) {
     // Cleanup test environment
     cleanup_quantum_system();
-    cleanup_error_correction();
     cleanup_hardware_backends();
 }
 

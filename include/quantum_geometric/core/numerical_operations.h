@@ -14,7 +14,7 @@ typedef enum {
     NUM_TYPE_QUANTUM       // Quantum states
 } numerical_type_t;
 
-// Operation types
+// Numerical operation types (renamed to avoid conflict with other modules)
 typedef enum {
     OP_ADD,                // Addition
     OP_SUBTRACT,           // Subtraction
@@ -22,7 +22,7 @@ typedef enum {
     OP_DIVIDE,             // Division
     OP_TENSOR_PROD,        // Tensor product
     OP_QUANTUM_PROD       // Quantum product
-} operation_type_t;
+} numerical_operation_type_t;
 
 // Precision levels
 typedef enum {
@@ -126,7 +126,7 @@ bool get_matrix_properties(numerical_operations_t* ops, const void* matrix,
 bool get_tensor_properties(numerical_operations_t* ops, const void* tensor,
                          tensor_properties_t* props);
 bool validate_operation(numerical_operations_t* ops, const void* result,
-                       operation_type_t op_type, operation_result_t* op_result);
+                       numerical_operation_type_t op_type, operation_result_t* op_result);
 
 // Memory management
 bool allocate_workspace(numerical_operations_t* ops, size_t size);

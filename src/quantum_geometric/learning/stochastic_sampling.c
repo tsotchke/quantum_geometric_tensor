@@ -8,31 +8,36 @@
 #include <math.h>
 #include <time.h>
 
+// StochasticSamplerState is defined in stochastic_sampling.h
+
 // Complete stochastic sampler structure
 struct StochasticSampler {
     // Configurations
     DiffusionConfig diffusion_config;
     PINNConfig pinn_config;
     LMCConfig lmc_config;
-    
+
     // Target distribution
     double (*log_prob)(const double* x, size_t dim);
     void (*log_prob_grad)(const double* x, size_t dim, double* grad);
     size_t dim;
-    
+
     // Quantum geometric components
-    quantum_geometric_state_t* state;
+    quantum_geometric_state_t* geometric_state;
     quantum_geometric_tensor_t* tensor;
     quantum_geometric_operator_t* operator;
-    
+
+    // Quantum state for external access
+    StochasticSamplerState* quantum_state;
+
     // Training state
     double* collocation_points;
     size_t num_collocation;
     double* time_points;
-    
+
     // Memory management
     void* memory_pool;
-    
+
     // Performance monitoring
     SamplingMetrics metrics;
 };
@@ -40,44 +45,77 @@ struct StochasticSampler {
 // Initialize quantum geometric components
 static int init_quantum_components(StochasticSampler* sampler) {
     if (!sampler) return -1;
-    
-    // Initialize quantum state
-    qgt_error_t err = geometric_create_state(&sampler->state,
+
+    // Initialize quantum geometric state
+    qgt_error_t err = geometric_create_state(&sampler->geometric_state,
                                            GEOMETRIC_STATE_EUCLIDEAN,
                                            sampler->dim,
                                            HARDWARE_TYPE_CPU);
     if (err != QGT_SUCCESS) return -1;
-    
+
+    // Initialize external quantum state
+    sampler->quantum_state = calloc(1, sizeof(QuantumState));
+    if (!sampler->quantum_state) {
+        geometric_destroy_state(sampler->geometric_state);
+        return -1;
+    }
+    sampler->quantum_state->dim = sampler->dim;
+    sampler->quantum_state->fidelity = 1.0;  // Start with perfect fidelity
+    sampler->quantum_state->purity = 1.0;    // Pure state initially
+    sampler->quantum_state->is_normalized = true;
+    sampler->quantum_state->amplitudes = calloc(sampler->dim, sizeof(double));
+    sampler->quantum_state->phases = calloc(sampler->dim, sizeof(double));
+    if (!sampler->quantum_state->amplitudes || !sampler->quantum_state->phases) {
+        free(sampler->quantum_state->amplitudes);
+        free(sampler->quantum_state->phases);
+        free(sampler->quantum_state);
+        geometric_destroy_state(sampler->geometric_state);
+        return -1;
+    }
+    // Initialize to ground state
+    if (sampler->dim > 0) {
+        sampler->quantum_state->amplitudes[0] = 1.0;
+    }
+
     // Initialize tensor
     sampler->tensor = malloc(sizeof(quantum_geometric_tensor_t));
     if (!sampler->tensor) {
-        geometric_destroy_state(sampler->state);
+        free(sampler->quantum_state->amplitudes);
+        free(sampler->quantum_state->phases);
+        free(sampler->quantum_state);
+        geometric_destroy_state(sampler->geometric_state);
         return -1;
     }
-    
+
     sampler->tensor->type = GEOMETRIC_TENSOR_SCALAR;
     sampler->tensor->rank = 1;
     sampler->tensor->dimensions = malloc(sizeof(size_t));
     if (!sampler->tensor->dimensions) {
         free(sampler->tensor);
-        geometric_destroy_state(sampler->state);
+        free(sampler->quantum_state->amplitudes);
+        free(sampler->quantum_state->phases);
+        free(sampler->quantum_state);
+        geometric_destroy_state(sampler->geometric_state);
         return -1;
     }
     sampler->tensor->dimensions[0] = sampler->dim;
-    
+
     // Initialize operator
     sampler->operator = malloc(sizeof(quantum_geometric_operator_t));
     if (!sampler->operator) {
         free(sampler->tensor->dimensions);
         free(sampler->tensor);
-        geometric_destroy_state(sampler->state);
+        free(sampler->quantum_state->amplitudes);
+        free(sampler->quantum_state->phases);
+        free(sampler->quantum_state);
+        geometric_destroy_state(sampler->geometric_state);
         return -1;
     }
-    
+
     sampler->operator->type = GEOMETRIC_OPERATOR_METRIC;
     sampler->operator->dimension = sampler->dim;
     sampler->operator->rank = 2;
-    
+
     return 0;
 }
 
@@ -187,21 +225,28 @@ int stochastic_sampler_sample(
 
 void stochastic_sampler_free(StochasticSampler* sampler) {
     if (!sampler) return;
-    
-    // Free quantum components
-    if (sampler->state) {
-        geometric_destroy_state(sampler->state);
+
+    // Free quantum geometric state
+    if (sampler->geometric_state) {
+        geometric_destroy_state(sampler->geometric_state);
     }
-    
+
+    // Free external quantum state
+    if (sampler->quantum_state) {
+        free(sampler->quantum_state->amplitudes);
+        free(sampler->quantum_state->phases);
+        free(sampler->quantum_state);
+    }
+
     if (sampler->tensor) {
         free(sampler->tensor->dimensions);
         free(sampler->tensor);
     }
-    
+
     if (sampler->operator) {
         free(sampler->operator);
     }
-    
+
     free(sampler->collocation_points);
     free(sampler->time_points);
     free(sampler);
@@ -209,4 +254,20 @@ void stochastic_sampler_free(StochasticSampler* sampler) {
 
 const SamplingMetrics* stochastic_sampler_get_metrics(const StochasticSampler* sampler) {
     return sampler ? &sampler->metrics : NULL;
+}
+
+const StochasticSamplerState* stochastic_sampler_get_state(const StochasticSampler* sampler) {
+    return sampler ? sampler->quantum_state : NULL;
+}
+
+size_t stochastic_state_get_dim(const StochasticSamplerState* state) {
+    return state ? state->dim : 0;
+}
+
+double stochastic_state_get_fidelity(const StochasticSamplerState* state) {
+    return state ? state->fidelity : 0.0;
+}
+
+double stochastic_state_get_purity(const StochasticSamplerState* state) {
+    return state ? state->purity : 0.0;
 }

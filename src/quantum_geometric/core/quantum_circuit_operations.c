@@ -11,8 +11,8 @@
 #include <math.h>
 #include <complex.h>
 
-// Type aliases for API compatibility
-typedef quantum_state_t quantum_state;
+// Note: quantum_state is defined as QuantumState in quantum_circuit_operations.h
+// which has 'amplitudes' field (not 'coordinates')
 
 // QuantumState is defined in quantum_state_types.h with ComplexFloat* amplitudes
 // Include the header to use the standard definition
@@ -72,7 +72,7 @@ static void local_normalize_quantum_state(QuantumState* state);
 // Forward declarations for stub functions that need implementation
 static quantum_annealing_t* local_quantum_annealing_create(int flags);
 static void local_quantum_annealing_destroy(quantum_annealing_t* annealer);
-static QuantumState* init_quantum_state(size_t num_qubits);
+// Note: init_quantum_state, quantum_state_reset, quantum_state_cleanup are now public (non-static)
 static void quantum_controlled_unitary(QuantumState* extended, QuantumState* state, size_t power);
 static void quantum_inverse_fourier_transform_partial(QuantumState* state, size_t start, size_t count);
 
@@ -111,7 +111,7 @@ static void local_extract_state(ComplexFloat* dest, const quantum_register_t* re
 // Apply Hadamard gate to a single qubit
 // H = (1/sqrt(2)) * [[1, 1], [1, -1]]
 static void apply_hadamard_gate(quantum_state* state, size_t qubit, double phase) {
-    if (!state || !state->coordinates || qubit >= state->num_qubits) return;
+    if (!state || !state->amplitudes || qubit >= state->num_qubits) return;
 
     size_t dim = 1UL << state->num_qubits;
     size_t mask = 1UL << qubit;
@@ -121,8 +121,8 @@ static void apply_hadamard_gate(quantum_state* state, size_t qubit, double phase
     for (size_t i = 0; i < dim; i++) {
         if ((i & mask) == 0) {
             size_t j = i | mask;  // Partner state with qubit flipped
-            ComplexFloat a = state->coordinates[i];
-            ComplexFloat b = state->coordinates[j];
+            ComplexFloat a = state->amplitudes[i];
+            ComplexFloat b = state->amplitudes[j];
 
             // |0> -> (|0> + |1>)/sqrt(2)
             // |1> -> (|0> - |1>)/sqrt(2) * phase
@@ -130,8 +130,8 @@ static void apply_hadamard_gate(quantum_state* state, size_t qubit, double phase
             ComplexFloat diff = {a.real - b.real, a.imag - b.imag};
             diff = complex_float_multiply(diff, phase_factor);
 
-            state->coordinates[i] = (ComplexFloat){sum.real * inv_sqrt2, sum.imag * inv_sqrt2};
-            state->coordinates[j] = (ComplexFloat){diff.real * inv_sqrt2, diff.imag * inv_sqrt2};
+            state->amplitudes[i] = (ComplexFloat){sum.real * inv_sqrt2, sum.imag * inv_sqrt2};
+            state->amplitudes[j] = (ComplexFloat){diff.real * inv_sqrt2, diff.imag * inv_sqrt2};
         }
     }
 }
@@ -139,7 +139,7 @@ static void apply_hadamard_gate(quantum_state* state, size_t qubit, double phase
 // Apply rotation around X axis: RX(theta) = exp(-i * theta/2 * X)
 // RX(theta) = [[cos(theta/2), -i*sin(theta/2)], [-i*sin(theta/2), cos(theta/2)]]
 static void apply_rotation_x(quantum_state* state, size_t qubit, double theta) {
-    if (!state || !state->coordinates || qubit >= state->num_qubits) return;
+    if (!state || !state->amplitudes || qubit >= state->num_qubits) return;
 
     size_t dim = 1UL << state->num_qubits;
     size_t mask = 1UL << qubit;
@@ -149,16 +149,16 @@ static void apply_rotation_x(quantum_state* state, size_t qubit, double theta) {
     for (size_t i = 0; i < dim; i++) {
         if ((i & mask) == 0) {
             size_t j = i | mask;
-            ComplexFloat a = state->coordinates[i];
-            ComplexFloat b = state->coordinates[j];
+            ComplexFloat a = state->amplitudes[i];
+            ComplexFloat b = state->amplitudes[j];
 
             // new_a = cos(theta/2)*a - i*sin(theta/2)*b
             // new_b = -i*sin(theta/2)*a + cos(theta/2)*b
-            state->coordinates[i] = (ComplexFloat){
+            state->amplitudes[i] = (ComplexFloat){
                 c * a.real + s * b.imag,
                 c * a.imag - s * b.real
             };
-            state->coordinates[j] = (ComplexFloat){
+            state->amplitudes[j] = (ComplexFloat){
                 s * a.imag + c * b.real,
                 -s * a.real + c * b.imag
             };
@@ -169,7 +169,7 @@ static void apply_rotation_x(quantum_state* state, size_t qubit, double theta) {
 // Apply rotation around Y axis: RY(theta) = exp(-i * theta/2 * Y)
 // RY(theta) = [[cos(theta/2), -sin(theta/2)], [sin(theta/2), cos(theta/2)]]
 static void apply_rotation_y(quantum_state* state, size_t qubit, double theta) {
-    if (!state || !state->coordinates || qubit >= state->num_qubits) return;
+    if (!state || !state->amplitudes || qubit >= state->num_qubits) return;
 
     size_t dim = 1UL << state->num_qubits;
     size_t mask = 1UL << qubit;
@@ -179,16 +179,16 @@ static void apply_rotation_y(quantum_state* state, size_t qubit, double theta) {
     for (size_t i = 0; i < dim; i++) {
         if ((i & mask) == 0) {
             size_t j = i | mask;
-            ComplexFloat a = state->coordinates[i];
-            ComplexFloat b = state->coordinates[j];
+            ComplexFloat a = state->amplitudes[i];
+            ComplexFloat b = state->amplitudes[j];
 
             // new_a = cos(theta/2)*a - sin(theta/2)*b
             // new_b = sin(theta/2)*a + cos(theta/2)*b
-            state->coordinates[i] = (ComplexFloat){
+            state->amplitudes[i] = (ComplexFloat){
                 c * a.real - s * b.real,
                 c * a.imag - s * b.imag
             };
-            state->coordinates[j] = (ComplexFloat){
+            state->amplitudes[j] = (ComplexFloat){
                 s * a.real + c * b.real,
                 s * a.imag + c * b.imag
             };
@@ -199,7 +199,7 @@ static void apply_rotation_y(quantum_state* state, size_t qubit, double theta) {
 // Apply rotation around Z axis: RZ(theta) = exp(-i * theta/2 * Z)
 // RZ(theta) = [[exp(-i*theta/2), 0], [0, exp(i*theta/2)]]
 static void apply_rotation_z(quantum_state* state, size_t qubit, double theta) {
-    if (!state || !state->coordinates || qubit >= state->num_qubits) return;
+    if (!state || !state->amplitudes || qubit >= state->num_qubits) return;
 
     size_t dim = 1UL << state->num_qubits;
     size_t mask = 1UL << qubit;
@@ -207,16 +207,16 @@ static void apply_rotation_z(quantum_state* state, size_t qubit, double theta) {
     float s = sinf((float)(theta / 2.0));
 
     for (size_t i = 0; i < dim; i++) {
-        ComplexFloat a = state->coordinates[i];
+        ComplexFloat a = state->amplitudes[i];
         if ((i & mask) == 0) {
             // |0> component: multiply by exp(-i*theta/2)
-            state->coordinates[i] = (ComplexFloat){
+            state->amplitudes[i] = (ComplexFloat){
                 c * a.real + s * a.imag,
                 c * a.imag - s * a.real
             };
         } else {
             // |1> component: multiply by exp(i*theta/2)
-            state->coordinates[i] = (ComplexFloat){
+            state->amplitudes[i] = (ComplexFloat){
                 c * a.real - s * a.imag,
                 c * a.imag + s * a.real
             };
@@ -227,7 +227,7 @@ static void apply_rotation_z(quantum_state* state, size_t qubit, double theta) {
 // Apply controlled-Z gate: CZ only applies phase when both qubits are |1>
 // CZ|00> = |00>, CZ|01> = |01>, CZ|10> = |10>, CZ|11> = -|11>
 static void apply_controlled_z(quantum_state* state, size_t control, size_t target) {
-    if (!state || !state->coordinates) return;
+    if (!state || !state->amplitudes) return;
     if (control >= state->num_qubits || target >= state->num_qubits) return;
 
     size_t dim = 1UL << state->num_qubits;
@@ -237,8 +237,8 @@ static void apply_controlled_z(quantum_state* state, size_t control, size_t targ
     for (size_t i = 0; i < dim; i++) {
         // Only apply phase flip when both control and target qubits are |1>
         if ((i & control_mask) && (i & target_mask)) {
-            state->coordinates[i].real = -state->coordinates[i].real;
-            state->coordinates[i].imag = -state->coordinates[i].imag;
+            state->amplitudes[i].real = -state->amplitudes[i].real;
+            state->amplitudes[i].imag = -state->amplitudes[i].imag;
         }
     }
 }
@@ -246,7 +246,7 @@ static void apply_controlled_z(quantum_state* state, size_t control, size_t targ
 // Apply controlled-X (CNOT) gate: flips target qubit when control is |1>
 // CNOT|00> = |00>, CNOT|01> = |01>, CNOT|10> = |11>, CNOT|11> = |10>
 static void apply_controlled_x(quantum_state* state, size_t control, size_t target) {
-    if (!state || !state->coordinates) return;
+    if (!state || !state->amplitudes) return;
     if (control >= state->num_qubits || target >= state->num_qubits) return;
 
     size_t dim = 1UL << state->num_qubits;
@@ -257,16 +257,16 @@ static void apply_controlled_x(quantum_state* state, size_t control, size_t targ
         // Only swap when control is |1> and we haven't processed this pair
         if ((i & control_mask) && !(i & target_mask)) {
             size_t j = i | target_mask;  // Partner with target flipped
-            ComplexFloat temp = state->coordinates[i];
-            state->coordinates[i] = state->coordinates[j];
-            state->coordinates[j] = temp;
+            ComplexFloat temp = state->amplitudes[i];
+            state->amplitudes[i] = state->amplitudes[j];
+            state->amplitudes[j] = temp;
         }
     }
 }
 
 // Apply SWAP gate: swaps the states of two qubits
 static void apply_swap(quantum_state* state, size_t qubit1, size_t qubit2) {
-    if (!state || !state->coordinates) return;
+    if (!state || !state->amplitudes) return;
     if (qubit1 >= state->num_qubits || qubit2 >= state->num_qubits) return;
 
     size_t dim = 1UL << state->num_qubits;
@@ -280,9 +280,9 @@ static void apply_swap(quantum_state* state, size_t qubit1, size_t qubit2) {
         if (bit1 && !bit2) {
             // This is a |10> state, swap with corresponding |01> state
             size_t j = (i & ~mask1) | mask2;
-            ComplexFloat temp = state->coordinates[i];
-            state->coordinates[i] = state->coordinates[j];
-            state->coordinates[j] = temp;
+            ComplexFloat temp = state->amplitudes[i];
+            state->amplitudes[i] = state->amplitudes[j];
+            state->amplitudes[j] = temp;
         }
     }
 }
@@ -297,7 +297,7 @@ static void quantum_wait(quantum_state* state, double delay_ns) {
 
 // Measure a single qubit and collapse state
 static int quantum_measure_qubit(quantum_state* state, size_t qubit) {
-    if (!state || !state->coordinates || qubit >= state->num_qubits) return -1;
+    if (!state || !state->amplitudes || qubit >= state->num_qubits) return -1;
 
     size_t dim = 1UL << state->num_qubits;
     size_t mask = 1UL << qubit;
@@ -306,7 +306,7 @@ static int quantum_measure_qubit(quantum_state* state, size_t qubit) {
     double prob_zero = 0.0;
     for (size_t i = 0; i < dim; i++) {
         if ((i & mask) == 0) {
-            prob_zero += complex_float_abs_squared(state->coordinates[i]);
+            prob_zero += complex_float_abs_squared(state->amplitudes[i]);
         }
     }
 
@@ -319,9 +319,9 @@ static int quantum_measure_qubit(quantum_state* state, size_t qubit) {
     for (size_t i = 0; i < dim; i++) {
         bool matches = ((i & mask) != 0) == outcome;
         if (!matches) {
-            state->coordinates[i] = COMPLEX_FLOAT_ZERO;
+            state->amplitudes[i] = COMPLEX_FLOAT_ZERO;
         } else {
-            norm += complex_float_abs_squared(state->coordinates[i]);
+            norm += complex_float_abs_squared(state->amplitudes[i]);
         }
     }
 
@@ -329,8 +329,8 @@ static int quantum_measure_qubit(quantum_state* state, size_t qubit) {
     if (norm > 1e-15) {
         float inv_norm = 1.0f / sqrtf((float)norm);
         for (size_t i = 0; i < dim; i++) {
-            state->coordinates[i].real *= inv_norm;
-            state->coordinates[i].imag *= inv_norm;
+            state->amplitudes[i].real *= inv_norm;
+            state->amplitudes[i].imag *= inv_norm;
         }
     }
 
@@ -1354,6 +1354,7 @@ bool quantum_circuit_is_unitary(const quantum_circuit_t* circuit) {
     return true;
 }
 
+
 // Quantum-accelerated matrix encoding using amplitude estimation - O(log N)
 void quantum_encode_matrix(QuantumState* state,
                          const HierarchicalMatrix* mat) {
@@ -2168,6 +2169,65 @@ void cleanup_quantum_circuit(quantum_circuit* circuit) {
     free(circuit);
 }
 
+// Cleanup quantum_circuit_t (for quantum_circuit_t type used in optimized backends)
+void cleanup_circuit(quantum_circuit_t* circuit) {
+    if (!circuit) return;
+
+    // Free gates
+    if (circuit->gates) {
+        for (size_t i = 0; i < circuit->num_gates; i++) {
+            if (circuit->gates[i]) {
+                free(circuit->gates[i]->target_qubits);
+                free(circuit->gates[i]->control_qubits);
+                free(circuit->gates[i]->qubits);
+                free(circuit->gates[i]->parameters);
+                free(circuit->gates[i]->matrix);
+                free(circuit->gates[i]);
+            }
+        }
+        free(circuit->gates);
+    }
+
+    // Free layers if present
+    if (circuit->layers) {
+        for (size_t i = 0; i < circuit->num_layers; i++) {
+            if (circuit->layers[i]) {
+                free(circuit->layers[i]->gates);
+                free(circuit->layers[i]);
+            }
+        }
+        free(circuit->layers);
+    }
+
+    // Free nodes if present
+    if (circuit->nodes) {
+        for (size_t i = 0; i < circuit->num_nodes; i++) {
+            if (circuit->nodes[i]) {
+                free(circuit->nodes[i]->qubit_indices);
+                free(circuit->nodes[i]->parameters);
+                free(circuit->nodes[i]->children);
+                free(circuit->nodes[i]);
+            }
+        }
+        free(circuit->nodes);
+    }
+
+    // Free state if present
+    if (circuit->state) {
+        // State cleanup should be handled by state management functions
+        // Don't free here to avoid double-free
+        circuit->state = NULL;
+    }
+
+    // Free graph if present
+    if (circuit->graph) {
+        // Graph cleanup should be handled by graph management functions
+        circuit->graph = NULL;
+    }
+
+    free(circuit);
+}
+
 // Add gate to circuit (public API)
 qgt_error_t add_gate(quantum_circuit* circuit, gate_type_t type,
                      size_t* qubits, size_t num_qubits,
@@ -2221,17 +2281,122 @@ qgt_error_t add_gate(quantum_circuit* circuit, gate_type_t type,
     return QGT_SUCCESS;
 }
 
+// Quantum convolutional layer parameters
+typedef struct {
+    size_t kernel_size;     // Number of qubits in convolution kernel
+    size_t stride;          // Stride of the convolution
+    double* angles;         // Rotation angles (3 per qubit pair)
+    size_t num_angles;      // Number of angle parameters
+} QuantumConvParams;
+
+// Quantum pooling layer parameters
+typedef struct {
+    size_t pool_size;       // Number of qubits to pool together
+    bool use_measurement;   // Use measurement-based or unitary pooling
+} QuantumPoolParams;
+
 // Quantum layer functions
 void add_quantum_conv_layer(quantum_circuit* circuit, void* params) {
-    if (!circuit) return;
-    (void)params;
-    // Placeholder for quantum convolutional layer
+    if (!circuit || circuit->num_qubits < 2) return;
+
+    QuantumConvParams* conv_params = (QuantumConvParams*)params;
+    size_t kernel_size = conv_params ? conv_params->kernel_size : 2;
+    size_t stride = conv_params ? conv_params->stride : 1;
+    double* angles = conv_params ? conv_params->angles : NULL;
+
+    // Default angles if not provided
+    double default_angles[3] = {M_PI / 4.0, M_PI / 6.0, M_PI / 8.0};
+
+    // Apply convolutional kernel across all valid positions
+    size_t angle_idx = 0;
+    for (size_t pos = 0; pos + kernel_size <= circuit->num_qubits; pos += stride) {
+        // Apply parameterized two-qubit gates within kernel
+        for (size_t k = 0; k < kernel_size - 1; k++) {
+            size_t q1 = pos + k;
+            size_t q2 = pos + k + 1;
+
+            // Get angles (either from params or defaults)
+            double theta = angles && angle_idx < conv_params->num_angles ?
+                          angles[angle_idx++] : default_angles[0];
+            double phi = angles && angle_idx < conv_params->num_angles ?
+                        angles[angle_idx++] : default_angles[1];
+            double lambda = angles && angle_idx < conv_params->num_angles ?
+                           angles[angle_idx++] : default_angles[2];
+
+            // Layer 1: Single qubit rotations (RY)
+            add_gate(circuit, GATE_RY, &q1, 1, &theta, 1);
+            add_gate(circuit, GATE_RY, &q2, 1, &phi, 1);
+
+            // Layer 2: Entangling gate (CNOT)
+            size_t cnot_qubits[2] = {q1, q2};
+            add_gate(circuit, GATE_TYPE_CNOT, cnot_qubits, 2, NULL, 0);
+
+            // Layer 3: Post-entanglement rotations (RZ)
+            add_gate(circuit, GATE_RZ, &q1, 1, &lambda, 1);
+            double theta_half = theta * 0.5;
+            add_gate(circuit, GATE_RZ, &q2, 1, &theta_half, 1);
+
+            // Layer 4: Second entangling gate for stronger correlation
+            size_t cnot_qubits2[2] = {q2, q1};
+            add_gate(circuit, GATE_TYPE_CNOT, cnot_qubits2, 2, NULL, 0);
+        }
+    }
 }
 
 void add_quantum_pool_layer(quantum_circuit* circuit, void* params) {
-    if (!circuit) return;
-    (void)params;
-    // Placeholder for quantum pooling layer
+    if (!circuit || circuit->num_qubits < 2) return;
+
+    QuantumPoolParams* pool_params = (QuantumPoolParams*)params;
+    size_t pool_size = pool_params ? pool_params->pool_size : 2;
+    bool use_measurement = pool_params ? pool_params->use_measurement : false;
+
+    // Pooling reduces information from pool_size qubits to 1
+    // Using controlled rotation approach (measurement-free)
+    for (size_t pos = 0; pos + pool_size <= circuit->num_qubits; pos += pool_size) {
+        // The first qubit in each pool becomes the "output"
+        size_t output_qubit = pos;
+
+        if (use_measurement) {
+            // Measurement-based pooling: measure auxiliary qubits
+            // and apply correction based on measurement (classical feedback)
+            for (size_t k = 1; k < pool_size; k++) {
+                size_t aux_qubit = pos + k;
+                // Apply CNOT from aux to output before measurement
+                size_t cnot_qubits[2] = {aux_qubit, output_qubit};
+                add_gate(circuit, GATE_TYPE_CNOT, cnot_qubits, 2, NULL, 0);
+                // Mark auxiliary qubit for measurement
+                if (circuit->measured && aux_qubit < circuit->num_qubits) {
+                    circuit->measured[aux_qubit] = true;
+                }
+            }
+        } else {
+            // Unitary pooling: use controlled rotations to "concentrate"
+            // information into the output qubit
+            for (size_t k = 1; k < pool_size; k++) {
+                size_t aux_qubit = pos + k;
+
+                // Controlled RY rotation from aux to output
+                // Implemented as: CNOT, RY(-θ/2), CNOT, RY(θ/2)
+                double theta = M_PI / (2.0 * pool_size);
+                double neg_half_theta = -theta / 2.0;
+                double half_theta = theta / 2.0;
+
+                size_t cnot_qubits[2] = {aux_qubit, output_qubit};
+                add_gate(circuit, GATE_TYPE_CNOT, cnot_qubits, 2, NULL, 0);
+                add_gate(circuit, GATE_RY, &output_qubit, 1, &neg_half_theta, 1);
+                add_gate(circuit, GATE_TYPE_CNOT, cnot_qubits, 2, NULL, 0);
+                add_gate(circuit, GATE_RY, &output_qubit, 1, &half_theta, 1);
+
+                // SWAP-like operation to mix states
+                size_t cnot_qubits2[2] = {output_qubit, aux_qubit};
+                add_gate(circuit, GATE_TYPE_CNOT, cnot_qubits, 2, NULL, 0);
+                add_gate(circuit, GATE_TYPE_CNOT, cnot_qubits2, 2, NULL, 0);
+
+                // Apply Hadamard to aux (prepare for tracing out)
+                add_gate(circuit, GATE_H, &aux_qubit, 1, NULL, 0);
+            }
+        }
+    }
 }
 
 // add_quantum_dense_layer() - Canonical implementation in quantum_geometric_compute.c
@@ -2249,7 +2414,134 @@ size_t count_quantum_parameters(const quantum_circuit* circuit) {
 
 void apply_quantum_layers(const quantum_circuit* circuit, void* state) {
     if (!circuit || !state) return;
-    // Placeholder - apply quantum layers to state
+
+    QuantumState* qstate = (QuantumState*)state;
+    if (!qstate->amplitudes || qstate->dimension == 0) return;
+
+    // Apply each gate in the circuit to the quantum state
+    for (size_t i = 0; i < circuit->num_gates; i++) {
+        quantum_gate_t* gate = circuit->gates[i];
+        if (!gate) continue;
+
+        // Get target qubit
+        size_t target = gate->target_qubits ? gate->target_qubits[0] : 0;
+        if (target >= qstate->num_qubits) continue;
+
+        // Apply gate based on type
+        switch (gate->type) {
+            case GATE_X:
+                // Pauli X: swap |0> and |1> amplitudes
+                for (size_t j = 0; j < qstate->dimension; j++) {
+                    if ((j >> target) & 1) continue;
+                    size_t j_flip = j ^ (1ULL << target);
+                    ComplexFloat temp = qstate->amplitudes[j];
+                    qstate->amplitudes[j] = qstate->amplitudes[j_flip];
+                    qstate->amplitudes[j_flip] = temp;
+                }
+                break;
+
+            case GATE_Y:
+                // Pauli Y: -i|0><1| + i|1><0|
+                for (size_t j = 0; j < qstate->dimension; j++) {
+                    if ((j >> target) & 1) continue;
+                    size_t j_flip = j ^ (1ULL << target);
+                    ComplexFloat a0 = qstate->amplitudes[j];
+                    ComplexFloat a1 = qstate->amplitudes[j_flip];
+                    // Y|0> = i|1>, Y|1> = -i|0>
+                    qstate->amplitudes[j].real = a1.imag;
+                    qstate->amplitudes[j].imag = -a1.real;
+                    qstate->amplitudes[j_flip].real = -a0.imag;
+                    qstate->amplitudes[j_flip].imag = a0.real;
+                }
+                break;
+
+            case GATE_Z:
+                // Pauli Z: phase flip on |1>
+                for (size_t j = 0; j < qstate->dimension; j++) {
+                    if ((j >> target) & 1) {
+                        qstate->amplitudes[j].real = -qstate->amplitudes[j].real;
+                        qstate->amplitudes[j].imag = -qstate->amplitudes[j].imag;
+                    }
+                }
+                break;
+
+            case GATE_H:
+                // Hadamard
+                {
+                    float inv_sqrt2 = 1.0f / sqrtf(2.0f);
+                    for (size_t j = 0; j < qstate->dimension; j++) {
+                        if ((j >> target) & 1) continue;
+                        size_t j_flip = j ^ (1ULL << target);
+                        ComplexFloat a0 = qstate->amplitudes[j];
+                        ComplexFloat a1 = qstate->amplitudes[j_flip];
+                        qstate->amplitudes[j].real = inv_sqrt2 * (a0.real + a1.real);
+                        qstate->amplitudes[j].imag = inv_sqrt2 * (a0.imag + a1.imag);
+                        qstate->amplitudes[j_flip].real = inv_sqrt2 * (a0.real - a1.real);
+                        qstate->amplitudes[j_flip].imag = inv_sqrt2 * (a0.imag - a1.imag);
+                    }
+                }
+                break;
+
+            case GATE_RX:
+            case GATE_RY:
+            case GATE_RZ:
+                // Rotation gates
+                if (gate->parameters && gate->num_parameters > 0) {
+                    double theta = gate->parameters[0];
+                    float c = cosf(theta / 2.0f);
+                    float s = sinf(theta / 2.0f);
+
+                    for (size_t j = 0; j < qstate->dimension; j++) {
+                        if ((j >> target) & 1) continue;
+                        size_t j_flip = j ^ (1ULL << target);
+                        ComplexFloat a0 = qstate->amplitudes[j];
+                        ComplexFloat a1 = qstate->amplitudes[j_flip];
+
+                        if (gate->type == GATE_RZ) {
+                            // RZ: phase rotation
+                            qstate->amplitudes[j].real = c * a0.real + s * a0.imag;
+                            qstate->amplitudes[j].imag = c * a0.imag - s * a0.real;
+                            qstate->amplitudes[j_flip].real = c * a1.real - s * a1.imag;
+                            qstate->amplitudes[j_flip].imag = c * a1.imag + s * a1.real;
+                        } else if (gate->type == GATE_RX) {
+                            // RX rotation
+                            qstate->amplitudes[j].real = c * a0.real + s * a1.imag;
+                            qstate->amplitudes[j].imag = c * a0.imag - s * a1.real;
+                            qstate->amplitudes[j_flip].real = c * a1.real + s * a0.imag;
+                            qstate->amplitudes[j_flip].imag = c * a1.imag - s * a0.real;
+                        } else { // RY
+                            qstate->amplitudes[j].real = c * a0.real - s * a1.real;
+                            qstate->amplitudes[j].imag = c * a0.imag - s * a1.imag;
+                            qstate->amplitudes[j_flip].real = s * a0.real + c * a1.real;
+                            qstate->amplitudes[j_flip].imag = s * a0.imag + c * a1.imag;
+                        }
+                    }
+                }
+                break;
+
+            case GATE_CNOT:
+                // Controlled NOT (GATE_CX is an alias, handled by same case)
+                if (gate->control_qubits && gate->num_controls > 0) {
+                    size_t control = gate->control_qubits[0];
+                    if (control < qstate->num_qubits) {
+                        for (size_t j = 0; j < qstate->dimension; j++) {
+                            // Only flip target if control is |1>
+                            if (!((j >> control) & 1)) continue;
+                            if ((j >> target) & 1) continue;
+                            size_t j_flip = j ^ (1ULL << target);
+                            ComplexFloat temp = qstate->amplitudes[j];
+                            qstate->amplitudes[j] = qstate->amplitudes[j_flip];
+                            qstate->amplitudes[j_flip] = temp;
+                        }
+                    }
+                }
+                break;
+
+            default:
+                // Other gates: skip or apply identity
+                break;
+        }
+    }
 }
 
 // Local helper to create QuantumState (internal use only)
@@ -2305,9 +2597,31 @@ static void local_normalize_quantum_state(QuantumState* state) {
     state->is_normalized = true;
 }
 
-// Static wrapper for backward compatibility
-static QuantumState* init_quantum_state(size_t num_qubits) {
+// Public API: Create and initialize quantum state to |0...0⟩
+// This is the non-static version exported for tests
+QuantumState* init_quantum_state(size_t num_qubits) {
     return local_init_quantum_state(num_qubits);
+}
+
+// Public API: Reset quantum state to |0...0⟩
+void quantum_state_reset(QuantumState* state) {
+    if (!state || !state->amplitudes) return;
+
+    // Clear all amplitudes
+    for (size_t i = 0; i < state->dimension; i++) {
+        state->amplitudes[i].real = 0.0f;
+        state->amplitudes[i].imag = 0.0f;
+    }
+
+    // Set to |0...0⟩ state
+    state->amplitudes[0].real = 1.0f;
+    state->amplitudes[0].imag = 0.0f;
+    state->is_normalized = true;
+}
+
+// Public API: Cleanup quantum state (note: named to avoid conflict with quantum_state_t version)
+void quantum_state_cleanup(QuantumState* state) {
+    local_destroy_quantum_state(state);
 }
 
 // Local quantum annealing create (internal use)

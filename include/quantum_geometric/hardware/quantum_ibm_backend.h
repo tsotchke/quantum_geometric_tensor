@@ -167,9 +167,14 @@ bool validate_ibm_circuit(const struct QuantumCircuit* circuit, const IBMCapabil
 char* get_ibm_error_info(struct IBMBackendConfig* config, const char* job_id);
 
 // Clean up resources
+void cleanup_ibm_backend(IBMBackendState* state);
 void cleanup_ibm_config(struct IBMBackendConfig* config);
 void cleanup_ibm_result(IBMJobResult* result);
 void cleanup_ibm_capabilities(IBMCapabilities* capabilities);
+
+// Optimized backend operations
+bool optimize_circuit(IBMBackendState* state, struct quantum_circuit* circuit);
+bool execute_circuit(IBMBackendState* state, struct quantum_circuit* circuit, quantum_result* result);
 
 // Utility functions
 bool save_ibm_credentials(const char* token, const char* filename);

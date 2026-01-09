@@ -7,6 +7,8 @@
 #include "quantum_geometric/physics/z_stabilizer_operations.h"
 #include "quantum_geometric/hardware/quantum_hardware_optimization.h"
 #include "quantum_geometric/core/error_codes.h"
+#include "quantum_geometric/core/quantum_state.h"
+#include "quantum_geometric/core/quantum_complex.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
@@ -30,7 +32,7 @@ static void test_error_cases(void);
 
 // Helper functions
 static SyndromeConfig create_test_config(void);
-static quantum_state* create_test_state(void);
+static quantum_state_t* create_test_state(void);
 static void verify_plaquette_indices(const SyndromeCache* cache, size_t width, size_t height);
 static void verify_vertex_indices(const SyndromeCache* cache, size_t width, size_t height);
 static void verify_spatial_correlations(const SyndromeState* state);
@@ -105,30 +107,34 @@ static void test_error_type_classification(void) {
     err = init_syndrome_extraction(&state, &config);
     assert(err == QGT_SUCCESS && "Failed to initialize syndrome state");
 
-    quantum_state* qstate = create_test_state();
+    quantum_state_t* qstate = create_test_state();
 
     // Inject X errors
     size_t x_errors[] = {0, 1};
     for (size_t i = 0; i < 2; i++) {
-        qstate->amplitudes[x_errors[i] * 2] = 0.0;
-        qstate->amplitudes[x_errors[i] * 2 + 1] = 1.0;
+        qstate->coordinates[x_errors[i] * 2] = complex_float_create(0.0f, 0.0f);
+        qstate->coordinates[x_errors[i] * 2 + 1] = complex_float_create(1.0f, 0.0f);
     }
 
-    // Inject Z errors
+    // Inject Z errors (phase flip: negate the amplitude)
     size_t z_errors[] = {4, 5};
     for (size_t i = 0; i < 2; i++) {
-        qstate->amplitudes[z_errors[i] * 2] *= -1;
+        size_t idx = z_errors[i] * 2;
+        qstate->coordinates[idx] = complex_float_create(
+            -qstate->coordinates[idx].real,
+            -qstate->coordinates[idx].imag
+        );
     }
 
     // Inject Y errors (combined X and Z)
     size_t y_errors[] = {8, 9};
     for (size_t i = 0; i < 2; i++) {
-        qstate->amplitudes[y_errors[i] * 2] = 0.0;
-        qstate->amplitudes[y_errors[i] * 2 + 1] = -1.0;
+        qstate->coordinates[y_errors[i] * 2] = complex_float_create(0.0f, 0.0f);
+        qstate->coordinates[y_errors[i] * 2 + 1] = complex_float_create(-1.0f, 0.0f);
     }
 
     ErrorSyndrome syndrome;
-    err = extract_error_syndrome(&state, qstate, &syndrome);
+    err = extract_error_syndrome(&state, qstate, &syndrome, NULL);
     assert(err == QGT_SUCCESS && "Failed to extract error syndrome");
 
     // Verify error types
@@ -189,19 +195,19 @@ static void test_spatial_correlations(void) {
     err = init_syndrome_extraction(&state, &config);
     assert(err == QGT_SUCCESS && "Failed to initialize syndrome state");
 
-    quantum_state* qstate = create_test_state();
+    quantum_state_t* qstate = create_test_state();
 
     // Inject correlated errors in a pattern
     size_t error_pattern[] = {0, 1, 4, 5};  // 2x2 block
     for (size_t i = 0; i < 4; i++) {
-        qstate->amplitudes[error_pattern[i] * 2] = 0.0;
-        qstate->amplitudes[error_pattern[i] * 2 + 1] = 1.0;
+        qstate->coordinates[error_pattern[i] * 2] = complex_float_create(0.0f, 0.0f);
+        qstate->coordinates[error_pattern[i] * 2 + 1] = complex_float_create(1.0f, 0.0f);
     }
 
     // Extract multiple syndromes to build correlation data
     ErrorSyndrome syndrome;
     for (size_t i = 0; i < 10; i++) {
-        err = extract_error_syndrome(&state, qstate, &syndrome);
+        err = extract_error_syndrome(&state, qstate, &syndrome, NULL);
         assert(err == QGT_SUCCESS && "Failed to extract error syndrome");
     }
 
@@ -221,25 +227,25 @@ static void test_error_history_tracking(void) {
     err = init_syndrome_extraction(&state, &config);
     assert(err == QGT_SUCCESS && "Failed to initialize syndrome state");
 
-    quantum_state* qstate = create_test_state();
+    quantum_state_t* qstate = create_test_state();
 
     // Inject repeating error pattern
     size_t error_pattern[] = {0, 1, 4, 5};
     for (size_t i = 0; i < 10; i++) {
         // Clear previous errors
         for (size_t j = 0; j < qstate->num_qubits; j++) {
-            qstate->amplitudes[j * 2] = 1.0;
-            qstate->amplitudes[j * 2 + 1] = 0.0;
+            qstate->coordinates[j * 2] = complex_float_create(1.0f, 0.0f);
+            qstate->coordinates[j * 2 + 1] = complex_float_create(0.0f, 0.0f);
         }
 
         // Inject new errors
         for (size_t j = 0; j < 4; j++) {
-            qstate->amplitudes[error_pattern[j] * 2] = 0.0;
-            qstate->amplitudes[error_pattern[j] * 2 + 1] = 1.0;
+            qstate->coordinates[error_pattern[j] * 2] = complex_float_create(0.0f, 0.0f);
+            qstate->coordinates[error_pattern[j] * 2 + 1] = complex_float_create(1.0f, 0.0f);
         }
 
         ErrorSyndrome syndrome;
-        err = extract_error_syndrome(&state, qstate, &syndrome);
+        err = extract_error_syndrome(&state, qstate, &syndrome, NULL);
         assert(err == QGT_SUCCESS && "Failed to extract error syndrome");
     }
 
@@ -259,19 +265,19 @@ static void test_edge_weights(void) {
     err = init_syndrome_extraction(&state, &config);
     assert(err == QGT_SUCCESS && "Failed to initialize syndrome state");
 
-    quantum_state* qstate = create_test_state();
+    quantum_state_t* qstate = create_test_state();
 
     // Inject chain of errors
     size_t chain[] = {0, 1, 2, 3};  // Linear chain
     for (size_t i = 0; i < 4; i++) {
-        qstate->amplitudes[chain[i] * 2] = 0.0;
-        qstate->amplitudes[chain[i] * 2 + 1] = 1.0;
+        qstate->coordinates[chain[i] * 2] = complex_float_create(0.0f, 0.0f);
+        qstate->coordinates[chain[i] * 2 + 1] = complex_float_create(1.0f, 0.0f);
     }
 
     // Extract multiple syndromes
     ErrorSyndrome syndrome;
     for (size_t i = 0; i < 10; i++) {
-        err = extract_error_syndrome(&state, qstate, &syndrome);
+        err = extract_error_syndrome(&state, qstate, &syndrome, NULL);
         assert(err == QGT_SUCCESS && "Failed to extract error syndrome");
     }
 
@@ -291,7 +297,7 @@ static void test_neighbor_detection(void) {
     err = init_syndrome_extraction(&state, &config);
     assert(err == QGT_SUCCESS && "Failed to initialize syndrome state");
 
-    quantum_state* qstate = create_test_state();
+    quantum_state_t* qstate = create_test_state();
 
     // Inject errors in neighboring sites
     size_t neighbors[] = {
@@ -302,13 +308,13 @@ static void test_neighbor_detection(void) {
     };
 
     for (size_t i = 0; i < 4; i++) {
-        qstate->amplitudes[neighbors[i] * 2] = 0.0;
-        qstate->amplitudes[neighbors[i] * 2 + 1] = 1.0;
+        qstate->coordinates[neighbors[i] * 2] = complex_float_create(0.0f, 0.0f);
+        qstate->coordinates[neighbors[i] * 2 + 1] = complex_float_create(1.0f, 0.0f);
     }
 
     // Extract syndrome
     ErrorSyndrome syndrome;
-    err = extract_error_syndrome(&state, qstate, &syndrome);
+    err = extract_error_syndrome(&state, qstate, &syndrome, NULL);
     assert(err == QGT_SUCCESS && "Failed to extract error syndrome");
 
     // Verify neighbor patterns
@@ -328,7 +334,7 @@ static void test_boundary_matching(void) {
     err = init_syndrome_extraction(&state, &config);
     assert(err == QGT_SUCCESS && "Failed to initialize syndrome state");
 
-    quantum_state* qstate = create_test_state();
+    quantum_state_t* qstate = create_test_state();
 
     // Inject errors at boundaries
     size_t boundary_errors[] = {
@@ -339,13 +345,13 @@ static void test_boundary_matching(void) {
     };
 
     for (size_t i = 0; i < 4; i++) {
-        qstate->amplitudes[boundary_errors[i] * 2] = 0.0;
-        qstate->amplitudes[boundary_errors[i] * 2 + 1] = 1.0;
+        qstate->coordinates[boundary_errors[i] * 2] = complex_float_create(0.0f, 0.0f);
+        qstate->coordinates[boundary_errors[i] * 2 + 1] = complex_float_create(1.0f, 0.0f);
     }
 
     // Extract syndrome
     ErrorSyndrome syndrome;
-    err = extract_error_syndrome(&state, qstate, &syndrome);
+    err = extract_error_syndrome(&state, qstate, &syndrome, NULL);
     assert(err == QGT_SUCCESS && "Failed to extract error syndrome");
 
     // Verify boundary vertices and edges
@@ -377,25 +383,25 @@ static void test_error_prediction(void) {
     err = init_syndrome_extraction(&state, &config);
     assert(err == QGT_SUCCESS && "Failed to initialize syndrome state");
 
-    quantum_state* qstate = create_test_state();
+    quantum_state_t* qstate = create_test_state();
 
     // Train on repeated error pattern
     size_t error_pattern[] = {0, 1, 4, 5};  // 2x2 block
     for (size_t i = 0; i < 20; i++) {
         // Clear previous errors
         for (size_t j = 0; j < qstate->num_qubits; j++) {
-            qstate->amplitudes[j * 2] = 1.0;
-            qstate->amplitudes[j * 2 + 1] = 0.0;
+            qstate->coordinates[j * 2] = complex_float_create(1.0f, 0.0f);
+            qstate->coordinates[j * 2 + 1] = complex_float_create(0.0f, 0.0f);
         }
 
         // Inject pattern
         for (size_t j = 0; j < 4; j++) {
-            qstate->amplitudes[error_pattern[j] * 2] = 0.0;
-            qstate->amplitudes[error_pattern[j] * 2 + 1] = 1.0;
+            qstate->coordinates[error_pattern[j] * 2] = complex_float_create(0.0f, 0.0f);
+            qstate->coordinates[error_pattern[j] * 2 + 1] = complex_float_create(1.0f, 0.0f);
         }
 
         ErrorSyndrome syndrome;
-        err = extract_error_syndrome(&state, qstate, &syndrome);
+        err = extract_error_syndrome(&state, qstate, &syndrome, NULL);
         assert(err == QGT_SUCCESS && "Failed to extract error syndrome");
     }
 
@@ -458,14 +464,14 @@ static void test_error_cases(void) {
     assert(err == QGT_SUCCESS && "Failed valid initialization");
 
     // Test invalid syndrome extraction
-    quantum_state* qstate = create_test_state();
+    quantum_state_t* qstate = create_test_state();
     ErrorSyndrome syndrome;
 
-    err = extract_error_syndrome(NULL, qstate, &syndrome);
+    err = extract_error_syndrome(NULL, qstate, &syndrome, NULL);
     assert(err == QGT_ERROR_INVALID_ARGUMENT && "Failed to catch null state");
-    err = extract_error_syndrome(&state, NULL, &syndrome);
+    err = extract_error_syndrome(&state, NULL, &syndrome, NULL);
     assert(err == QGT_ERROR_INVALID_ARGUMENT && "Failed to catch null quantum state");
-    err = extract_error_syndrome(&state, qstate, NULL);
+    err = extract_error_syndrome(&state, qstate, NULL, NULL);
     assert(err == QGT_ERROR_INVALID_ARGUMENT && "Failed to catch null syndrome");
 
     // Test invalid error prediction
@@ -494,8 +500,7 @@ static SyndromeConfig create_test_config(void) {
         .max_matching_iterations = 100,
         .use_boundary_matching = true,
         .confidence_threshold = 0.8,
-        .min_measurements = 5,
-        .error_rate_threshold = 0.1,
+        .error_threshold = 0.1,
         .enable_parallel = true,
         .max_parallel_ops = 4,
         .parallel_group_size = 2,
@@ -506,17 +511,29 @@ static SyndromeConfig create_test_config(void) {
     return config;
 }
 
-static quantum_state* create_test_state(void) {
-    quantum_state* state = malloc(sizeof(quantum_state));
-    state->num_qubits = 32;  // 4x4 lattice with 2 qubits per site
-    state->amplitudes = calloc(state->num_qubits * 2, sizeof(double));
-    
-    // Initialize to |0⟩ state
-    for (size_t i = 0; i < state->num_qubits; i++) {
-        state->amplitudes[i * 2] = 1.0;
+static quantum_state_t* create_test_state(void) {
+    quantum_state_t* state = NULL;
+    size_t dimension = 64;  // Enough for 32 qubits testing
+
+    qgt_error_t err = quantum_state_create(&state, QUANTUM_STATE_PURE, dimension);
+    if (err != QGT_SUCCESS || !state) {
+        return NULL;
     }
-    
+
+    state->num_qubits = 32;  // 4x4 lattice with 2 qubits per site
+    state->lattice_width = 4;
+    state->lattice_height = 4;
+
+    // Initialize to |0⟩ state (coordinates[0] = 1+0i, rest = 0)
+    // quantum_state_create already does this
+
     return state;
+}
+
+static void destroy_test_qstate(quantum_state_t* state) {
+    if (state) {
+        quantum_state_destroy(state);
+    }
 }
 
 static void verify_plaquette_indices(const SyndromeCache* cache,

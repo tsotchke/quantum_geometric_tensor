@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <time.h>
 
 #ifdef __APPLE__
 #include <sys/sysctl.h>
@@ -161,10 +162,78 @@ static void capture_current_metrics(PerformanceMetrics* metrics) {
     }
 #endif
 
-    // Default values for other metrics (would need specific APIs)
-    metrics->throughput = 1000.0;  // Placeholder
-    metrics->latency = 10.0;       // Placeholder ms
+    // Measure throughput using timing probes
+    // Throughput is estimated by measuring how many small operations can be done per second
+    {
+        struct timespec start, end;
+        clock_gettime(CLOCK_MONOTONIC, &start);
+
+        // Perform a calibrated workload to estimate system throughput
+        // This simulates the type of operations the tracker will measure
+        volatile double accumulator = 0.0;
+        const int calibration_ops = 10000;
+        for (int i = 0; i < calibration_ops; i++) {
+            accumulator += (double)i * 0.001;
+        }
+        (void)accumulator;  // Prevent optimization
+
+        clock_gettime(CLOCK_MONOTONIC, &end);
+
+        double elapsed_ns = (double)(end.tv_sec - start.tv_sec) * 1e9 +
+                           (double)(end.tv_nsec - start.tv_nsec);
+
+        // Calculate operations per second
+        if (elapsed_ns > 0) {
+            // Scale to meaningful throughput (ops/sec scaled to typical workload)
+            metrics->throughput = ((double)calibration_ops / elapsed_ns) * 1e9;
+            // Clamp to reasonable range
+            if (metrics->throughput > 1e12) metrics->throughput = 1e12;
+            if (metrics->throughput < 1.0) metrics->throughput = 1.0;
+        } else {
+            metrics->throughput = 1e6;  // Default 1M ops/sec if timing failed
+        }
+    }
+
+    // Measure latency using high-resolution timing
+    // Latency represents the minimum response time achievable on this system
+    {
+        struct timespec ts1, ts2;
+        double min_latency_ns = 1e9;  // Start with 1 second max
+
+        // Take multiple samples and use minimum (most accurate)
+        for (int sample = 0; sample < 10; sample++) {
+            clock_gettime(CLOCK_MONOTONIC, &ts1);
+            clock_gettime(CLOCK_MONOTONIC, &ts2);
+
+            double delta_ns = (double)(ts2.tv_sec - ts1.tv_sec) * 1e9 +
+                             (double)(ts2.tv_nsec - ts1.tv_nsec);
+
+            if (delta_ns > 0 && delta_ns < min_latency_ns) {
+                min_latency_ns = delta_ns;
+            }
+        }
+
+        // Convert to milliseconds and add baseline overhead
+        // The measured clock latency is the minimum; add typical scheduling overhead
+        double clock_latency_ms = min_latency_ns / 1e6;
+        double scheduling_overhead_ms = 0.1;  // ~100 microseconds typical scheduler quantum
+
+        metrics->latency = clock_latency_ms + scheduling_overhead_ms;
+
+        // Clamp to reasonable range (0.001ms to 1000ms)
+        if (metrics->latency < 0.001) metrics->latency = 0.001;
+        if (metrics->latency > 1000.0) metrics->latency = 1000.0;
+    }
+
+    // GPU usage - check if GPU is available and get usage
     metrics->gpu_usage = 0.0;
+#ifdef __APPLE__
+    // On macOS, we could query Metal device utilization if available
+    // For now, report 0 as GPU metrics require framework initialization
+#endif
+
+    // Network bandwidth - would require network interface sampling over time
+    // Report 0 as this requires sustained measurement
     metrics->network_bandwidth = 0.0;
 }
 

@@ -470,13 +470,102 @@ static qgt_error_t append_parameterized_circuit(quantum_circuit_t* target,
                     if (err != QGT_SUCCESS) return err;
                 }
             } else {
-                // For non-parameterized gates, just copy
-                // This is simplified - full implementation would clone the gate
-                if (gate->type == GATE_CNOT && gate->num_controls > 0) {
-                    qgt_error_t err = quantum_circuit_cnot(target,
-                        gate->control_qubits[0], gate->target_qubits[0]);
-                    if (err != QGT_SUCCESS) return err;
+                // Clone non-parameterized gates based on their type
+                qgt_error_t err = QGT_SUCCESS;
+                size_t target_qubit = gate->target_qubits ? gate->target_qubits[0] : 0;
+                size_t control_qubit = (gate->control_qubits && gate->num_controls > 0) ?
+                                        gate->control_qubits[0] : 0;
+
+                switch (gate->type) {
+                    case GATE_X:
+                        err = quantum_circuit_pauli_x(target, target_qubit);
+                        break;
+                    case GATE_Y:
+                        err = quantum_circuit_pauli_y(target, target_qubit);
+                        break;
+                    case GATE_Z:
+                        err = quantum_circuit_pauli_z(target, target_qubit);
+                        break;
+                    case GATE_H:
+                        err = quantum_circuit_hadamard(target, target_qubit);
+                        break;
+                    case GATE_S:
+                        // S gate = phase by π/2
+                        err = quantum_circuit_phase(target, target_qubit, M_PI / 2.0);
+                        break;
+                    case GATE_T:
+                        // T gate = phase by π/4
+                        err = quantum_circuit_phase(target, target_qubit, M_PI / 4.0);
+                        break;
+                    case GATE_CNOT:
+                        // GATE_CX is an alias, handled by same case
+                        if (gate->num_controls > 0) {
+                            err = quantum_circuit_cnot(target, control_qubit, target_qubit);
+                        }
+                        break;
+                    case GATE_CZ:
+                        if (gate->num_controls > 0) {
+                            err = quantum_circuit_cz(target, control_qubit, target_qubit);
+                        }
+                        break;
+                    case GATE_SWAP:
+                        if (gate->num_qubits >= 2 && gate->target_qubits) {
+                            err = quantum_circuit_swap(target, gate->target_qubits[0],
+                                                       gate->target_qubits[1]);
+                        }
+                        break;
+                    case GATE_TOFFOLI:
+                        // GATE_CCX is an alias, handled by same case
+                        // Toffoli decomposition using T, CNOT sequence
+                        if (gate->num_controls >= 2 && gate->control_qubits) {
+                            size_t c1 = gate->control_qubits[0];
+                            size_t c2 = gate->control_qubits[1];
+                            quantum_circuit_phase(target, target_qubit, M_PI / 4.0);
+                            quantum_circuit_phase(target, c1, M_PI / 4.0);
+                            quantum_circuit_phase(target, c2, M_PI / 4.0);
+                            quantum_circuit_cnot(target, c1, target_qubit);
+                            quantum_circuit_phase(target, target_qubit, -M_PI / 4.0);
+                            quantum_circuit_cnot(target, c2, target_qubit);
+                            quantum_circuit_phase(target, target_qubit, M_PI / 4.0);
+                            quantum_circuit_cnot(target, c1, target_qubit);
+                            quantum_circuit_phase(target, target_qubit, -M_PI / 4.0);
+                            quantum_circuit_cnot(target, c2, c1);
+                            quantum_circuit_phase(target, c1, -M_PI / 4.0);
+                            err = quantum_circuit_cnot(target, c2, c1);
+                        }
+                        break;
+                    case GATE_U1:
+                    case GATE_U2:
+                    case GATE_U3:
+                        // U gates decomposed to rotations: U3(θ,φ,λ) = Rz(φ)Ry(θ)Rz(λ)
+                        if (gate->parameters && gate->num_parameters > 0) {
+                            double theta = gate->parameters[0];
+                            double phi = gate->num_parameters > 1 ? gate->parameters[1] : 0.0;
+                            double lambda = gate->num_parameters > 2 ? gate->parameters[2] : 0.0;
+                            quantum_circuit_rotation(target, target_qubit, lambda, PAULI_Z);
+                            quantum_circuit_rotation(target, target_qubit, theta, PAULI_Y);
+                            err = quantum_circuit_rotation(target, target_qubit, phi, PAULI_Z);
+                        }
+                        break;
+                    case GATE_CRX:
+                    case GATE_CRY:
+                    case GATE_CRZ:
+                        // Controlled rotation: CR(θ) = R(θ/2) CNOT R(-θ/2) CNOT
+                        if (gate->parameters && gate->num_controls > 0) {
+                            double angle = gate->parameters[0] * scale;
+                            pauli_type axis = gate->type == GATE_CRX ? PAULI_X :
+                                             gate->type == GATE_CRY ? PAULI_Y : PAULI_Z;
+                            quantum_circuit_rotation(target, target_qubit, angle / 2.0, axis);
+                            quantum_circuit_cnot(target, control_qubit, target_qubit);
+                            quantum_circuit_rotation(target, target_qubit, -angle / 2.0, axis);
+                            err = quantum_circuit_cnot(target, control_qubit, target_qubit);
+                        }
+                        break;
+                    default:
+                        // For other gates, skip (identity operation)
+                        break;
                 }
+                if (err != QGT_SUCCESS) return err;
             }
         }
     }

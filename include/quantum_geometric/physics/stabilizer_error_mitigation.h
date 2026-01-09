@@ -73,21 +73,25 @@ typedef struct {
 } measurement_result;
 
 /**
- * @brief Initialize error mitigation state
- * 
+ * @brief Initialize stabilizer error mitigation state
+ *
  * @param state State to initialize
  * @param config Configuration parameters
  * @return true if initialization successful
  */
-bool init_error_mitigation(MitigationState* state,
-                          const MitigationConfig* config);
+bool init_stabilizer_mitigation(MitigationState* state,
+                                const MitigationConfig* config);
 
 /**
- * @brief Clean up error mitigation state
- * 
+ * @brief Clean up stabilizer error mitigation state
+ *
  * @param state State to clean up
  */
-void cleanup_error_mitigation(MitigationState* state);
+void cleanup_stabilizer_mitigation(MitigationState* state);
+
+// Convenience aliases (for backwards compatibility)
+#define init_error_mitigation init_stabilizer_mitigation
+#define cleanup_error_mitigation cleanup_stabilizer_mitigation
 
 /**
  * @brief Apply error mitigation to measurement results

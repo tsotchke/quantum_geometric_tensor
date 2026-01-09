@@ -18,6 +18,17 @@ typedef enum {
     QUANTUM_STATUS_INVALID_CONFIGURATION
 } quantum_status_t;
 
+// Network topology types
+typedef enum {
+    TOPOLOGY_RING = 0,
+    TOPOLOGY_MESH = 1,
+    TOPOLOGY_TORUS = 2,
+    TOPOLOGY_HYPERCUBE = 3,
+    TOPOLOGY_FULLY_CONNECTED = 4,
+    TOPOLOGY_TREE = 5,
+    TOPOLOGY_CUSTOM = 6
+} network_topology_t;
+
 // Model configuration
 typedef struct {
     uint64_t total_parameters;    // Total number of model parameters
@@ -36,8 +47,12 @@ typedef struct {
     bool use_topological_protection;  // Enable topological protection
     bool use_holographic_encoding;    // Enable holographic encoding
     uint32_t holographic_dimension;   // Holographic encoding dimension
+    float holographic_fidelity;       // Holographic encoding fidelity
     uint32_t code_distance;           // Error correction code distance
     float error_threshold;            // Error correction threshold
+    bool use_error_mitigation;        // Enable error mitigation
+    uint32_t error_mitigation_rounds; // Number of error mitigation rounds
+    bool use_compression;             // Enable compression
 } EncodingConfig;
 
 // Distributed configuration
@@ -87,7 +102,8 @@ typedef struct quantum_geometric_projector quantum_geometric_projector_t;
 // Opaque/external type declarations
 typedef struct quantum_geometric_state_t quantum_geometric_state_t;
 typedef struct quantum_state_t quantum_state_t;
-typedef struct quantum_attention_t quantum_attention_t;
+// Note: quantum_attention_t is defined in quantum_attention.h as struct quantum_attention
+typedef struct quantum_attention quantum_attention_t;
 
 // Training data structure
 typedef struct training_data_t {
@@ -169,6 +185,9 @@ quantum_status_t initialize_quantum_llm(const QuantumLLMConfig* config,
                                       quantum_llm_state_t** state);
 void cleanup_quantum_llm(quantum_llm_state_t* state);
 
+// Resource validation
+quantum_status_t validate_resource_requirements(const quantum_llm_config_t* config);
+
 // Quantum geometric encoding
 quantum_status_t encode_quantum_parameters(quantum_llm_state_t* state,
                                          const float* parameters,
@@ -202,8 +221,8 @@ quantum_status_t quantum_backward_pass(quantum_llm_state_t* state,
                                      const quantum_state_t* gradients,
                                      void* aux_data);
 float measure_gradient_norm(const quantum_state_t* gradients);
-quantum_status_t update_quantum_parameters(quantum_llm_state_t* state,
-                                         const quantum_state_t* gradients);
+quantum_status_t update_llm_parameters(quantum_llm_state_t* state,
+                                      const quantum_state_t* gradients);
 float measure_parameter_update_fidelity(const quantum_llm_state_t* state);
 
 // Error correction and stability

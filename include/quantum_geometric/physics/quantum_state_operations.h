@@ -69,22 +69,7 @@ void perform_state_operation(QuantumStateOps* ops, quantum_state_t** states, siz
 StateOperationResult* get_state_result(QuantumStateOps* ops);
 void cleanup_state_result(StateOperationResult* result);
 
-// Error mitigation and measurement
-void apply_x_error_mitigation_sequence(const quantum_state_t* state,
-                                     size_t x,
-                                     size_t y);
-
-void apply_x_measurement_correction(const quantum_state_t* state,
-                                  size_t x,
-                                  size_t y,
-                                  double* result);
-
-double get_x_stabilizer_correlation(const quantum_state_t* state,
-                                  size_t x,
-                                  size_t y,
-                                  size_t qubit_idx);
-
-// Helper functions
+// Helper functions for quantum state operations (local to this module)
 void apply_hadamard_gate(const quantum_state_t* state, size_t x, size_t y);
 void apply_rotation_x(const quantum_state_t* state, size_t x, size_t y, double angle);
 void quantum_wait(const quantum_state_t* state, double duration);
@@ -92,30 +77,16 @@ void apply_composite_x_pulse(const quantum_state_t* state, size_t x, size_t y);
 double get_readout_error_rate(size_t x, size_t y);
 double get_gate_error_rate(size_t x, size_t y);
 
-// Pauli measurement functions with confidence tracking
-bool measure_pauli_z_with_confidence(const quantum_state_t* state,
-                                    size_t x,
-                                    size_t y,
-                                    double* value,
-                                    double* confidence);
-
-bool measure_pauli_x_with_confidence(const quantum_state_t* state,
-                                    size_t x,
-                                    size_t y,
-                                    double* value,
-                                    double* confidence);
-
-// Stabilizer measurement interface for stabilizer_measurement.c
-bool init_stabilizer_measurement(StabilizerState* state,
-                                const StabilizerConfig* config);
-void cleanup_stabilizer_measurement(StabilizerState* state);
-bool measure_stabilizers(StabilizerState* state,
-                        quantum_state_t* qstate);
-const double* get_stabilizer_measurements(const StabilizerState* state,
-                                         StabilizerType type,
-                                         size_t* size);
-double get_stabilizer_error_rate(const StabilizerState* state);
-const double* get_last_syndrome(const StabilizerState* state, size_t* size);
+// =============================================================================
+// Stabilizer measurement API - see stabilizer_measurement.h for full API
+// =============================================================================
+// Note: The following functions are declared in stabilizer_measurement.h:
+// - init_stabilizer_measurement, cleanup_stabilizer_measurement
+// - measure_stabilizers, get_stabilizer_measurements
+// - measure_pauli_z_with_confidence, measure_pauli_x_with_confidence
+// - apply_x_error_mitigation_sequence, apply_x_measurement_correction
+// - get_x_stabilizer_correlation, get_error_rate
+// Include stabilizer_measurement.h for the full stabilizer measurement API.
 
 // Hierarchical matrix operations
 void update_hmatrix_quantum_state(HierarchicalMatrix* mat);

@@ -30,8 +30,8 @@ static size_t get_operation_qubit_count(const QuantumOperation* op) {
         case OPERATION_GATE:
             // Gate operations involve at most 2 qubits (target + control)
             // Return 2 for controlled gates, 1 for single-qubit gates
-            // QuantumGate has: qubit (single-qubit), control_qubit, target_qubit (2-qubit)
-            if (op->op.gate.control_qubit != op->op.gate.target_qubit) {
+            // HardwareGate has: target (single-qubit), control, target (2-qubit)
+            if (op->op.gate.control != op->op.gate.target) {
                 return 2;  // Two-qubit gate
             }
             return 1;  // Single-qubit gate

@@ -4,6 +4,16 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+// Sampler-specific quantum state (separate from core QuantumState)
+typedef struct StochasticSamplerState {
+    size_t dim;             // Dimension of the state space
+    double fidelity;        // State fidelity (0-1)
+    double purity;          // State purity (0-1)
+    double* amplitudes;     // State amplitudes (real)
+    double* phases;         // State phases
+    bool is_normalized;     // Normalization flag
+} StochasticSamplerState;
+
 // Geometric transform types
 typedef enum {
     GEOMETRIC_TRANSFORM_DIFFUSION,
@@ -57,8 +67,8 @@ typedef struct {
     quantum_device_t device;  // Computation device
 } LMCConfig;
 
-// Sampling performance metrics
-typedef struct {
+// Sampling performance metrics (sampler-specific)
+typedef struct SamplingMetrics {
     double training_time;      // Training time in seconds
     double memory_usage_mb;    // Memory usage in MB
     double gpu_utilization;    // GPU utilization percentage
@@ -88,5 +98,13 @@ int stochastic_sampler_sample(StochasticSampler* sampler,
 
 // Performance monitoring
 const SamplingMetrics* stochastic_sampler_get_metrics(const StochasticSampler* sampler);
+
+// Quantum state access (returns sampler's internal quantum state)
+const StochasticSamplerState* stochastic_sampler_get_state(const StochasticSampler* sampler);
+
+// StochasticSamplerState utility functions
+size_t stochastic_state_get_dim(const StochasticSamplerState* state);
+double stochastic_state_get_fidelity(const StochasticSamplerState* state);
+double stochastic_state_get_purity(const StochasticSamplerState* state);
 
 #endif // STOCHASTIC_SAMPLING_H

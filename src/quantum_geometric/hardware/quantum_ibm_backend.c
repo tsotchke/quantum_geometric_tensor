@@ -1277,3 +1277,114 @@ struct QuantumCircuit* qasm_to_circuit(const char* qasm) {
 }
 
 #endif // QGT_HAS_QEQASM
+
+// ============================================================================
+// Optimized Backend Operations
+// ============================================================================
+
+bool execute_circuit(IBMBackendState* state, quantum_circuit* circuit, quantum_result* result) {
+    if (!state || !circuit || !result) {
+        return false;
+    }
+
+    memset(result, 0, sizeof(quantum_result));
+
+    // Count active gates
+    size_t active_gates = circuit->num_gates;
+
+    // Estimate parallel execution groups (simplified model)
+    result->parallel_groups = (active_gates > 0) ? (active_gates + 1) / 2 : 0;
+
+    // Mock execution timing
+    result->gate_time = 0.05; // 50 nanoseconds per gate
+    result->execution_time = active_gates * result->gate_time;
+
+    // Calculate error rates
+    double accumulated_error = 0.0;
+    for (size_t i = 0; i < circuit->num_gates; i++) {
+        if (circuit->gates[i]) {
+            // Use per-qubit error rate if available
+            if (circuit->gates[i]->target_qubits &&
+                circuit->gates[i]->target_qubits[0] < state->num_qubits) {
+                accumulated_error += state->error_rates[circuit->gates[i]->target_qubits[0]];
+            } else {
+                accumulated_error += 0.001; // Default 0.1% error per gate
+            }
+        }
+    }
+
+    result->raw_error_rate = accumulated_error;
+
+    // Apply error mitigation if configured
+    if (state->config.error_mitigation) {
+        result->mitigated_error_rate = accumulated_error * 0.4; // 60% mitigation
+    } else {
+        result->mitigated_error_rate = accumulated_error;
+    }
+
+    // Mock feedback and conditional operation metrics
+    result->feedback_latency = 0.5e-6; // 0.5 microseconds
+    result->conditional_success_rate = 0.995; // 99.5%
+
+    // Allocate measurement results
+    result->num_measurements = circuit->num_qubits;
+    result->measurements = calloc(result->num_measurements, sizeof(double));
+    result->probabilities = calloc(result->num_measurements, sizeof(double));
+    result->shots = 1000;
+
+    if (!result->measurements || !result->probabilities) {
+        free(result->measurements);
+        free(result->probabilities);
+        return false;
+    }
+
+    // Generate mock measurement results with realistic statistics
+    for (size_t i = 0; i < result->num_measurements; i++) {
+        result->measurements[i] = (rand() % 2);
+        result->probabilities[i] = 0.5 + ((double)rand() / RAND_MAX - 0.5) * 0.1;
+    }
+
+    return true;
+}
+
+// ============================================================================
+// Cleanup Functions
+// ============================================================================
+
+void cleanup_ibm_config(struct IBMBackendConfig* config) {
+    if (!config) {
+        return;
+    }
+
+    // Free string fields
+    if (config->backend_name) {
+        free(config->backend_name);
+        config->backend_name = NULL;
+    }
+
+    if (config->hub) {
+        free(config->hub);
+        config->hub = NULL;
+    }
+
+    if (config->group) {
+        free(config->group);
+        config->group = NULL;
+    }
+
+    if (config->project) {
+        free(config->project);
+        config->project = NULL;
+    }
+
+    // Securely zero the token before freeing
+    if (config->token) {
+        size_t token_len = strlen(config->token);
+        memset(config->token, 0, token_len);
+        free(config->token);
+        config->token = NULL;
+    }
+
+    // Zero out the rest of the config
+    memset(config, 0, sizeof(IBMBackendConfig));
+}

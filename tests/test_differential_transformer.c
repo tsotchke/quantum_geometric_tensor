@@ -1,6 +1,7 @@
 #include "quantum_geometric/core/differential_transformer.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <math.h>
 #include <time.h>
 #include <assert.h>
@@ -144,9 +145,9 @@ static void test_stability() {
         
         // Backward pass
         diff_transformer_backward(state, target, NULL);
-        
+
         // Update parameters
-        ttn_update_parameters(state, TEST_LEARNING_RATE);
+        diff_transformer_update_parameters(state, TEST_LEARNING_RATE);
     }
     
     // Check final stability

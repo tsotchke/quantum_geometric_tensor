@@ -31,6 +31,7 @@ typedef struct quantum_result {
 // Circuit creation and management
 quantum_circuit* create_quantum_circuit(size_t num_qubits);
 void cleanup_quantum_circuit(quantum_circuit* circuit);
+void cleanup_circuit(quantum_circuit_t* circuit);
 
 // Gate operations
 qgt_error_t add_gate(quantum_circuit* circuit,

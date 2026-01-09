@@ -1,380 +1,392 @@
-# Installation Guide (Pre-release)
+# Installation Guide
 
-**Note: This is a pre-release version. The library is currently under active development and does not yet fully compile. This guide describes the intended installation process once the library is complete.**
+**Version:** 0.777 Beta
+**Last Updated:** January 2026
 
-## Development Status
+---
 
-- Core algorithms and architecture: ✅ Complete
-- Documentation: ✅ Complete
-- Compilation: 🚧 In Progress
-- Hardware integration: 🚧 In Progress
-- Testing Framework: 🚧 In Progress
+## Overview
+
+This guide provides comprehensive instructions for installing and configuring the Quantum Geometric Tensor Library (QGTL) across supported platforms.
 
 ## System Requirements
 
 ### Hardware Requirements
 
-- **CPU**: x86_64 or ARM64 processor with AVX2 support
-- **Memory**: Minimum 16GB RAM (32GB recommended)
-- **GPU** (optional but recommended):
-  - Apple Silicon: M1/M2 with unified memory
-  - NVIDIA: CUDA-capable GPU with compute capability 7.0+
-- **Storage**: 2GB free space (10GB with all examples and tests)
+| Component | Minimum | Recommended |
+|-----------|---------|-------------|
+| CPU | x86_64 or ARM64 with SIMD | AVX2/AVX-512 or Apple Silicon |
+| Memory | 8 GB RAM | 32 GB RAM |
+| Storage | 2 GB | 10 GB (with tests and examples) |
+| GPU (optional) | CUDA 7.0+ or Metal-capable | NVIDIA Ampere or Apple M-series |
 
-### Quantum Hardware Access
+### Supported Platforms
 
-1. **IBM Quantum**
-   - IBM Quantum Account (free tier available)
-   - Access to IBM Quantum systems:
-     * IBM Eagle (127 qubits)
-     * IBM Osprey (433 qubits)
-     * IBM Condor (1121 qubits)
+| Platform | Version | GPU Support |
+|----------|---------|-------------|
+| macOS | 12.0+ (Monterey or later) | Metal |
+| Linux | Kernel 4.19+ | CUDA |
+| Windows | 10/11 (experimental) | CUDA |
 
-2. **Rigetti**
-   - Rigetti Quantum Cloud Services account
-   - Access to Aspen-M/Ankaa processors
-   - QCS authentication token
+### Quantum Hardware Access (Beta)
 
-3. **D-Wave**
-   - D-Wave Leap account
-   - Access to Advantage/Advantage2 systems
-   - Leap authentication token
+QGTL supports integration with the following quantum computing platforms:
 
-### Software Requirements
+**IBM Quantum**
+- Account: [quantum.ibm.com](https://quantum.ibm.com)
+- Systems: IBM Eagle (127 qubits), IBM Osprey (433 qubits)
+- Integration: Via Qiskit Runtime
 
-- **Operating System**:
-  - macOS 12.0+ (for Metal support)
-  - Linux with kernel 4.19+ (for CUDA support)
-- **Compiler**:
-  - Clang 13.0+ or GCC 9.0+
-  - CUDA Toolkit 11.0+ (for NVIDIA GPUs)
-- **Build System**:
-  - CMake 3.15+
-  - Ninja or Make
-- **Dependencies**:
-  - MPI implementation (OpenMPI 4.0+ or MPICH 3.3+)
-  - BLAS/LAPACK implementation
-  - hwloc 2.0+ (for topology detection)
-  - libnuma (for NUMA support)
-  - jansson (for JSON parsing)
-- **Distributed Training**:
-  - High-speed network interconnect
-  - Shared filesystem for checkpoints
-  - RDMA support recommended
+**Rigetti**
+- Account: [qcs.rigetti.com](https://qcs.rigetti.com)
+- Systems: Aspen-M, Ankaa processors
+- Integration: Via PyQuil
 
-## Installation Steps
+**D-Wave**
+- Account: [cloud.dwavesys.com](https://cloud.dwavesys.com)
+- Systems: Advantage (5000+ qubits)
+- Integration: Via Ocean SDK
 
-### 1. Quantum Hardware Setup (In Development)
+## Software Prerequisites
 
-The following quantum hardware integrations are currently under development:
+### Required Dependencies
 
-#### IBM Quantum Integration (In Progress)
+| Dependency | Version | Purpose |
+|------------|---------|---------|
+| CMake | 3.16+ | Build system |
+| GCC/Clang | 9+/11+ | C compiler |
+| BLAS/LAPACK | Any | Linear algebra |
+| Threads | POSIX | Parallelization |
+
+### Optional Dependencies
+
+| Dependency | Version | Purpose |
+|------------|---------|---------|
+| MPI | OpenMPI 4.0+ or MPICH 3.3+ | Distributed training |
+| CUDA | 11.0+ | NVIDIA GPU acceleration |
+| hwloc | 2.0+ | Topology detection |
+| json-c | 0.15+ | Backend configuration |
+| libcurl | 7.0+ | Cloud backend communication |
+| zlib | 1.2+ | Data compression |
+
+## Installation Procedures
+
+### macOS (Homebrew)
+
 ```bash
-# Note: Hardware integration is not yet complete
-# This shows the planned configuration process
+# Install build dependencies
+brew install cmake
 
-# Install IBM Quantum tools
+# Install MPI (optional, for distributed training)
+brew install open-mpi
+
+# Install optional backend dependencies
+brew install hwloc json-c curl
+
+# Clone repository
+git clone https://github.com/tsotchke/quantum_geometric_tensor.git
+cd quantum_geometric_tensor
+
+# Configure build
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release -DQGT_ENABLE_METAL=ON
+
+# Build
+make -j$(sysctl -n hw.ncpu)
+
+# Run tests
+ctest --output-on-failure
+
+# Install (optional)
+sudo make install
+```
+
+### Linux (Ubuntu/Debian)
+
+```bash
+# Install build dependencies
+sudo apt-get update
+sudo apt-get install build-essential cmake
+
+# Install MPI and numerical libraries
+sudo apt-get install libopenmpi-dev libopenblas-dev liblapack-dev
+
+# Install optional dependencies
+sudo apt-get install libhwloc-dev libjson-c-dev libcurl4-openssl-dev zlib1g-dev
+
+# Clone repository
+git clone https://github.com/tsotchke/quantum_geometric_tensor.git
+cd quantum_geometric_tensor
+
+# Configure build
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+
+# Build
+make -j$(nproc)
+
+# Run tests
+ctest --output-on-failure
+
+# Install (optional)
+sudo make install
+```
+
+### Linux with CUDA Support
+
+```bash
+# Install CUDA toolkit (Ubuntu 20.04/22.04)
+wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+sudo dpkg -i cuda-keyring_1.1-1_all.deb
+sudo apt-get update
+sudo apt-get install cuda-toolkit-12-0
+
+# Configure with CUDA
+cmake .. -DCMAKE_BUILD_TYPE=Release -DQGT_ENABLE_CUDA=ON
+
+# Build
+make -j$(nproc)
+```
+
+## Build Configuration Options
+
+| CMake Option | Default | Description |
+|--------------|---------|-------------|
+| `QGT_BUILD_TESTS` | ON | Build test executables |
+| `QGT_BUILD_EXAMPLES` | ON | Build example programs |
+| `QGT_BUILD_SHARED` | ON | Build shared library |
+| `QGT_BUILD_STATIC` | ON | Build static library |
+| `QGT_ENABLE_MPI` | Auto | Enable MPI support |
+| `QGT_ENABLE_CUDA` | OFF | Enable CUDA GPU support |
+| `QGT_ENABLE_METAL` | Auto | Enable Metal GPU support (macOS) |
+| `QGT_MODULAR_BUILD` | OFF | Build separate module libraries |
+| `QGT_PORTABLE_BUILD` | OFF | Disable -march=native for portable binaries |
+
+Example configuration for maximum performance:
+
+```bash
+cmake .. \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DQGT_ENABLE_MPI=ON \
+    -DQGT_ENABLE_METAL=ON \
+    -DQGT_BUILD_TESTS=ON
+```
+
+## Quantum Hardware Configuration
+
+### IBM Quantum Setup
+
+```bash
+# Install Qiskit (for credential management)
 pip install qiskit
 
-# Configure IBM credentials (structure may change)
+# Create credentials directory
 mkdir -p ~/.quantum_geometric/ibm
-cat > ~/.quantum_geometric/ibm/credentials.json << EOL
+
+# Configure credentials
+cat > ~/.quantum_geometric/ibm/credentials.json << 'EOF'
 {
     "api_token": "YOUR_IBM_API_TOKEN",
     "hub": "ibm-q",
     "group": "open",
     "project": "main"
 }
-EOL
+EOF
+
+chmod 600 ~/.quantum_geometric/ibm/credentials.json
 ```
 
-#### Rigetti Integration (Planned)
-```bash
-# Note: Hardware integration is not yet complete
-# This shows the planned configuration process
+### Rigetti Setup
 
-# Install Rigetti tools
+```bash
+# Install PyQuil
 pip install pyquil
 
-# Configure Rigetti credentials (structure may change)
+# Create credentials directory
 mkdir -p ~/.quantum_geometric/rigetti
-cat > ~/.quantum_geometric/rigetti/credentials.json << EOL
+
+# Configure credentials
+cat > ~/.quantum_geometric/rigetti/credentials.json << 'EOF'
 {
     "api_key": "YOUR_RIGETTI_API_KEY",
     "qvm_url": "tcp://127.0.0.1:5000",
     "quilc_url": "tcp://127.0.0.1:5555"
 }
-EOL
+EOF
+
+chmod 600 ~/.quantum_geometric/rigetti/credentials.json
 ```
 
-#### D-Wave Integration (Planned)
-```bash
-# Note: Hardware integration is not yet complete
-# This shows the planned configuration process
+### D-Wave Setup
 
-# Install D-Wave tools
+```bash
+# Install Ocean SDK
 pip install dwave-ocean-sdk
 
-# Configure D-Wave credentials (structure may change)
+# Create credentials directory
 mkdir -p ~/.quantum_geometric/dwave
-cat > ~/.quantum_geometric/dwave/credentials.json << EOL
+
+# Configure credentials
+cat > ~/.quantum_geometric/dwave/credentials.json << 'EOF'
 {
     "token": "YOUR_DWAVE_TOKEN",
     "solver": "Advantage_system4.1",
     "region": "na-west-1"
 }
-EOL
+EOF
+
+chmod 600 ~/.quantum_geometric/dwave/credentials.json
 ```
 
-### 2. Install Dependencies
+## Environment Configuration
 
-#### macOS (using Homebrew)
-```bash
-# Install basic dependencies
-brew install cmake ninja
-
-# Install MPI and numerical libraries
-brew install open-mpi openblas lapack
-
-# Install system libraries
-brew install hwloc jansson
-
-# Install optional dependencies
-brew install cuda  # Only if using NVIDIA GPU
-```
-
-#### Linux (Ubuntu/Debian)
-```bash
-# Install basic dependencies
-sudo apt-get update
-sudo apt-get install build-essential cmake ninja-build
-
-# Install MPI and numerical libraries
-sudo apt-get install libopenmpi-dev libopenblas-dev liblapack-dev
-
-# Install system libraries
-sudo apt-get install libhwloc-dev libnuma-dev libjansson-dev
-
-# Install CUDA (if using NVIDIA GPU)
-wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-keyring_1.0-1_all.deb
-sudo dpkg -i cuda-keyring_1.0-1_all.deb
-sudo apt-get update
-sudo apt-get install cuda-toolkit
-```
-
-### 3. Configure Build (Pre-release)
+Add to shell configuration (`~/.bashrc` or `~/.zshrc`):
 
 ```bash
-# Note: Build system is under development
-# These are the planned build options
-
-mkdir build && cd build
-
-# Configure with quantum hardware support
-# Note: Not all options are currently functional
-cmake .. \
-    -GNinja \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DQGT_USE_MPI=ON \
-    -DQGT_USE_OPENMP=ON \
-    -DQGT_USE_METAL=ON \        # For Apple Silicon (in development)
-    -DQGT_USE_CUDA=ON \         # For NVIDIA GPUs (in development)
-    -DQGT_USE_IBM=ON \          # IBM Quantum (planned)
-    -DQGT_USE_RIGETTI=ON \      # Rigetti (planned)
-    -DQGT_USE_DWAVE=ON \        # D-Wave (planned)
-    -DQGT_USE_DISTRIBUTED=ON    # Distributed training (in development)
-```
-
-### 4. Build and Install (Pre-release)
-
-```bash
-# Note: Full compilation is not yet supported
-# These are the planned build steps
-
-# Build core components (partial functionality)
-ninja
-
-# Run available tests
-ninja test
-
-# Installation not yet supported
-# sudo ninja install
-```
-
-## Configuration
-
-### 1. Quantum Hardware Configuration
-
-Create /etc/quantum_geometric/quantum_config.json:
-```json
-{
-  "quantum": {
-    "default_backend": "ibm",
-    "error_mitigation": true,
-    "topology_aware": true,
-    "geometric_optimization": true
-  },
-  "hardware": {
-    "ibm": {
-      "preferred_systems": ["ibm_manhattan", "ibm_brooklyn"],
-      "max_jobs": 5,
-      "optimization_level": 3
-    },
-    "rigetti": {
-      "preferred_systems": ["Aspen-M-3"],
-      "compiler_timeout": 60,
-      "max_trials": 100
-    },
-    "dwave": {
-      "preferred_solvers": ["Advantage_system4.1"],
-      "annealing_time": 20,
-      "num_reads": 1000
-    }
-  }
-}
-```
-
-### 2. Environment Setup
-
-Add to your shell configuration (~/.bashrc, ~/.zshrc):
-```bash
-# Library path
+# Library paths (if not using system install)
 export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
 
-# Quantum configuration
-export QGT_QUANTUM_CONFIG=/etc/quantum_geometric/quantum_config.json
+# Quantum credentials location
 export QGT_QUANTUM_CREDENTIALS=~/.quantum_geometric
 
-# MPI configuration
+# MPI configuration (if using distributed training)
 export OMPI_MCA_btl_vader_single_copy_mechanism=none
-export OMPI_MCA_btl_tcp_if_include=eth0
-export OMPI_MCA_oob_tcp_if_include=eth0
 
-# GPU configuration
+# GPU memory allocation (fraction of total)
 export QGT_GPU_MEMORY_FRACTION=0.75
 
-# Distributed training
-export QGT_DISTRIBUTED_CONFIG=/etc/quantum_geometric/distributed_config.json
+# Checkpoint directory for distributed training
 export QGT_CHECKPOINT_DIR=/tmp/quantum_geometric/checkpoints
 ```
 
-### 3. System Optimization
+## Verification
 
-#### NUMA Settings
+### Basic Verification
+
 ```bash
+# Run all tests
+cd build
+ctest --output-on-failure
+
+# Run specific test categories
+ctest -R quantum_geometric  # Core tests
+ctest -R surface_code       # Error correction tests
+ctest -R distributed        # Distributed training tests
+```
+
+### GPU Verification
+
+```bash
+# Metal (macOS)
+ctest -R metal
+
+# CUDA (Linux)
+ctest -R cuda
+```
+
+### Performance Verification
+
+```bash
+# Run performance benchmarks
+./tests/test_quantum_performance
+./tests/test_quantum_geometric_tensor_perf
+```
+
+## System Optimization
+
+### Linux Performance Tuning
+
+```bash
+# Enable huge pages for large tensor operations
+HUGE_PAGES=$((4 * 1024 * 1024 * 1024 / 2048 / 1024))
+sudo sysctl -w vm.nr_hugepages=$HUGE_PAGES
+
 # Enable NUMA balancing
 sudo sysctl -w kernel.numa_balancing=1
 
-# Configure huge pages
-HUGE_PAGES=$((4 * 1024 * 1024 * 1024 / 2048 / 1024))
-sudo sysctl -w vm.nr_hugepages=$HUGE_PAGES
+# Increase file descriptor limits
+ulimit -n 65536
 ```
 
-## Verification (Pre-release)
-
-### 1. System Check (Limited Functionality)
+### macOS Performance Tuning
 
 ```bash
-# Note: Most verification tools are under development
-# These commands show the planned verification process
-
-# Basic system checks (partial functionality)
-quantum_geometric-diagnose
-
-# Hardware backend tests (not yet available)
-# quantum_geometric-test-backend all
-
-# GPU support verification (in development)
-# quantum_geometric-test-gpu
-
-# Distributed setup (planned)
-# sudo ./tools/setup_distributed_env.sh
-# mpirun -np 4 quantum_geometric-test-distributed
+# Increase shared memory limits
+sudo sysctl -w kern.sysv.shmmax=4294967296
+sudo sysctl -w kern.sysv.shmall=1048576
 ```
 
-### 2. Quantum Hardware Test (In Development)
+## Troubleshooting
+
+### Common Issues
+
+**CMake cannot find BLAS/LAPACK**
+```bash
+# macOS: Uses Accelerate framework automatically
+# Linux: Install OpenBLAS
+sudo apt-get install libopenblas-dev liblapack-dev
+```
+
+**MPI not found**
+```bash
+# Verify MPI installation
+mpicc --version
+mpirun --version
+
+# Install if missing
+sudo apt-get install libopenmpi-dev  # Linux
+brew install open-mpi                 # macOS
+```
+
+**Metal compilation errors (macOS)**
+```bash
+# Ensure Xcode command-line tools are installed
+xcode-select --install
+
+# Verify Metal framework availability
+xcrun --sdk macosx --find metal
+```
+
+**CUDA compilation errors**
+```bash
+# Verify CUDA installation
+nvcc --version
+
+# Ensure CUDA paths are set
+export PATH=/usr/local/cuda/bin:$PATH
+export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+```
+
+### Build Diagnostics
 
 ```bash
-# Note: Hardware integration is not yet complete
-# These are the planned test procedures
+# Verbose CMake output
+cmake .. -DCMAKE_BUILD_TYPE=Release --trace-expand
 
-# Run available quantum tests
-cd tests/quantum
-./test_quantum_hardware.sh
+# Verbose build output
+make VERBOSE=1
 
-# Current test status:
-# [🚧] IBM Quantum connection - In development
-# [🚧] Rigetti QCS connection - In development
-# [🚧] D-Wave connection - In development
-# [🚧] Quantum circuit execution - In development
-# [🚧] Error mitigation - In development
-# [🚧] Geometric optimization - In development
+# Check library dependencies
+ldd lib/libquantum_geometric.so  # Linux
+otool -L lib/libquantum_geometric.dylib  # macOS
 ```
 
-### 3. Performance Verification (In Development)
+## Additional Resources
 
-```bash
-# Note: Performance benchmarks are not yet available
-# These are the target performance metrics
+- [Quickstart Guide](QUICKSTART.md): Rapid introduction to QGTL
+- [API Reference](API_REFERENCE.md): Complete API documentation
+- [Performance Tuning](PERFORMANCE_TUNING.md): Optimization strategies
+- [Distributed Training](DISTRIBUTED_COMPUTING.md): Multi-node configuration
+- [Hardware Integration](QUANTUM_HARDWARE.md): Backend setup details
 
-# Run available benchmarks
-cd benchmarks
-./run_benchmarks.sh --quantum
+## External Documentation
 
-# Target metrics:
-# Quantum Hardware Performance:
-# - Circuit optimization: 95% efficiency (In development)
-# - Error mitigation: 85% reduction (In development)
-# - Geometric advantage: 70% speedup (In development)
-# - Resource utilization: 90% optimal (In development)
-```
+- [IBM Quantum Documentation](https://quantum-computing.ibm.com/docs/)
+- [Rigetti QCS Documentation](https://docs.rigetti.com/qcs/)
+- [D-Wave Documentation](https://docs.dwavesys.com/docs/latest/)
+- [CUDA Documentation](https://docs.nvidia.com/cuda/)
+- [Metal Documentation](https://developer.apple.com/metal/)
 
-## Development Troubleshooting
+---
 
-### Current Limitations
-
-1. Compilation Issues
-```bash
-# Common compilation errors:
-# - Hardware integration modules not yet complete
-# - Some dependencies may be missing or incompatible
-# - Test suite may fail due to incomplete features
-
-# For development assistance:
-# - Check GitHub issues for known problems
-# - Join the developer mailing list
-# - Review the development roadmap
-```
-
-2. Hardware Integration
-```bash
-# Note: Hardware backends are not yet functional
-# Development status:
-# - IBM Quantum: Integration in progress
-# - Rigetti: Planning phase
-# - D-Wave: Planning phase
-```
-
-3. Performance Optimization
-```bash
-# Performance monitoring tools are under development
-# Current focus areas:
-# - Core algorithm optimization
-# - Memory management
-# - Hardware acceleration
-```
-
-## References
-
-1. Quantum Hardware Documentation
-   - [IBM Quantum Documentation](https://quantum-computing.ibm.com/docs/)
-   - [Rigetti QCS Documentation](https://docs.rigetti.com/qcs/)
-   - [D-Wave Documentation](https://docs.dwavesys.com/docs/latest/)
-
-2. System Configuration
-   - [NUMA Documentation](https://www.kernel.org/doc/html/latest/admin-guide/mm/numa_memory_policy.html)
-   - [GPU Programming](https://docs.nvidia.com/cuda/)
-
-3. Performance Optimization
-   - [Quantum Circuit Optimization](docs/QUANTUM_OPTIMIZATION.md)
-   - [Hardware Acceleration](docs/HARDWARE_ACCELERATION.md)
+*For installation issues, please open an issue on [GitHub](https://github.com/tsotchke/quantum_geometric_tensor/issues).*

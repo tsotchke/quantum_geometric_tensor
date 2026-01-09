@@ -291,12 +291,19 @@ void test_sparse_data_handling() {
     TEST_TEARDOWN();
 }
 
-// Register tests
-REGISTER_TEST(test_csv_loading);
-REGISTER_TEST(test_normalization);
-REGISTER_TEST(test_dataset_split);
-REGISTER_TEST(test_performance_monitoring);
-REGISTER_TEST(test_memory_management);
-REGISTER_TEST(test_quantum_matrix_loading);
-REGISTER_TEST(test_well_conditioned_data);
-REGISTER_TEST(test_sparse_data_handling);
+// Main test runner
+int main(void) {
+    printf("Running data loader tests...\n");
+
+    test_csv_loading();
+    test_normalization();
+    test_dataset_split();
+    test_performance_monitoring();
+    test_memory_management();
+    test_quantum_matrix_loading();
+    test_well_conditioned_data();
+    test_sparse_data_handling();
+
+    printf("All data loader tests passed!\n");
+    return 0;
+}

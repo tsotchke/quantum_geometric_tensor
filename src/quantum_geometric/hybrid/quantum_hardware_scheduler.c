@@ -555,7 +555,7 @@ struct OperationRequirements* analyze_requirements(const QuantumOperation* op) {
         case OPERATION_GATE:
             // Gate operations - IBM is primary, Rigetti as alternative
             // Determine qubit count from gate structure
-            if (op->op.gate.control_qubit != op->op.gate.target_qubit) {
+            if (op->op.gate.control != op->op.gate.target) {
                 // Two-qubit gate
                 req->ibm_qubits = 2;
                 req->rigetti_qubits = 2;

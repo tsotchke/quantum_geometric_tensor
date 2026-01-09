@@ -116,6 +116,9 @@ struct SimulatorConfig {
     void* backend_specific_config;
 };
 
+// Note: QUBO and QUBOResult types are defined in quantum_hardware_types.h
+// Note: ExecutionResult is defined in quantum_hardware_abstraction.h
+
 #ifdef __cplusplus
 }
 #endif

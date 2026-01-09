@@ -66,7 +66,8 @@ struct tree_tensor_network {
     size_t bond_dim;             // Bond dimension (alias for max_rank)
     double* site_tensors;        // Tensor data at each site
     size_t* connectivity;        // Connectivity graph
-    double entanglement_entropy; // Calculated entanglement entropy
+    double total_entanglement_entropy;  // Total entanglement entropy
+    double* entanglement_entropy;       // Per-site entanglement entropy array
 
     // Memory management
     MemoryPool* memory_pool;     // Memory pool for tensor allocations

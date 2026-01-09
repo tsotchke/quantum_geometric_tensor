@@ -3,10 +3,14 @@
 #include "quantum_geometric/core/quantum_geometric_tensor.h"
 #include "quantum_geometric/core/quantum_complex.h"
 #include "quantum_geometric/core/quantum_geometric_types.h"
+#include "quantum_geometric/core/quantum_operations.h"
 
 // Test data
 static const int NUM_QUBITS = 2;
 static const int DIM = 4;  // 2^NUM_QUBITS
+
+// Helper to create ComplexFloat (since CMPLX returns _Complex double)
+#define CF(r, i) ((ComplexFloat){(float)(r), (float)(i)})
 
 // Configuration structure
 typedef struct {
@@ -34,10 +38,10 @@ void test_quantum_geometric_tensor_basic() {
     
     // Initialize to Bell state
     ComplexFloat bell_state[4] = {
-        CMPLX(1.0f/sqrt(2.0f), 0.0f),  // |00⟩
-        CMPLX(0.0f, 0.0f),             // |01⟩
-        CMPLX(0.0f, 0.0f),             // |10⟩
-        CMPLX(1.0f/sqrt(2.0f), 0.0f)   // |11⟩
+        CF(1.0f/sqrt(2.0f), 0.0f),  // |00⟩
+        CF(0.0f, 0.0f),             // |01⟩
+        CF(0.0f, 0.0f),             // |10⟩
+        CF(1.0f/sqrt(2.0f), 0.0f)   // |11⟩
     };
     err = quantum_state_initialize(state, bell_state);
     TEST_ASSERT(err == QGT_SUCCESS);
@@ -56,7 +60,6 @@ void test_quantum_geometric_tensor_basic() {
     TEST_ASSERT(err == QGT_SUCCESS);
     
     // Compute quantum geometric tensor
-    double metric[4];  // 2x2 tensor for 2 parameters
     quantum_geometric_tensor_t* metric_tensor;
     size_t dims[] = {2, 2}; // 2x2 tensor for 2 parameters
     err = geometric_tensor_create(&metric_tensor, GEOMETRIC_TENSOR_SCALAR, dims, 2);
@@ -75,8 +78,8 @@ void test_quantum_geometric_tensor_basic() {
     // Expected values for this state
     // Expected values for this state
     ComplexFloat expected[4] = {
-        CMPLX(0.5f, 0.0f), CMPLX(0.0f, 0.0f),  // G_00 = 1/2
-        CMPLX(0.0f, 0.0f), CMPLX(0.5f, 0.0f)   // G_11 = 1/2
+        CF(0.5f, 0.0f), CF(0.0f, 0.0f),  // G_00 = 1/2
+        CF(0.0f, 0.0f), CF(0.5f, 0.0f)   // G_11 = 1/2
     };
     
     // Verify results
@@ -111,10 +114,10 @@ void test_berry_curvature() {
     
     // Initialize to |+⟩⊗|0⟩ state
     ComplexFloat plus_state[4] = {
-        CMPLX(1.0f/sqrt(2.0f), 0.0f),  // |00⟩
-        CMPLX(0.0f, 0.0f),             // |01⟩
-        CMPLX(1.0f/sqrt(2.0f), 0.0f),  // |10⟩
-        CMPLX(0.0f, 0.0f)              // |11⟩
+        CF(1.0f/sqrt(2.0f), 0.0f),  // |00⟩
+        CF(0.0f, 0.0f),             // |01⟩
+        CF(1.0f/sqrt(2.0f), 0.0f),  // |10⟩
+        CF(0.0f, 0.0f)              // |11⟩
     };
     err = quantum_state_initialize(state, plus_state);
     TEST_ASSERT(err == QGT_SUCCESS);
@@ -163,7 +166,7 @@ void test_berry_curvature() {
     TEST_ASSERT(err == QGT_SUCCESS);
     
     // For this state and these generators, expect curvature = 1/2
-    TEST_ASSERT_COMPLEX_EQ(curvature_tensor->components[0], CMPLX(0.5f, 0.0f));
+    TEST_ASSERT_COMPLEX_EQ(curvature_tensor->components[0], CF(0.5f, 0.0f));
     
     // Cleanup
     geometric_tensor_destroy(curvature_tensor);
@@ -194,8 +197,8 @@ void test_geometric_phase() {
     
     // Initialize to |0⟩ state
     ComplexFloat zero_state[2] = {
-        CMPLX(1.0f, 0.0f),
-        CMPLX(0.0f, 0.0f)
+        CF(1.0f, 0.0f),
+        CF(0.0f, 0.0f)
     };
     err = quantum_state_initialize(state, zero_state);
     TEST_ASSERT(err == QGT_SUCCESS);
@@ -238,7 +241,7 @@ void test_geometric_phase() {
     
     // Expected phase for this loop = 2π(1 - cos(θ))
     float expected_phase = 2.0f * M_PI * (1.0f - cos(M_PI / 3.0f));
-    TEST_ASSERT_COMPLEX_EQ(phase_tensor->components[0], CMPLX(expected_phase, 0.0f));
+    TEST_ASSERT_COMPLEX_EQ(phase_tensor->components[0], CF(expected_phase, 0.0f));
     
     // Cleanup
     geometric_tensor_destroy(phase_tensor);
@@ -265,8 +268,8 @@ void test_parallel_transport() {
     TEST_ASSERT(state != NULL);
     
     // Initialize to |0⟩ state
-    state->amplitudes[0] = CMPLX(1.0f, 0.0f);
-    state->amplitudes[1] = CMPLX(0.0f, 0.0f);
+    state->coordinates[0] = CF(1.0f, 0.0f);
+    state->coordinates[1] = CF(0.0f, 0.0f);
     
     // Create connection tensor
     quantum_geometric_connection_t* connection;
@@ -293,7 +296,7 @@ void test_parallel_transport() {
     
     // Verify connection coefficients are real (up to numerical error)
     for (int i = 0; i < 4; i++) {
-        TEST_ASSERT_FLOAT_EQ(cimagf(connection->coefficients[i]), 0.0f);
+        TEST_ASSERT_FLOAT_EQ(connection->coefficients[i].imag, 0.0f);
     }
     
     // Cleanup
@@ -305,39 +308,44 @@ void test_parallel_transport() {
     TEST_TEARDOWN();
 }
 
-// Register tests
-REGISTER_TEST(test_quantum_geometric_tensor_basic);
-REGISTER_TEST(test_berry_curvature);
-REGISTER_TEST(test_geometric_phase);
-REGISTER_TEST(test_parallel_transport);
+// Register all tests
+static void register_tests(void) {
+    REGISTER_TEST(test_quantum_geometric_tensor_basic);
+    REGISTER_TEST(test_berry_curvature);
+    REGISTER_TEST(test_geometric_phase);
+    REGISTER_TEST(test_parallel_transport);
+}
 
-// Test runner (if not using CTest)
-#ifdef STANDALONE_TEST
 int main(int argc, char** argv) {
+    (void)argc;
+    (void)argv;
+
+    // Register tests
+    register_tests();
+
     // Initialize core systems
     qgt_error_t err = geometric_core_initialize();
     if (err != QGT_SUCCESS) {
         printf("Failed to initialize geometric core\n");
         return 1;
     }
-    
+
     TEST_MPI_INIT();
     TEST_METAL_INIT();
     TEST_CUDA_INIT();
-    
+
     // Run all registered tests
     for (int i = 0; i < g_test_count; i++) {
         g_tests[i].func();
     }
-    
+
     TEST_CUDA_CLEANUP();
     TEST_METAL_CLEANUP();
     TEST_MPI_FINALIZE();
-    
+
     // Cleanup core systems
     geometric_core_shutdown();
-    
+
     printf("All tests passed!\n");
     return 0;
 }
-#endif

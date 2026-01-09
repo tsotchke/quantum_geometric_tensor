@@ -174,8 +174,8 @@ static void subdivide_quantum_blocks(HierarchicalMatrix* dst, const Hierarchical
 extern void quantum_circuit_destroy(quantum_circuit_t* circuit);
 extern void quantum_system_destroy(quantum_system_t* system);
 
-// Initialize quantum state
-static QuantumState* init_quantum_state(size_t num_qubits) {
+// Initialize quantum state for hierarchical matrix operations (internal)
+static QuantumState* hmatrix_init_quantum_state(size_t num_qubits) {
     QuantumState* state = aligned_alloc(QG_QUANTUM_MEMORY_ALIGNMENT, sizeof(QuantumState));
     if (!state) return NULL;
 

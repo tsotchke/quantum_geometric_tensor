@@ -179,7 +179,7 @@ void test_equations() {
     double gpu_time = gpu_end - gpu_start;
     
     // Verify results match
-    for (size_t i = 0; i < cpu_equations->size; i++) {
+    for (size_t i = 0; i < cpu_equations->total_size; i++) {
         assert(cabs(cpu_equations->data[i] - gpu_equations->data[i]) < 1e-6);
     }
     

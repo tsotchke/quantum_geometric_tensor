@@ -6,6 +6,30 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+// ============================================================================
+// Quantum Geometric Core Context
+// ============================================================================
+
+// Core context for quantum geometric operations
+typedef struct QuantumGeometricCore {
+    bool initialized;                // Initialization flag
+    size_t device_id;               // Active device ID
+    size_t num_devices;             // Number of available devices
+    void* memory_pool;              // Memory pool for allocations
+    size_t memory_pool_size;        // Size of memory pool
+    size_t total_allocated;         // Total memory allocated
+    size_t peak_allocated;          // Peak memory usage
+    size_t allocation_count;        // Number of active allocations
+    bool debug_mode;                // Debug mode flag
+    size_t log_level;               // Logging verbosity
+    void* stream;                   // Current compute stream
+    void* profiling_data;           // Profiling context
+} QuantumGeometricCore;
+
+// Core context creation and destruction
+QuantumGeometricCore* quantum_geometric_core_create(void);
+void quantum_geometric_core_free(QuantumGeometricCore* core);
+
 // Core initialization
 qgt_error_t geometric_core_initialize(void);
 void geometric_core_shutdown(void);

@@ -18,7 +18,13 @@
 
 #include <stddef.h>
 #include <stdbool.h>
-#include <complex.h>
+
+// C/C++ complex type compatibility
+// Use _Complex directly for C++ compatibility with Accelerate framework
+// In pure C code, complex.h is included by the .c files that need it
+#ifndef __cplusplus
+    #include <complex.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -48,13 +54,13 @@ extern "C" {
  * @brief General tensor type for field theory calculations
  *
  * Tensors on spacetime lattice with arbitrary rank and internal structure.
- * Uses complex double precision for full quantum mechanical treatment.
+ * Uses double _Complex precision for full quantum mechanical treatment.
  */
-typedef struct {
+typedef struct Tensor {
     size_t rank;                        /**< Number of dimensions/indices */
     size_t dims[QG_MAX_TENSOR_RANK];    /**< Size of each dimension */
     size_t total_size;                  /**< Total number of elements */
-    complex double* data;               /**< Complex tensor data */
+    double _Complex* data;               /**< Complex tensor data */
     bool is_allocated;                  /**< Whether data is owned */
 } Tensor;
 
@@ -65,7 +71,7 @@ typedef struct {
  * Stored as 4x4 matrix in row-major order.
  */
 typedef struct {
-    complex double components[QG_SPACETIME_DIMS * QG_SPACETIME_DIMS];
+    double _Complex components[QG_SPACETIME_DIMS * QG_SPACETIME_DIMS];
     bool is_minkowski;                  /**< True for flat spacetime */
     double curvature_scale;             /**< Characteristic curvature scale */
 } SpacetimeMetric;
@@ -76,14 +82,14 @@ typedef struct {
  * Represents a general quantum field with internal degrees of freedom,
  * gauge coupling, and self-interaction terms.
  */
-typedef struct {
+typedef struct QuantumField {
     // Field data
     Tensor* field_tensor;               /**< Field configuration φ(x) */
     Tensor* conjugate_momentum;         /**< Canonical momentum π(x) */
     Tensor* gauge_field;                /**< Gauge field A_μ(x) (optional) */
 
     // Spacetime structure
-    complex double metric[QG_SPACETIME_DIMS * QG_SPACETIME_DIMS]; /**< Metric tensor */
+    double _Complex metric[QG_SPACETIME_DIMS * QG_SPACETIME_DIMS]; /**< Metric tensor */
     double lattice_spacing[QG_SPACETIME_DIMS];                     /**< Lattice spacings */
 
     // Field parameters
@@ -105,7 +111,7 @@ typedef struct {
 } QuantumField;
 
 /**
- * @brief Configuration for field calculations
+ * @brief Configuration for field evolution calculations
  */
 typedef struct {
     // Numerical parameters
@@ -121,7 +127,7 @@ typedef struct {
     bool use_symplectic;                /**< Use symplectic integrator */
     bool use_parallel;                  /**< Enable OpenMP parallelization */
     size_t num_threads;                 /**< Number of threads (0 = auto) */
-} FieldConfig;
+} FieldEvolutionConfig;
 
 // ============================================================================
 // Tensor Operations
@@ -259,7 +265,7 @@ void add_gauge_coupling(
  * @param z Z coordinate
  * @return Array of derivatives (caller must free)
  */
-complex double* calculate_derivatives(
+double _Complex* calculate_derivatives(
     const Tensor* field_tensor,
     size_t t, size_t x, size_t y, size_t z);
 
@@ -275,7 +281,7 @@ complex double* calculate_derivatives(
  * @param z Z coordinate
  * @return Array of covariant derivatives (caller must free)
  */
-complex double* calculate_covariant_derivatives(
+double _Complex* calculate_covariant_derivatives(
     const QuantumField* field,
     size_t t, size_t x, size_t y, size_t z);
 
@@ -336,7 +342,7 @@ void calculate_momentum_density(
 // ============================================================================
 
 /**
- * @brief Initialize quantum field structure
+ * @brief Initialize quantum field structure (low-level API)
  *
  * @param field Field to initialize
  * @param lattice_dims Lattice dimensions [t, x, y, z]
@@ -345,7 +351,7 @@ void calculate_momentum_density(
  * @param coupling Self-coupling constant
  * @return true on success
  */
-bool init_quantum_field(
+bool init_quantum_field_direct(
     QuantumField* field,
     const size_t* lattice_dims,
     size_t num_components,
@@ -385,7 +391,7 @@ bool init_gauge_field(
  * @param config Evolution configuration
  * @return true on success
  */
-bool evolve_field(QuantumField* field, const FieldConfig* config);
+bool evolve_field(QuantumField* field, const FieldEvolutionConfig* config);
 
 /**
  * @brief Apply boundary conditions
@@ -406,7 +412,7 @@ void apply_boundary_conditions(QuantumField* field);
  * @param x2 Second spacetime point [t2, x2, y2, z2]
  * @return Propagator value G(x1, x2)
  */
-complex double calculate_feynman_propagator(
+double _Complex calculate_feynman_propagator(
     const QuantumField* field,
     const size_t* x1,
     const size_t* x2);
@@ -419,7 +425,7 @@ complex double calculate_feynman_propagator(
  * @param x2 Second spacetime point
  * @return Retarded propagator G_R(x1, x2)
  */
-complex double calculate_retarded_propagator(
+double _Complex calculate_retarded_propagator(
     const QuantumField* field,
     const size_t* x1,
     const size_t* x2);

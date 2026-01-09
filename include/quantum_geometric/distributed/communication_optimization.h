@@ -68,7 +68,7 @@ void reset_communication_stats(CommunicationManager* manager);
 
 // Utility functions
 int get_rank(const CommunicationManager* manager);
-int get_world_size(const CommunicationManager* manager);
+int get_comm_world_size(const CommunicationManager* manager);
 void barrier(CommunicationManager* manager);
 
 // Zero-copy support

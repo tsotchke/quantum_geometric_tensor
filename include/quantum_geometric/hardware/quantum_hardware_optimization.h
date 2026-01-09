@@ -21,13 +21,16 @@ typedef struct IonQConfig {
 } IonQConfig;
 #endif
 
-// Hardware optimization types
-typedef struct {
+// Hardware optimization types (guarded to avoid redefinition)
+#ifndef HARDWARE_OPTIMIZATIONS_DEFINED
+#define HARDWARE_OPTIMIZATIONS_DEFINED
+typedef struct HardwareOptimizations {
     void (*ibm_optimize)(struct QuantumCircuit*, const IBMBackendConfig*);
     void (*rigetti_optimize)(struct QuantumCircuit*, const struct RigettiConfig*);
     void (*ionq_optimize)(struct QuantumCircuit*, const IonQConfig*);
     void (*dwave_optimize)(struct QuantumCircuit*, const struct DWaveConfig*);
 } HardwareOptimizations;
+#endif
 
 // Initialize hardware-specific optimizations
 HardwareOptimizations* init_hardware_optimizations(const char* backend_type);

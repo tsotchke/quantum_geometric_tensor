@@ -259,3 +259,155 @@ const char* alert_level_str(alert_level_t level) {
         default:                   return "UNKNOWN";
     }
 }
+
+// Alias for cleanup
+void shutdown_production_monitoring(void) {
+    cleanup_production_monitoring();
+}
+
+// Unregister an alert handler
+bool unregister_alert_handler(alert_callback callback) {
+    if (!monitor_state.initialized || !callback) {
+        return false;
+    }
+
+    for (size_t i = 0; i < monitor_state.num_alert_handlers; i++) {
+        if (monitor_state.alert_handlers[i] == callback) {
+            // Shift remaining handlers
+            for (size_t j = i; j < monitor_state.num_alert_handlers - 1; j++) {
+                monitor_state.alert_handlers[j] = monitor_state.alert_handlers[j + 1];
+            }
+            monitor_state.num_alert_handlers--;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// Start monitoring a quantum operation (alias for record_quantum_operation)
+void begin_quantum_operation(const quantum_operation_t* operation) {
+    if (!monitor_state.initialized || !operation) {
+        return;
+    }
+
+    start_operation_timing(operation->name);
+
+    char details[256];
+    snprintf(details, sizeof(details), "Operation started: %s (type=%d, qubits=%zu)",
+             operation->name, operation->type, operation->num_qubits);
+    log_metrics("Quantum", "Begin", details);
+
+    update_resource_usage();
+}
+
+// End monitoring a quantum operation (alias for record_quantum_result)
+void end_quantum_operation(const quantum_operation_t* operation, const quantum_result_t* result) {
+    if (!monitor_state.initialized) {
+        return;
+    }
+
+    if (operation) {
+        end_operation_timing(operation->name);
+    }
+
+    if (result) {
+        record_operation_result(result->success, result->execution_time);
+
+        char details[256];
+        snprintf(details, sizeof(details),
+                 "Operation completed: %s (success=%d, fidelity=%.4f, error_code=%d)",
+                 operation ? operation->name : "unknown",
+                 result->success, result->fidelity, result->error_code);
+        log_metrics("Quantum", "End", details);
+
+        if (!result->success) {
+            trigger_alerts(ALERT_LEVEL_ERROR, result->error_message ? result->error_message : "Operation failed");
+        }
+    }
+
+    check_thresholds();
+}
+
+// Log production events with severity level
+void log_production_event(alert_level_t level, const char* component,
+                         const char* event, const char* details) {
+    if (!monitor_state.initialized) {
+        return;
+    }
+
+    log_metrics(component, event, details);
+
+    // If level is warning or above, also trigger alerts
+    if (level >= ALERT_LEVEL_WARNING) {
+        char message[512];
+        snprintf(message, sizeof(message), "[%s] %s: %s", component, event, details);
+        trigger_alerts(level, message);
+    }
+}
+
+// Get current production metrics
+bool get_production_metrics(double* error_rate, double* avg_latency,
+                           double* memory_usage, double* cpu_usage) {
+    if (!monitor_state.initialized) {
+        if (error_rate) *error_rate = 0;
+        if (avg_latency) *avg_latency = 0;
+        if (memory_usage) *memory_usage = 0;
+        if (cpu_usage) *cpu_usage = 0;
+        return false;
+    }
+
+    PerformanceMetrics metrics = get_performance_metrics();
+
+    if (error_rate) *error_rate = metrics.error_rate;
+    if (avg_latency) *avg_latency = metrics.avg_latency;
+    if (memory_usage) *memory_usage = metrics.peak_memory_usage;
+    if (cpu_usage) *cpu_usage = metrics.avg_cpu_utilization;
+
+    return true;
+}
+
+// Set threshold values
+void set_error_threshold(double threshold) {
+    monitor_state.thresholds.error_rate = threshold;
+}
+
+void set_latency_threshold(double threshold_ms) {
+    monitor_state.thresholds.latency = threshold_ms;
+}
+
+void set_memory_threshold(double threshold_percent) {
+    monitor_state.thresholds.memory_usage = threshold_percent;
+}
+
+void set_cpu_threshold(double threshold_percent) {
+    monitor_state.thresholds.cpu_usage = threshold_percent;
+}
+
+// Health check
+bool production_health_check(void) {
+    if (!monitor_state.initialized) {
+        return false;
+    }
+
+    PerformanceMetrics metrics = get_performance_metrics();
+
+    // Check all thresholds
+    if (metrics.error_rate > monitor_state.thresholds.error_rate) {
+        return false;
+    }
+    if (metrics.avg_latency > monitor_state.thresholds.latency) {
+        return false;
+    }
+    if (metrics.peak_memory_usage > monitor_state.thresholds.memory_usage) {
+        return false;
+    }
+    if (metrics.avg_cpu_utilization > monitor_state.thresholds.cpu_usage) {
+        return false;
+    }
+    if (metrics.success_rate < monitor_state.thresholds.success_rate) {
+        return false;
+    }
+
+    return true;
+}

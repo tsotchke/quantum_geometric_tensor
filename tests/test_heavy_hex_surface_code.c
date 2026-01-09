@@ -312,22 +312,25 @@ static void test_performance_requirements(void) {
 }
 
 // Mock implementation of test helpers
-static quantum_state* create_test_state(size_t width, size_t height) {
-    quantum_state* state = malloc(sizeof(quantum_state));
+static quantum_state_t* create_test_state(size_t width, size_t height) {
+    quantum_state_t* state = malloc(sizeof(quantum_state_t));
     if (state) {
-        state->width = width;
-        state->height = height;
+        memset(state, 0, sizeof(quantum_state_t));
+        state->lattice_width = width;
+        state->lattice_height = height;
+        state->dimension = width * height;
+        state->num_qubits = width * height;
         // Initialize with test data
     }
     return state;
 }
 
-static void apply_test_errors(quantum_state* state) {
+static void apply_test_errors(quantum_state_t* state) {
     if (!state) return;
     // Apply known test errors
     // For example, flip bits at specific locations
 }
 
-static void cleanup_test_state(quantum_state* state) {
+static void cleanup_test_state(quantum_state_t* state) {
     free(state);
 }

@@ -20,6 +20,11 @@ static bool measure_hex_stabilizers(HexLattice* lattice,
 static bool apply_hex_correction(HexLattice* lattice,
                                quantum_state* state);
 
+// Heavy-hex 2D coordinate Pauli measurements (internal to this file)
+bool heavy_hex_measure_pauli_x(const quantum_state* state, size_t x, size_t y, double* result);
+bool heavy_hex_measure_pauli_y(const quantum_state* state, size_t x, size_t y, double* result);
+bool heavy_hex_measure_pauli_z(const quantum_state* state, size_t x, size_t y, double* result);
+
 bool init_heavy_hex_code(HexState* state, const HexConfig* config) {
     if (!state || !config || !validate_hex_parameters(config)) {
         return false;
@@ -214,24 +219,24 @@ static bool measure_hex_stabilizers(HexLattice* lattice,
         if (coord->type == HEX_PLAQUETTE) {
             // Measure Z-type stabilizer (plaquette)
             double z1, z2, z3, z4, z5, z6;
-            if (!measure_pauli_z(state, coord->x - 1, coord->y, &z1) ||
-                !measure_pauli_z(state, coord->x + 1, coord->y, &z2) ||
-                !measure_pauli_z(state, coord->x, coord->y - 1, &z3) ||
-                !measure_pauli_z(state, coord->x, coord->y + 1, &z4) ||
-                !measure_pauli_z(state, coord->x - 1, coord->y + 1, &z5) ||
-                !measure_pauli_z(state, coord->x + 1, coord->y - 1, &z6)) {
+            if (!heavy_hex_measure_pauli_z(state, coord->x - 1, coord->y, &z1) ||
+                !heavy_hex_measure_pauli_z(state, coord->x + 1, coord->y, &z2) ||
+                !heavy_hex_measure_pauli_z(state, coord->x, coord->y - 1, &z3) ||
+                !heavy_hex_measure_pauli_z(state, coord->x, coord->y + 1, &z4) ||
+                !heavy_hex_measure_pauli_z(state, coord->x - 1, coord->y + 1, &z5) ||
+                !heavy_hex_measure_pauli_z(state, coord->x + 1, coord->y - 1, &z6)) {
                 return false;
             }
             lattice->stabilizer_values[i] = z1 * z2 * z3 * z4 * z5 * z6;
         } else {
             // Measure X-type stabilizer (vertex)
             double x1, x2, x3, x4, x5, x6;
-            if (!measure_pauli_x(state, coord->x - 1, coord->y, &x1) ||
-                !measure_pauli_x(state, coord->x + 1, coord->y, &x2) ||
-                !measure_pauli_x(state, coord->x, coord->y - 1, &x3) ||
-                !measure_pauli_x(state, coord->x, coord->y + 1, &x4) ||
-                !measure_pauli_x(state, coord->x - 1, coord->y - 1, &x5) ||
-                !measure_pauli_x(state, coord->x + 1, coord->y + 1, &x6)) {
+            if (!heavy_hex_measure_pauli_x(state, coord->x - 1, coord->y, &x1) ||
+                !heavy_hex_measure_pauli_x(state, coord->x + 1, coord->y, &x2) ||
+                !heavy_hex_measure_pauli_x(state, coord->x, coord->y - 1, &x3) ||
+                !heavy_hex_measure_pauli_x(state, coord->x, coord->y + 1, &x4) ||
+                !heavy_hex_measure_pauli_x(state, coord->x - 1, coord->y - 1, &x5) ||
+                !heavy_hex_measure_pauli_x(state, coord->x + 1, coord->y + 1, &x6)) {
                 return false;
             }
             lattice->stabilizer_values[i] = x1 * x2 * x3 * x4 * x5 * x6;
@@ -291,11 +296,11 @@ static inline size_t coords_to_qubit(const quantum_state* state, size_t x, size_
 }
 
 // ============================================================================
-// Public API: Pauli measurements (from error_weight.h)
-// These compute expectation values <ψ|P|ψ> for Pauli operators P
+// Heavy-hex lattice Pauli measurements (2D coordinate interface)
+// These compute expectation values <ψ|P|ψ> for Pauli operators P on 2D lattice
 // ============================================================================
 
-bool measure_pauli_x(const quantum_state* state, size_t x, size_t y, double* result) {
+bool heavy_hex_measure_pauli_x(const quantum_state* state, size_t x, size_t y, double* result) {
     if (!state || !state->coordinates || !result) return false;
 
     size_t qubit_idx = coords_to_qubit(state, x, y);
@@ -323,7 +328,7 @@ bool measure_pauli_x(const quantum_state* state, size_t x, size_t y, double* res
     return true;
 }
 
-bool measure_pauli_y(const quantum_state* state, size_t x, size_t y, double* result) {
+bool heavy_hex_measure_pauli_y(const quantum_state* state, size_t x, size_t y, double* result) {
     if (!state || !state->coordinates || !result) return false;
 
     size_t qubit_idx = coords_to_qubit(state, x, y);
@@ -354,7 +359,7 @@ bool measure_pauli_y(const quantum_state* state, size_t x, size_t y, double* res
     return true;
 }
 
-bool measure_pauli_z(const quantum_state* state, size_t x, size_t y, double* result) {
+bool heavy_hex_measure_pauli_z(const quantum_state* state, size_t x, size_t y, double* result) {
     if (!state || !state->coordinates || !result) return false;
 
     size_t qubit_idx = coords_to_qubit(state, x, y);

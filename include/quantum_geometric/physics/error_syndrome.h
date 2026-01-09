@@ -38,8 +38,10 @@ qgt_error_t correct_errors(quantum_state_t* state, const ErrorSyndrome* syndrome
 // Clean up test state
 void cleanup_test_state(quantum_state_t* state);
 
-// Syndrome vertex in matching graph
-typedef struct {
+// Syndrome vertex in matching graph (physics version with extended fields)
+#ifndef SYNDROME_VERTEX_DEFINED
+#define SYNDROME_VERTEX_DEFINED
+typedef struct SyndromeVertexPhysics {
     size_t x;                  // X coordinate in lattice
     size_t y;                  // Y coordinate in lattice
     size_t z;                  // Z coordinate in lattice
@@ -53,18 +55,25 @@ typedef struct {
     double correlation_weight; // Weight from correlations
     bool part_of_chain;       // Whether part of error chain
     error_type_t error_type;  // Type of error at this vertex
-} SyndromeVertex;
+} SyndromeVertexPhysics;
+// Alias for backward compatibility in physics module
+#define SyndromeVertex SyndromeVertexPhysics
+#endif // SYNDROME_VERTEX_DEFINED
 
-// Edge between syndrome vertices
-typedef struct {
-    SyndromeVertex* vertex1;  // First vertex
-    SyndromeVertex* vertex2;  // Second vertex
+// Edge between syndrome vertices (physics version)
+#ifndef SYNDROME_EDGE_DEFINED
+#define SYNDROME_EDGE_DEFINED
+typedef struct SyndromeEdgePhysics {
+    SyndromeVertexPhysics* vertex1;  // First vertex
+    SyndromeVertexPhysics* vertex2;  // Second vertex
     double weight;           // Edge weight
     bool is_boundary_connection; // Whether connects to boundary
     bool is_matched;         // Whether matched in pairing
     double chain_probability; // Probability of being in chain
     size_t chain_length;     // Length if part of chain
-} SyndromeEdge;
+} SyndromeEdgePhysics;
+#define SyndromeEdge SyndromeEdgePhysics
+#endif // SYNDROME_EDGE_DEFINED
 
 // Graph for syndrome matching
 #ifndef MATCHING_GRAPH_DEFINED
@@ -86,8 +95,9 @@ typedef struct MatchingGraph {
 #endif // MATCHING_GRAPH_DEFINED
 
 // Configuration for syndrome extraction
+#ifndef SYNDROME_CONFIG_DEFINED
 #define SYNDROME_CONFIG_DEFINED
-typedef struct SyndromeConfig {
+typedef struct SyndromeConfigPhysics {
     // Core configuration
     bool enable_parallel;      // Enable parallel measurements
     size_t parallel_group_size; // Size of parallel groups
@@ -117,7 +127,10 @@ typedef struct SyndromeConfig {
     double phase_calibration;      // Phase calibration factor
     double z_gate_fidelity;        // Z gate fidelity
     double measurement_fidelity;   // Measurement fidelity
-} SyndromeConfig;
+} SyndromeConfigPhysics;
+// Alias for backward compatibility in physics module
+#define SyndromeConfig SyndromeConfigPhysics
+#endif // SYNDROME_CONFIG_DEFINED
 
 // Initialize matching graph
 qgt_error_t init_matching_graph(size_t max_vertices, size_t max_edges, MatchingGraph** graph);

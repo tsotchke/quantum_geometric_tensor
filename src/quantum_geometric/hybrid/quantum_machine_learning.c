@@ -1403,18 +1403,37 @@ training_result_t quantum_train(quantum_model_t* model,
                                      complex_targets,
                                      num_samples);
 
+    if (success) {
+        result.status = TRAINING_SUCCESS;
+        result.num_epochs = config->num_epochs;
+
+        // Compute actual final loss by evaluating on training data
+        task_metrics_t metrics = {0};
+        bool eval_success = quantum_evaluate_task(model->task,
+                                                  (const ComplexFloat**)complex_features,
+                                                  complex_targets,
+                                                  num_samples,
+                                                  &metrics);
+        if (eval_success) {
+            result.final_loss = metrics.mse;
+        } else {
+            // Fallback: get loss from task's training state
+            training_state_t state;
+            if (model->task && quantum_get_training_state(model->task, &state)) {
+                result.final_loss = state.current_loss;
+            } else {
+                // Last resort: compute MSE directly on a sample
+                result.final_loss = INFINITY;
+            }
+        }
+    }
+
     // Cleanup
     for (size_t i = 0; i < num_samples; i++) {
         free(complex_features[i]);
     }
     free(complex_features);
     free(complex_targets);
-
-    if (success) {
-        result.status = TRAINING_SUCCESS;
-        result.final_loss = 0.1;  // Placeholder
-        result.num_epochs = config->num_epochs;
-    }
 
     return result;
 }
@@ -1425,8 +1444,21 @@ evaluation_result_t quantum_evaluate(quantum_model_t* model,
                                     size_t num_samples) {
     evaluation_result_t result = {.mse = INFINITY, .mae = INFINITY, .r2_score = 0.0, .accuracy = 0.0};
 
-    if (!model || !features || !targets) {
+    if (!model || !features || !targets || num_samples == 0) {
         return result;
+    }
+
+    // Compute target statistics for R² calculation
+    double target_mean = 0.0;
+    for (size_t i = 0; i < num_samples; i++) {
+        target_mean += (double)targets[i];
+    }
+    target_mean /= (double)num_samples;
+
+    double ss_tot = 0.0;
+    for (size_t i = 0; i < num_samples; i++) {
+        double deviation = (double)targets[i] - target_mean;
+        ss_tot += deviation * deviation;
     }
 
     // Convert float arrays to ComplexFloat arrays
@@ -1474,8 +1506,17 @@ evaluation_result_t quantum_evaluate(quantum_model_t* model,
     if (success) {
         result.mse = metrics.mse;
         result.mae = metrics.mae;
-        result.r2_score = 0.85;  // Placeholder
         result.accuracy = metrics.accuracy;
+
+        // Compute R² = 1 - (SS_res / SS_tot)
+        // SS_res = MSE * num_samples
+        double ss_res = metrics.mse * (double)num_samples;
+        if (ss_tot > 1e-10) {
+            result.r2_score = 1.0 - (ss_res / ss_tot);
+            if (result.r2_score < -1.0) result.r2_score = -1.0;
+        } else {
+            result.r2_score = (ss_res < 1e-10) ? 1.0 : 0.0;
+        }
     }
 
     return result;
@@ -1589,38 +1630,71 @@ evaluation_result_t classical_evaluate(classical_model_t* model,
                                       size_t num_samples) {
     evaluation_result_t result = {.mse = 0.0, .mae = 0.0, .r2_score = 0.0, .accuracy = 0.0};
 
-    if (!model || !features || !targets) {
+    if (!model || !features || !targets || num_samples == 0) {
         result.mse = INFINITY;
         result.mae = INFINITY;
         return result;
     }
 
-    double total_mse = 0.0;
+    // First pass: compute mean of targets for R² calculation
+    double target_mean = 0.0;
+    for (size_t i = 0; i < num_samples; i++) {
+        target_mean += (double)targets[i];
+    }
+    target_mean /= (double)num_samples;
+
+    // Second pass: compute predictions and accumulate metrics
+    double ss_res = 0.0;  // Sum of squared residuals
+    double ss_tot = 0.0;  // Total sum of squares
     double total_mae = 0.0;
 
     for (size_t i = 0; i < num_samples; i++) {
         // Convert to double
         double* input = malloc(model->input_dim * sizeof(double));
+        if (!input) continue;
+
         for (size_t j = 0; j < model->input_dim; j++) {
             input[j] = (double)features[i * model->input_dim + j];
         }
 
         // Forward pass
         double* output = classical_forward_pass(model->network, input);
-        double target = (double)targets[i];
+        if (!output) {
+            free(input);
+            continue;
+        }
 
-        // Compute metrics
-        double error = output[0] - target;
-        total_mse += error * error;
-        total_mae += fabs(error);
+        double target = (double)targets[i];
+        double prediction = output[0];
+
+        // Compute residual metrics
+        double residual = prediction - target;
+        ss_res += residual * residual;
+        total_mae += fabs(residual);
+
+        // Compute total variance component
+        double deviation = target - target_mean;
+        ss_tot += deviation * deviation;
 
         free(output);
         free(input);
     }
 
-    result.mse = total_mse / (double)num_samples;
+    // Compute final metrics
+    result.mse = ss_res / (double)num_samples;
     result.mae = total_mae / (double)num_samples;
-    result.r2_score = 0.80;  // Placeholder
+
+    // R² = 1 - (SS_res / SS_tot)
+    // Handle edge case where all targets are identical (ss_tot = 0)
+    if (ss_tot > 1e-10) {
+        result.r2_score = 1.0 - (ss_res / ss_tot);
+        // Clamp to valid range [-inf, 1] but typically [0, 1] for good models
+        if (result.r2_score < -1.0) result.r2_score = -1.0;
+    } else {
+        // All targets identical - R² undefined, use 0 if predictions match
+        result.r2_score = (ss_res < 1e-10) ? 1.0 : 0.0;
+    }
+
     result.accuracy = 0.0;
 
     return result;
